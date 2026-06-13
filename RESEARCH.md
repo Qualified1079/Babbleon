@@ -11,7 +11,7 @@ Status legend: ⬜ not started · 🟡 in progress · ✅ done · 🟥 blocked
 - ✅ **T1. Moving Target Defense vs LLM/automated attackers** — prior art sweep
 - ✅ **T2. Agentic-exploitation capability literature** — what current LLM exploit harnesses actually do
 - ✅ **T3. Per-process filesystem view mechanisms on Linux** — mount ns / OverlayFS / FUSE / pam_namespace
-- ⬜ **T4. eBPF-LSM maturity** for file/exec gating
+- ✅ **T4. eBPF-LSM maturity** for file/exec gating
 - ⬜ **T5. Hardware-unlock primitives** — FIDO2 hmac-secret, TPM 2.0 sealing, OS keychains
 
 ## Tier 2 — shapes implementation
@@ -655,5 +655,222 @@ exec time), not architectural.
 - LWN: Namespaces in operation, part 6 (user namespaces) — https://lwn.net/Articles/540087/
 - Wiz: Container escape — https://www.wiz.io/academy/container-security/container-escape
 - CDK abuse-unpriv-userns — https://github.com/cdk-team/CDK/wiki/Exploit:-abuse-unpriv-userns
+
+---
+
+## T4 — eBPF-LSM maturity for file/exec gating
+
+**Question:** PLAN.md §8 names eBPF-LSM as the v2 "Hardened" enforcement
+tier ("gates at LSM hook; survives namespace escapes"). Is the kernel
+support real and shippable in 2026? What hooks fire where we need them?
+What's the deployment friction (kernel config, distro defaults, kernel
+floor)? What does the latency cost look like for an interactive system?
+What's the right relationship between eBPF-LSM and the M3 mount-namespace
+tier?
+
+**Method:** 5-angle parallel search across BPF LSM hook semantics, kernel
+config and distro support, comparison with Landlock and SELinux, the
+Tetragon/Falco production stacks, and overhead benchmarks.
+
+### Findings
+
+**1. The hooks fire exactly where Babbleon needs them, with deny semantics.**
+
+`BPF_PROG_TYPE_LSM` programs attach via `SEC("lsm/<hookname>")` and
+return an `int`: `0` permits, negative `errno` denies. The two hooks
+PLAN.md §8 names — `file_open` (fires before every `open`/`openat`) and
+`bprm_check_security` (fires before every `execve`, after the kernel has
+resolved the final executable) — are both supported and standard. A BPF
+LSM `file_open` program returning `-EPERM` makes `open(2)` fail in
+userspace. `bprm_check_security` deny → `execve` returns `-EPERM`.
+
+This is the right surface. It fires *after path resolution and inode
+validation*, which means it gates on the **inode the kernel actually
+resolved** — not on the path string a process passed in. That sidesteps
+TOCTOU between path and inode that any pure-path interposition (including
+LD_PRELOAD and any path-string LSM hook) is vulnerable to.
+
+For Babbleon: the natural v2 model is a BPF LSM `file_open`/
+`bprm_check_security` pair that consults the per-host mapping table and
+denies untrusted-tier processes any inode whose canonical name is
+trusted-only. The kernel does the lookup; raw syscalls, static binaries,
+and namespace escapes all funnel through the same hook.
+
+**2. Kernel floor: 5.7 (x86), 6.4 (arm64). Real-world floor: 5.13+.**
+
+`BPF_PROG_TYPE_LSM` landed in **Linux 5.7** (May 2020). ARM64 was broken
+from 5.7 to 6.3 (missing arch infrastructure); the fix landed in 6.4.
+Practical ecosystem floor is **5.13+** based on what production projects
+(Tracee's `safeguard`, ebpfguard, lockc) require.
+
+For Babbleon's target window (2026 onward), 5.7 is ancient and 6.4 is
+old. Both Ubuntu 24.04 LTS (6.8) and RHEL 9 (5.14 with backports) clear
+the bar. Reasonable assumption: v2 ships when we're comfortable
+requiring a 6.x kernel.
+
+**3. Distro defaults are the friction point.**
+
+The required kernel-config flags (`CONFIG_BPF=y`, `CONFIG_BPF_SYSCALL=y`,
+`CONFIG_BPF_LSM=y`, `CONFIG_BPF_JIT=y`, `CONFIG_DEBUG_INFO_BTF=y`, plus
+`CONFIG_LSM` must include `bpf`) are usually compiled in by major
+distros, **but BPF LSM is not enabled by default at boot** on most
+distros. Enabling it requires editing GRUB:
+`GRUB_CMDLINE_LINUX="lsm=lockdown,capability,bpf"` and reboot.
+
+Implications:
+
+- **v2 ships with a `babbleon-enable-bpflsm` helper** that mutates
+  `/etc/default/grub`, regenerates grub config, and prompts reboot. Same
+  pattern Tracee/ebpfguard ship.
+- **Detection-only mode (no enforcement) works without the boot flag**
+  via kprobes/tracepoints. v2 should fall back to detection-only on
+  hosts where BPF LSM isn't enabled, and surface an "enable to upgrade
+  to enforcement" prompt.
+- **Distro-shipped BPF LSM packages should be tracked.** Fedora has been
+  closest to enabling by default. Worth re-checking before v2 release.
+
+**4. The right comparison is Landlock, not SELinux.**
+
+SELinux is the wrong shape for Babbleon: static policy compiled at boot,
+admin-only authorship, complex labeling. It coexists with Babbleon (we
+do not conflict with SELinux MAC); it does not replace eBPF LSM as
+Babbleon's enforcement substrate.
+
+**Landlock** (Linux 5.13 baseline, dramatically expanded in 6.x) is the
+interesting alternative. It's an in-tree LSM that lets *unprivileged*
+processes sandbox themselves with path-rule-style policies. Properties
+versus eBPF LSM for Babbleon:
+
+| Property | Landlock | eBPF LSM |
+|---|---|---|
+| Privilege to install policy | unprivileged process self-sandbox | root (CAP_BPF + CAP_SYS_ADMIN) |
+| Policy expressiveness | path/inode allow-rules | arbitrary BPF program over hook args |
+| Per-process scoping | native (each process installs own ruleset) | global; must inspect `current` to scope |
+| Distro default-on | yes (no boot flag) | no (needs `lsm=...,bpf`) |
+| Kernel floor for our use | 6.x (path-beneath + truncate scopes) | 5.7 / 6.4 arm64 |
+
+Landlock's per-process self-sandbox model is a better fit for the
+*untrusted-tier process* side of Babbleon: at process launch we install
+a Landlock ruleset that **denies the untrusted process any access to
+canonical-named credential paths and trusted-only binaries**, before
+`execve`. No boot flag, no root daemon, no mapping-table lookup in BPF.
+
+eBPF LSM remains the right tool when we need to **see every open across
+the system and consult shared state** (honey-mapping IDS in particular —
+the LSM program logs every `file_open` that hits a tripwire inode). The
+two compose: Landlock for per-process containment, eBPF LSM for
+host-wide observation and tripwire detection.
+
+**Implication for PLAN.md §8:** the "Hardened (v2)" tier should be named
+as **Landlock + eBPF LSM**, not eBPF LSM alone. Landlock does most of
+the enforcement work cheaply; eBPF LSM does the IDS work and the
+escape-resistant catch-all.
+
+**5. Production stack: Tetragon is the existence proof.**
+
+Tetragon (Isovalent/Cisco, CNCF Incubating) drives `BPF_PROG_TYPE_LSM`
+in production at scale on Kubernetes. Enforcement actions: override
+return value, send SIGKILL, signal-based interception. Falco has a
+similar event surface but historically focused on detection; Tetragon's
+kernel-side filtering is the relevant pattern.
+
+For Babbleon we are **not** building a competitor to Tetragon. We are
+building a much smaller, special-purpose LSM that knows one thing: "does
+this process see scrambled or real names?" Tetragon's value is that it
+proves the operational story is shippable: BTF CO-RE for cross-kernel
+portability, BPF skeleton lifecycle, policy reload without reboot.
+Borrow the operational pattern; do not pull in the runtime.
+
+**6. Overhead: low but workload-dependent; no published deny-path number.**
+
+I couldn't find a clean published microbenchmark for `file_open` deny
+latency, which is mildly surprising and a real research gap for us. The
+qualitative picture from the eBPF observability literature: per-hook
+overhead is in the low microseconds when programs are simple, the hot
+path is well-jitted, and BTF resolution is amortized. arXiv 2101.11611
+("Analyzing the Overhead of Filesystem Protection Using LSMs") measures
+classical LSMs (SELinux, AppArmor) at single-digit-percent overhead on
+representative file workloads; eBPF LSM should be at parity or better.
+
+For Babbleon: the mapping-lookup hot path needs to be a BPF hash map
+keyed on `(inode, tier)`, populated at unlock and rotated atomically.
+That keeps the deny-decision a single map lookup. Latency cost should
+be invisible for interactive shells; the question is whether it costs
+us anything noticeable on heavy build workloads (kernel make, npm
+install) where `open()` fires millions of times. **Open follow-up: build
+a microbenchmark before v2.**
+
+### Implications for the plan
+
+1. **Rename PLAN.md §8 "Hardened (v2)" → "Landlock + eBPF-LSM (v2)."**
+   Landlock for per-process untrusted-tier self-sandboxing; eBPF LSM for
+   host-wide honey-mapping tripwires and the escape-resistant `file_open`
+   /`bprm_check_security` deny path.
+2. **Honey-mapping (PLAN.md §2a-5) wants eBPF LSM.** Tripwire-inode
+   accesses fire `file_open`; a BPF map records the offending PID + comm
+   + uid; userspace daemon escalates. This is exactly the dynamic
+   instrumentation eBPF LSM was built for.
+3. **v2 kernel floor: Linux 6.4+.** Above the arm64 fix; widely
+   deployed by 2026. Document in release notes.
+4. **Ship `babbleon-enable-bpflsm` helper** that edits GRUB and prompts
+   reboot. Without the boot flag we get detection-only fallback via
+   kprobes; with the flag we get enforcement.
+5. **v1 can ship a Landlock-only enforcement tier *today*.** Landlock
+   doesn't need a boot flag and is on by default in every modern distro.
+   This is genuinely interesting: a Landlock-based untrusted-tier
+   self-sandbox is achievable in M3 without waiting for v2. **Promotion
+   candidate: move Landlock self-sandboxing from "v2" into M3.** The
+   mount namespace does the renaming; Landlock seals the untrusted
+   process against escaping back to canonical names via any path the
+   kernel knows about.
+6. **Hot-path data structure decided: BPF hash map keyed on `(inode,
+   tier)`.** Populated by userspace at unlock; swapped atomically on
+   rotation via `BPF_MAP_TYPE_HASH_OF_MAPS` or two-map flip pattern.
+7. **No Tetragon dependency.** Borrow the operational pattern (BTF
+   CO-RE, libbpf skeleton, in-tree policy reload); ship our own minimal
+   loader.
+
+### Confidence
+
+- **High:** BPF LSM hook semantics, kernel floor, distro friction,
+  Landlock as a complementary tool, Tetragon as existence proof.
+- **High:** the architectural decision to use Landlock + eBPF LSM
+  together rather than eBPF LSM alone.
+- **Medium:** the v1 promotion of Landlock self-sandboxing into M3.
+  Cheap and high-value on paper; needs a prototype against real shells
+  and package managers before commit. The well-known Landlock pitfall
+  is that early kernels lacked enough scope axes (no network, limited
+  ioctl) — 6.x fills most of these in, but we should verify our
+  required scopes (path-beneath read/exec deny, refer scope for renames)
+  are all present on the target kernel floor.
+- **Low:** the no-published-deny-latency-number gap. We need to
+  benchmark this ourselves before v2 enforcement ships.
+
+### Open follow-ups
+
+- Microbenchmark `file_open` deny latency on a 6.x kernel with a
+  realistic mapping size (10⁴–10⁵ entries) and heavy `open()` workload
+  (linux kernel build, `npm install`).
+- Confirm Landlock 6.x scope coverage matches Babbleon's enforcement
+  needs (path-beneath read/exec deny for trusted-only inodes; refer
+  scope for credential dir bind mounts).
+- Re-check Fedora/Ubuntu default-on status for `lsm=...,bpf` before
+  v2 release; track which distros remove the GRUB friction.
+- Audit Tetragon's BTF CO-RE and libbpf skeleton lifecycle for
+  patterns to borrow.
+
+### Sources
+
+- LSM BPF Programs (kernel docs) — https://docs.kernel.org/bpf/prog_lsm.html
+- `BPF_PROG_TYPE_LSM` (eBPF docs) — https://docs.ebpf.io/linux/program-type/BPF_PROG_TYPE_LSM/
+- Landlock (kernel docs) — https://docs.kernel.org/admin-guide/LSM/landlock.html
+- LWN: Landlock LSM toward unprivileged sandboxing — https://lwn.net/Articles/731478/
+- Tracee BPF LSM support requirements — https://aquasecurity.github.io/tracee/dev/docs/install/lsm-support/
+- ebpfguard prerequisites — https://github.com/deepfence/ebpfguard/blob/main/docs/gh/prerequisites.md
+- Tetragon hook points — https://tetragon.io/docs/concepts/tracing-policy/hooks/
+- Tetragon enforcement — https://tetragon.io/docs/concepts/enforcement/
+- Cilium: Migrating from Falco to Tetragon — https://cilium.io/blog/2026/01/19/tetragon-falco-migrate/
+- Hunting TOCTOU and LD_PRELOAD attacks with eBPF LSM — https://medium.com/@satyam012005/hunting-toctou-and-ld-preload-attacks-with-ebpf-lsm-ea7f4e6c3884
+- "Analyzing the Overhead of Filesystem Protection Using LSMs" (arXiv 2101.11611) — https://arxiv.org/pdf/2101.11611
 
 ---
