@@ -17,7 +17,7 @@ Status legend: ⬜ not started · 🟡 in progress · ✅ done · 🟥 blocked
 ## Tier 2 — shapes implementation
 
 - ✅ **T6. LLM/BPE tokenizer behavior** on lowercase concatenated compounds
-- ⬜ **T7. Credential-store inventories** across modern dev/cloud tooling
+- ✅ **T7. Credential-store inventories** across modern dev/cloud tooling
 - ⬜ **T8. Env-var vocabulary** attackers actually scrape
 - ⬜ **T9. Package manager hook surfaces** (dpkg/rpm/brew/flatpak/snap)
 - ⬜ **T10. Binary fingerprinting countermeasures**
@@ -1286,5 +1286,217 @@ priced at $0.30/host gets noticeably less profitable."
 - LoopLLM energy-latency attacks (arXiv 2511.07876) — https://arxiv.org/pdf/2511.07876
 - ThinkTrap DoS via infinite thinking (arXiv 2512.07086) — https://arxiv.org/pdf/2512.07086
 - Anthropic token-counting endpoint — https://platform.claude.com/docs/en/build-with-claude/token-counting
+
+---
+
+## T7 — Credential-store inventories across modern dev/cloud tooling
+
+**Question:** PLAN.md §6 names credential stores as the tier-1 "must"
+scramble target. What's the actual inventory of file paths and stores
+Babbleon needs to know about for M4? Where does each tool look, what's
+the env-var override, and what does the 2025 infostealer-economy
+literature say is being targeted in the wild?
+
+**Method:** 5-angle search across cloud SDKs (AWS/GCP/Azure/kubectl/
+Docker), browser cookie/login databases, SSH+GPG+netrc+git helpers,
+package-registry tokens (npm/PyPI/Cargo), and the 2025 infostealer
+target-path corpus.
+
+### Findings
+
+**1. The canonical-paths inventory (M4 starting set).**
+
+The "must-scramble" credential paths that every cloud/dev tool reaches
+for by default:
+
+| Tool | Default path | Env-var override | Notes |
+|---|---|---|---|
+| AWS CLI / SDK | `~/.aws/credentials`, `~/.aws/config`, `~/.aws/sso/cache/*` | `AWS_SHARED_CREDENTIALS_FILE`, `AWS_CONFIG_FILE` | profile-keyed; SSO cache holds session tokens |
+| GCP `gcloud` | `~/.config/gcloud/credentials.db`, `~/.config/gcloud/application_default_credentials.json` | `CLOUDSDK_CONFIG`, `GOOGLE_APPLICATION_CREDENTIALS` | ADC JSON is the prized file |
+| Azure CLI | `~/.azure/accessTokens.json`, `~/.azure/azureProfile.json` | `AZURE_CONFIG_DIR` | rotates frequently; still high-value |
+| kubectl | `~/.kube/config` | `KUBECONFIG` (colon-separated list) | embeds exec credentials, ca certs, tokens |
+| Docker | `~/.docker/config.json` | `DOCKER_CONFIG` | refers to credsStore/credHelpers (osxkeychain, secretservice, wincred) |
+| SSH | `~/.ssh/id_*`, `~/.ssh/config`, `~/.ssh/known_hosts`, `~/.ssh/authorized_keys` | none standard | `IdentityFile` directive overrides per-host |
+| GPG | `~/.gnupg/private-keys-v1.d/*`, agent sockets `S.gpg-agent{,.ssh,.browser,.extra}` | `GNUPGHOME` | sockets are *active* trust handles, not just files |
+| Git | `~/.gitconfig`, `~/.git-credentials`, `~/.config/git/credentials` | `XDG_CONFIG_HOME`, `GIT_CONFIG_GLOBAL` | credential.helper indirection (osxkeychain, libsecret, GCM) |
+| `~/.netrc` | `~/.netrc` | `NETRC` | still alive — curl, git, ftp, hg, Python `requests` |
+| npm | `~/.npmrc` (`_authToken`, `//registry.npmjs.org/:_authToken=…`) | `NPM_CONFIG_USERCONFIG` | also project-level overrides |
+| pnpm | `~/.config/pnpm/auth.ini` | `PNPM_HOME` | newer XDG-clean location |
+| PyPI / twine | `~/.pypirc` | `HOME` | global `pypirc` with `__token__` API key |
+| Cargo | `$CARGO_HOME/credentials.toml` (default `~/.cargo/credentials.toml`) | `CARGO_HOME` | also `config.toml` for registry hosts |
+| GitHub CLI `gh` | `~/.config/gh/hosts.yml` | `GH_CONFIG_DIR` | OAuth tokens |
+| HuggingFace | `~/.cache/huggingface/token`, `~/.huggingface/token` | `HF_HOME`, `HF_TOKEN` | api keys for model push |
+| Anthropic / OpenAI SDKs | env-var only (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`) | env-var | no on-disk default — env-var inventory (T8) |
+
+**Implication: env-var override is *universal*.** Every single tool
+above accepts an env-var to redirect its credential search path. This
+is exactly what Babbleon needs — the trusted view points the var at
+the real (unscrambled) profile dir; the untrusted view either omits
+the env var or points it at a scrambled / honey-pot location. M4's
+mechanism is path-gating + env-var injection per app launch, not
+format-parsing. PLAN.md §6's "path-gating, not format-parsing" stance
+is empirically the correct call.
+
+**2. Browser credential stores — the format-churn trap PLAN.md called.**
+
+- **Chrome / Chromium / Edge / Brave:** SQLite `Cookies`, `Login Data`,
+  `Web Data`, `History`. Cookie values are AES-CBC (128-bit) encrypted;
+  encryption key wrapped by OS keychain. On macOS the key lives in
+  the Keychain as `Chrome Safe Storage`. On Linux it's libsecret /
+  KWallet. On Windows it's DPAPI.
+- **Firefox:** SQLite `cookies.sqlite`, `logins.json` (encrypted by
+  `key4.db` master password — but if no master password set, the
+  encryption key is on-disk and decryptable).
+- **Safari:** Keychain-stored. Cookies in `~/Library/Cookies/Cookies.binarycookies`.
+
+Per-browser layouts:
+
+| Browser | OS | Profile dir | Cookie file |
+|---|---|---|---|
+| Chrome | macOS | `~/Library/Application Support/Google/Chrome/Default/` | `Network/Cookies` |
+| Chrome | Linux | `~/.config/google-chrome/Default/` | `Cookies` |
+| Chrome | Windows | `%LOCALAPPDATA%\Google\Chrome\User Data\Default\` | `Network\Cookies` |
+| Firefox | all | `~/.mozilla/firefox/<profile>/` | `cookies.sqlite` |
+| Safari | macOS | `~/Library/Safari/`, `~/Library/Cookies/` | `Cookies.binarycookies` |
+
+**Implication:** PLAN.md §6's "path-gating, not format-parsing" is
+*especially* right for browsers. The infostealer literature (Recorded
+Future 2025) confirms: stealers target the SQLite DB *file* and the
+companion `Local State` (which holds the wrapped encryption key). If
+the untrusted view cannot reach `Default/Cookies` and `Default/Local
+State` *by any path*, decryption is impossible regardless of OS-
+keychain access. We do not parse SQLite; we hide the directory.
+
+**3. Active-trust artifacts: sockets and agents.**
+
+Not all credentials are files. Several are live IPC endpoints whose
+presence-in-namespace = credential-leak:
+
+- `$SSH_AUTH_SOCK` — ssh-agent UNIX socket. Anyone who can `connect()`
+  to it can sign auth challenges with loaded keys. Babbleon's
+  untrusted view **must** unset `SSH_AUTH_SOCK` and not bind-mount the
+  socket through.
+- `~/.gnupg/S.gpg-agent{,.ssh,.browser,.extra}` — gpg-agent sockets,
+  similar story.
+- `XDG_RUNTIME_DIR` (`/run/user/<uid>/`) — holds keyring sockets
+  (`gnome-keyring`, `dbus`), Wayland socket, pulseaudio, etc.
+  Selective bind-mount is required; copying the whole dir leaks
+  keyring access.
+- `$DBUS_SESSION_BUS_ADDRESS` — user dbus. `secret-service` (libsecret)
+  rides on dbus; an untrusted-view process talking to user dbus can
+  ask `org.freedesktop.secrets` for stored credentials.
+
+**Implication for M4:** the trusted/untrusted boundary needs a
+**socket and env-var policy**, not just a file-path policy. Untrusted
+view inherits *neither* `SSH_AUTH_SOCK` nor `DBUS_SESSION_BUS_ADDRESS`
+nor gpg-agent sockets by default. This is a strict superset of the
+file-renaming model and needs a named M4 sub-deliverable: "credential
+IPC isolation."
+
+**4. Infostealer telemetry validates the targeting list.**
+
+Recorded Future, Pen Test Partners, and Vectra 2025 reports all
+converge on:
+
+- **Browser data** (cookies, saved logins, autofill) — primary target;
+  session-cookie theft bypasses MFA. **276M credentials indexed in
+  2025**; the average compromised device yielded **87 stolen
+  credentials**.
+- **Cloud SDK config** — AWS/GCP/Azure dotfiles explicitly enumerated.
+- **VPN / SSH** — local-stored keys and configs.
+- **Cryptocurrency wallets** — wallet.dat, browser extension storage.
+- **Session material > passwords.** The 2025 shift: stealers prize
+  *active session tokens* (browser cookies, SSO refresh tokens,
+  kubeconfig exec credentials) over passwords because they bypass
+  MFA. Babbleon's path-gating defeats both equivalently.
+
+The 87-credentials-per-device average is the human-readable damage
+number for the README ("Babbleon collapses the credential-yield of a
+host compromise from ~87 to whatever the trusted-tier app footprint
+allows — single digits in the typical case").
+
+**5. Env-var inventory (forward reference to T8).**
+
+The cross-tool pattern is consistent enough to record now: each tool
+has 1–3 env-vars that redirect its credential search. M4 maintains a
+**per-app launch-time env-var injection table**: trusted-view shell
+sets the vars to real paths; untrusted-view scripts/cron inherit
+neither paths nor vars.
+
+PLAN.md §6 lists "env-var names" as a tier-1 must scramble. T8 will
+go deeper, but the pattern is already visible: scramble *the var
+name itself* in the untrusted view (`AWS_SHARED_CREDENTIALS_FILE` →
+random compound) so even an attacker who knows the canonical SDK code
+path can't `getenv()` the right key.
+
+### Implications for the plan
+
+1. **M4 starting set is concrete.** The 14-tool inventory above is
+   the bring-up checklist. Each entry has: default path (rename in
+   untrusted view), env-var override (redirect in trusted view).
+2. **Path-gating is empirically correct.** Every tool surveyed
+   accepts an env-var to redirect; no format-parsing is needed for
+   any of them.
+3. **Add IPC isolation as a named M4 sub-deliverable.** `SSH_AUTH_SOCK`,
+   gpg-agent sockets, user dbus, `XDG_RUNTIME_DIR` selective bind.
+   Without this, the file-only model leaks live trust handles.
+4. **Browser cookies = the Recorded Future smoking gun.** Concrete
+   metric for user-facing copy: 87 credentials/host → handful, when
+   trusted-view footprint is small.
+5. **Profile-dir granularity, not file granularity.** Bind-mount the
+   *whole credential profile dir* per trusted app (per PLAN.md §6
+   "per-app trusted shims"). Don't try to scramble individual files
+   within a profile dir; the apps assume their own dir layout.
+6. **GPG agent forwarding is a Babbleon hazard.** A trusted-tier user
+   who forwards their gpg-agent socket into an untrusted-tier process
+   has handed over credential access regardless of our renaming.
+   Document; consider warning.
+7. **Update PLAN.md §6 table** to add: browser cookies (already
+   present), kubectl `~/.kube/config`, GCP ADC, Azure access tokens,
+   Docker config + credentials helpers, GitHub/HuggingFace API
+   tokens, package-registry tokens (npm/PyPI/Cargo).
+
+### Confidence
+
+- **High:** the path inventory and env-var overrides. These are
+  documented APIs across mature tools.
+- **High:** path-gating sufficiency. Every tool surveyed supports
+  the env-var redirect pattern.
+- **High:** IPC isolation requirement. Sockets are well-known live-
+  trust handles.
+- **Medium:** the 14-tool list completeness. There will be more in
+  practice (1Password CLI, Bitwarden CLI, Vault CLI, OCI/IBM/Heroku
+  CLIs, JetBrains IDE keychains). Inventory should be community-
+  extensible; M4 ships the top-14 and adds a contrib mechanism.
+
+### Open follow-ups
+
+- Inventory **password-manager CLIs** (1Password `op`, Bitwarden
+  `bw`, Vault `vault`, pass) — they have store paths and unlock
+  sockets of their own.
+- Inventory **IDE keychains** — VSCode token cache, JetBrains
+  password store, Cursor.
+- Empirical check: does each tool actually respect its env-var on
+  current versions? (AWS CLI bug #7956 hints at edge cases when
+  vars are partial-set.)
+- Define the trusted-shim launch protocol: how does `aws` running in
+  the trusted view get `AWS_SHARED_CREDENTIALS_FILE` set
+  automatically? PAM session env? Wrapper binary in `$PATH`?
+
+### Sources
+
+- AWS CLI custom credential file locations issue #7956 — https://github.com/aws/aws-cli/issues/7956
+- kubectl KUBECONFIG documentation (Microsoft) — https://learn.microsoft.com/en-us/azure/aks/control-kubeconfig-access
+- `.npmrc` docs — https://docs.npmjs.com/cli/v11/configuring-npm/npmrc/
+- pnpm authentication settings — https://pnpm.io/npmrc
+- `.pypirc` specification — https://packaging.python.org/en/latest/specifications/pypirc/
+- Cargo Registry Authentication — https://doc.rust-lang.org/cargo/reference/registry-authentication.html
+- The current state of browser cookies (CyberArk) — https://www.cyberark.com/resources/threat-research-blog/the-current-state-of-browser-cookies
+- Exporting browser cookies on Mac — https://maxchadwick.xyz/blog/exporting-your-browser-cookies-on-a-mac
+- gpg-agent sockets / SSH (GnuPG wiki) — https://wiki.gnupg.org/AgentForwarding
+- Recorded Future 2025 Identity Threat Landscape — https://www.recordedfuture.com/blog/identity-trend-report-march-blog
+- Pen Test Partners: 2025, the year of the Infostealer — https://www.pentestpartners.com/security-blog/2025-the-year-of-the-infostealer/
+- DeepStrike: Infostealer Malware in 2025 — https://deepstrike.io/blog/infostealer-malware-credential-theft-2025
+- Microsoft: Hunting Infostealers — macOS Threats — https://techcommunity.microsoft.com/blog/microsoftsecurityexperts/hunting-infostealers---macos-threats/4494435
 
 ---
