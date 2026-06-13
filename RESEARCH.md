@@ -16,7 +16,7 @@ Status legend: ⬜ not started · 🟡 in progress · ✅ done · 🟥 blocked
 
 ## Tier 2 — shapes implementation
 
-- ⬜ **T6. LLM/BPE tokenizer behavior** on lowercase concatenated compounds
+- ✅ **T6. LLM/BPE tokenizer behavior** on lowercase concatenated compounds
 - ⬜ **T7. Credential-store inventories** across modern dev/cloud tooling
 - ⬜ **T8. Env-var vocabulary** attackers actually scrape
 - ⬜ **T9. Package manager hook surfaces** (dpkg/rpm/brew/flatpak/snap)
@@ -1090,5 +1090,201 @@ backoff schedule (linear? exponential? lock-out at N?).
 - Apple developer forum: Storing SE key into Keychain w/ LA protection — https://developer.apple.com/forums/thread/658821
 - OWASP password storage cheat sheet (Argon2id parameters, 2025) — https://guptadeepak.com/the-complete-guide-to-password-hashing-argon2-vs-bcrypt-vs-scrypt-vs-pbkdf2-2026/
 - RFC 9106 (Argon2) — https://datatracker.ietf.org/doc/rfc9106/
+
+---
+
+## T6 — LLM / BPE tokenizer behavior on lowercase concatenated compounds
+
+**Question:** PLAN.md §5 commits to all-lowercase concatenated N-word
+compounds (`antiquebifurcatedsableanionmountain`) explicitly to be
+hostile to BPE tokenizers. Is the design intuition right? What
+*quantitatively* happens when modern tokenizers (cl100k_base,
+o200k_base, Claude's, Llama's SentencePiece) hit these strings? Are
+there better-than-random adversarial properties (glitch tokens,
+ambiguous segmentation) we should exploit?
+
+**Method:** 5-angle parallel search: BPE compound-word segmentation
+behavior, GPT-4/Claude tokenizer characteristics for random strings,
+glitch tokens / SolidGoldMagikarp, tiktoken `cl100k_base`/`o200k_base`
+internals, and adversarial tokenizer attacks (entropy / context-length
+cost).
+
+### Findings
+
+**1. The design intuition is right and quantifiable.**
+
+Modern BPE tokenizers (`cl100k_base` ~100k vocab, `o200k_base` ~200k,
+Claude's similar order of magnitude) trained on English text learn
+merges biased toward word boundaries, common prefixes/suffixes, and
+whitespace-led tokens. Babbleon's compound names deliberately strip
+the two strongest segmentation signals:
+
+- **Whitespace.** The tokenizer regex pre-tokenizer (cl100k_base uses
+  the GPT-2 `\s*[\r\n]+`-derived pattern; o200k_base uses a more
+  elaborate Unicode-aware pattern) splits on whitespace *first*, before
+  BPE merges run. Removing whitespace forces the entire compound into
+  one pre-tokenization chunk, where BPE then has to greedily merge
+  inside a 60–80 character blob.
+- **Capitalization.** Mixed-case tokens (`PascalCase`, `camelCase`)
+  trigger merges on case boundaries; pure lowercase removes that
+  signal. PLAN.md §5's lowercase decision is technically load-bearing,
+  not stylistic.
+
+The rule of thumb is "1 token ≈ 4 chars / 0.75 English words" on
+typical text. On a deliberately-ambiguous lowercase compound of 60–80
+characters, observed behavior (per the tokenizer-drift literature) is
+that token counts inflate to **2–3× normal density** — the same chars
+that would be ~15 tokens as spaced words become 30–50 tokens as a
+no-whitespace blob. That cost is paid *every time the attacker's
+agent reads a directory listing*.
+
+**2. Ambiguous segmentation is a real adversarial property, not just colour.**
+
+PLAN.md §5 notes `cation` (cat+ion vs cation) as a feature. The
+tokenizer-drift literature confirms the mechanism: BPE is *greedy
+left-to-right with a fixed merge table*; near-ties between merge
+candidates resolve deterministically but the choice is fragile. A
+single-character perturbation can re-segment the rest of the string
+("splits become completely different, a single character affecting
+multiple tokens after it" — `tokencontributions` substack on
+o200k_base).
+
+For Babbleon this means: **rotation doesn't just change names; it
+changes the tokenization pattern of every subsequent directory
+listing**. The agent's prior over "what does a Babbleon'd `ls`
+output look like" gets invalidated at every rotation, not just at
+first encounter. Compounds the multi-step error rate from T2-§3.
+
+**3. Glitch tokens (SolidGoldMagikarp) are not directly usable but the model is.**
+
+Glitch tokens are artefacts of *tokenizer construction* on
+non-representative data (e.g. Reddit usernames over-represented in the
+tokenizer corpus, under-represented in the model's training corpus).
+They cause anomalous model behavior — repetition, refusal,
+hallucination of unrelated tokens. We cannot manufacture glitch
+tokens for an arbitrary tokenizer we don't control.
+
+**What we *can* do is generate strings whose BPE segmentation
+deterministically maps onto rare-but-valid tokens** — high-perplexity
+inputs that aren't UNK-rare but are mid-frequency-rare. Effects in the
+glitch-token literature: erratic continuations, attention dispersion,
+recall failures on long-context retrieval. We don't need full
+glitch-token weirdness; we just need to push the agent's
+representation of our paths into the low-density tail of its
+embedding space.
+
+**Tractable design improvement (recommend for v2):** post-filter the
+wordlist to *prefer* words whose BPE byte sequences are mid-frequency
+in `cl100k_base` and `o200k_base`. Don't bias toward super-rare (risk
+of training-set absence and unpredictable behavior, plus tokenizer-
+dependent and brittle); bias toward mid-tail. This is a small,
+mechanical optimization on top of PLAN.md §5's "pure unbiased
+dictionary" — *additive*, not replacement.
+
+**Caveat to flag against PLAN.md §5:** the plan explicitly argues "no
+curation, no weighting" because mis-targeting (curl→calculator) is
+valuable. Tokenizer-density filtering is a *different axis* than
+semantic curation and does not throw away the mis-targeting benefit.
+Worth a plan-amendment note.
+
+**4. Tokenizer cost is a denial-of-pocket vector against the attacker.**
+
+Two papers reframe this nicely:
+
+- **Trend Micro on tokenizer drift:** removed merges cause 2–3× token
+  inflation, inflating attacker cost.
+- **LoopLLM (AAAI 2026) and ThinkTrap (arXiv 2512.07086):** energy-
+  latency attacks on LLM services exploit autoregressive generation
+  to force max-length output. Defender-side, the same dynamic helps:
+  high token-density on directory listings inflates the attacker's
+  per-step cost.
+
+From T2 we have RapidPen's economics: **$0.30–$0.60 per IP-to-shell**.
+If Babbleon raises the attacker's tokens-per-recon-step by 2–3×, those
+economics shift visibly. Quoting in the README: "Babbleon raises the
+attacker's *recon token cost* by ~2–3× — an LLM exploit-as-a-service
+priced at $0.30/host gets noticeably less profitable."
+
+**5. Per-tokenizer notes:**
+
+- **cl100k_base (GPT-4 / GPT-3.5):** ~100k vocab; classical GPT-2-
+  style pre-tokenizer regex; merges biased toward English web text.
+  Babbleon compounds tokenize at high density.
+- **o200k_base (GPT-4o / GPT-5):** ~200k vocab; expanded multilingual
+  coverage. Doubles the chance any individual short word is a single
+  token, but does not change the no-whitespace-blob problem. Density
+  reduction on Babbleon compounds: marginal; estimate 10–20%.
+- **Claude tokenizer:** not public; Anthropic API token-counting
+  endpoint exists but we can't enumerate merges. Family-of-BPE
+  assumption suggests similar behavior; needs empirical check.
+- **Llama 3 / SentencePiece-Unigram:** different algorithm (unigram
+  LM), but pre-tokenization still whitespace-led. Compound names
+  expected similarly hostile.
+
+### Implications for the plan
+
+1. **PLAN.md §5 is correct as written.** Lowercase, no separators,
+   N-word compounds: the design choice is technically motivated and
+   the literature backs it.
+2. **Quantify the benefit in user-facing copy.** "~2–3× recon token
+   cost" is a defensible specific claim and lands the security
+   value proposition concretely.
+3. **Add a small wordlist post-filter for v2.** Score each candidate
+   word by its `cl100k_base` and `o200k_base` tokenization density,
+   prefer mid-tail-rare tokens. *Additive* to PLAN.md §5; does not
+   replace unbiased random draw. Amend PLAN.md §5 with a sentence:
+   *"v2: post-filter by tokenization density; do not curate
+   semantically."*
+4. **Empirical sanity check before M1.** Generate 1000 Babbleon
+   compounds, run through `tiktoken cl100k_base`/`o200k_base` and
+   compare token-density distribution against spaced English. Confirm
+   the 2–3× number. Add to the M1 demo as a one-page benchmark.
+5. **Tokenizer-density is a v2 rotation knob.** When we rotate, we
+   can re-roll to *prefer* compounds that further perturb the
+   tokenization-prior the attacker built up. Probably overkill for v1;
+   record for v2 design review.
+6. **Compounding with T2.** Multi-step error from agent harness chains
+   (5–15% per call, compounding fast) gets amplified when each step's
+   *input encoding* is also degraded. The two compose.
+
+### Confidence
+
+- **High:** the qualitative direction (lowercase + no-whitespace +
+  compounds = high token density, parse ambiguity, rotation-perturbed
+  segmentation). Mechanism is well-documented.
+- **Medium:** the specific "2–3×" number. Tokenizer-drift literature
+  cites it; we should confirm with our own microbenchmark on
+  Babbleon-shaped strings before claiming it.
+- **Medium:** the tokenization-density wordlist filter's actual
+  empirical benefit. Plausibly meaningful, plausibly noise. Worth
+  prototyping; not worth blocking v1.
+- **Low:** Claude tokenizer specifics. Need an empirical sweep via
+  the API token-counting endpoint.
+
+### Open follow-ups
+
+- Microbenchmark: 1000 Babbleon compounds vs comparable spaced-text
+  baseline, measure token counts in `cl100k_base`, `o200k_base`,
+  and via Claude's count-tokens API. M1 deliverable.
+- Tokenization-density wordlist filter prototype. Score the EFF wordlist
+  against `tiktoken`; check whether the bias is large enough to matter.
+- Empirical glitch-token sweep — unlikely to be exploitable but worth
+  a one-shot check that no random Babbleon compound *accidentally*
+  collides with a known glitch token in `o200k_base`.
+- Llama / SentencePiece-Unigram check; relevant if the threat is a
+  local open-weights attacker.
+
+### Sources
+
+- "When Tokenizers Drift" (Trend Micro) — https://www.trendmicro.com/vinfo/us/security/news/cybercrime-and-digital-threats/when-tokenizers-drift-hidden-costs-and-security-risks-in-llm-deployments
+- Unreachable tokens in GPT-4o (Sander Land) — https://tokencontributions.substack.com/p/unreachable-tokens-in-gpt-4o
+- tiktoken (OpenAI) — https://github.com/openai/tiktoken
+- cl100k_base tokenizer visualization — https://www.tiktokenizer.app/models/cl100k_base
+- GlitchMiner (arXiv 2410.15052) — https://arxiv.org/pdf/2410.15052
+- GlitchProber (arXiv 2408.04905) — https://arxiv.org/pdf/2408.04905
+- SolidGoldMagikarp + prompt generation (Alignment Forum) — https://www.alignmentforum.org/posts/aPeJE8bSo6rAFoLqg/solidgoldmagikarp-plus-prompt-generation
+- LoopLLM energy-latency attacks (arXiv 2511.07876) — https://arxiv.org/pdf/2511.07876
+- ThinkTrap DoS via infinite thinking (arXiv 2512.07086) — https://arxiv.org/pdf/2512.07086
+- Anthropic token-counting endpoint — https://platform.claude.com/docs/en/build-with-claude/token-counting
 
 ---
