@@ -20,7 +20,7 @@ Status legend: ⬜ not started · 🟡 in progress · ✅ done · 🟥 blocked
 - ✅ **T7. Credential-store inventories** across modern dev/cloud tooling
 - ✅ **T8. Env-var vocabulary** attackers actually scrape
 - ✅ **T9. Package manager hook surfaces** (dpkg/rpm/brew/flatpak/snap)
-- ⬜ **T10. Binary fingerprinting countermeasures**
+- ✅ **T10. Binary fingerprinting countermeasures**
 - ⬜ **T11. `/proc` and PID-namespace gotchas**
 
 ## Tier 3 — confirm assumptions
@@ -1949,5 +1949,226 @@ an admin key. Forms the audit log automatically.
 - Flatpak sandbox wiki — https://github.com/flatpak/flatpak/wiki/Sandbox
 - Flatpak command reference — https://docs.flatpak.org/en/latest/flatpak-command-reference.html
 - util-linux mount(8) TOCTOU advisory — https://github.com/util-linux/util-linux/security/advisories/GHSA-qq4x-vfq4-9h9g
+
+---
+
+## T10 — Binary fingerprinting countermeasures
+
+**Question:** PLAN.md §2a-1 promotes binary-identity obfuscation
+(`--help`, `strings`, `ldd`, magic bytes) from "nice-to-have" to
+"M3-critical." T2 confirms this via the ObserverWard/Wappalyzer
+finding: agentic harnesses index *output signatures*, not just names.
+What's the actual menu of fingerprinting techniques an attacker uses
+on a host binary? Which are tractable to disrupt? What's the
+cost/benefit of each countermeasure?
+
+**Method:** 5-angle search across ELF symbol stripping, web fingerprint
+tools (WhatWeb/Nikto/Wappalyzer), YARA rules + obfuscation detection,
+ldd security and binary-code fingerprinting taxonomies, ObserverWard
+specifically.
+
+### Findings
+
+**1. The fingerprinting taxonomy is well-mapped.**
+
+ACM Computing Surveys ("A Survey of Binary Code Fingerprinting
+Approaches," Alrabaee et al. 2022) gives the canonical taxonomy. For
+Babbleon, the attacker-relevant categories on an in-tree binary are:
+
+| Category | Mechanism | Babbleon attack surface |
+|---|---|---|
+| **Name + path** | `which curl`, `/usr/bin/curl` exists | scrambled by mount-NS (T3) |
+| **Help text** | `binary --help` / `-h` / `--version` | banner-spoof candidate |
+| **String table** | `strings binary \| head` | `strip` removes some; embedded const strings remain |
+| **Symbol table** | `nm binary`, `readelf -s` | `strip --strip-all` removes |
+| **Dynamic deps** | `ldd binary`, `readelf -d` | hard — depends on linked libs |
+| **Magic bytes / file type** | `file binary` | ELF header always identifies as ELF |
+| **Section structure** | `readelf -S`, custom sections | mostly stable; can re-section |
+| **Hash / VirusTotal** | `sha256sum binary` | per-host random padding bytes |
+| **Behavioral / output signature** | `binary --version` parsed output | banner-spoof |
+| **YARA-rule matches** | string + byte-pattern rules | adversarial wrt strip + content patching |
+
+**2. Stripping helps but the strings survive.**
+
+`strip --strip-all` removes the symbol table; combined with
+`-fvisibility=hidden` and `-s` at link time you can produce a binary
+with no debug info, no symbol table, no `.comment` section.
+
+But — per Tavis Ormandy ("Unstripping Stripped Binaries"), and the
+Cerbero blog — **the data section's constant strings always survive
+stripping** because the program needs them at runtime. `curl --help`
+embeds the help text as a constant string in `.rodata`; you cannot
+strip it without breaking curl.
+
+This is the load-bearing technical truth for Babbleon: stripping is
+*necessary but insufficient*. We also need to **rewrite or gate the
+data section** at runtime, or **wrap binaries with thin loaders**
+that intercept the canonical output paths.
+
+**3. Three viable countermeasure architectures.**
+
+**a) Strip + content-patch.** Build (or post-build patch) replacement
+binaries with `.rodata` strings replaced. Pros: zero-runtime-cost
+fingerprint distortion. Cons: enormous engineering surface (every
+binary individually patched, breaks on package updates), brittle to
+the package-manager hook flow. **Verdict:** rejected for v1.
+
+**b) Banner-spoofing loader wrapper.** Replace `/usr/bin/curl` (in
+untrusted view) with a thin wrapper. Wrapper:
+- For trust-tier-gated invocations (`--help`, `--version`, identifiable
+  fingerprint probes), returns plausible-wrong or scrambled output.
+- For real invocations, `execve`s the real curl from the trusted-only
+  path.
+- Inspects environment + parent process trust tier to decide.
+
+Pros: minimal per-binary engineering — one generic wrapper, parameterized
+by binary. Cons: an attacker who `cat`s the binary or runs it through
+`ldd`/`strings` sees the *wrapper's* fingerprint, not curl's. That's
+fine — the wrapper's fingerprint is also a scrambled-looking blob.
+Real curl is reachable only from trusted tier and lives at a scrambled
+path. **Verdict: v1 baseline.**
+
+**c) Deception: plausible-wrong banners.** Instead of "command not
+found" or random garbage, the wrapper returns *another tool's* help
+text. `--help` on `<scrambled-curl>` returns nano's help text;
+`<scrambled-ssh>` returns calculator output. Forces the agent to
+*believe* it found a different tool and act on that belief, wasting
+the recon budget and triggering high-IDS-signal misbehavior.
+
+Pros: actively hostile, not just obstructive. Compounds the
+mis-targeting benefit PLAN.md §5 already named for binary *names*
+(curl→calculator). Cons: requires a wordlist-style "plausible-wrong
+banner library." Worthwhile because the wrapper code is the same;
+only the response table changes.
+**Verdict: v1 stretch, v2 default.**
+
+**4. Banner-spoofing has the threat-model coverage we need.**
+
+From T2: ObserverWard, Wappalyzer, WhatWeb all work on **response
+patterns** — HTTP headers, banner text, version strings. WhatWeb has
+**1800+ plugins**, each a regex over response output. Babbleon's
+wrapper only needs to ensure that the response *patterns* an
+attacker-side fingerprint database has indexed do not match what
+Babbleon binaries return when probed by untrusted-tier processes.
+
+This is empirically tractable: the patterns are public (Wappalyzer is
+MIT-licensed; WhatWeb plugins on GitHub). We can **adversarially test**
+our banner-spoofing against the public fingerprint corpora before
+shipping — closing the loop empirically rather than hoping.
+
+**5. `ldd` is a security disaster on the offense side, which works for us.**
+
+`ldd` *executes the binary* with `LD_TRACE_LOADED_OBJECTS=1` to extract
+dependencies. **Running ldd on an untrusted binary executes arbitrary
+code in the binary's ELF interpreter** (Julio Merino's writeup is the
+canonical reference; the Linux man page warns explicitly).
+
+Defensive implications:
+
+- An attacker `ldd`-ing one of our wrapped binaries triggers the
+  wrapper's code path → another chance for the wrapper to spoof the
+  reported deps, or even to fire a honey-mapping IDS signal ("untrusted
+  process invoked `ldd` on a scrambled binary").
+- Conversely, the *legitimate* uses of `ldd` in Babbleon's
+  maintenance namespace must use `objdump -p` / `readelf -d` instead
+  (safe, no execution).
+
+**6. YARA-rule adversarial cost is favorable to us.**
+
+YARA rules match string and byte patterns. With control over the
+binary content (we ship the wrapper), we can make the wrapper match
+*no useful rule* — pick patterns deliberately not present in
+mainstream YARA-rule databases. We can also fire **honey-YARA-
+collisions**: make the wrapper match a known benign rule (e.g.,
+`Detect_BusyBox`) so the attacker's classifier confidently
+mis-identifies it.
+
+The cost asymmetry is real: writing one robust YARA rule takes hours;
+generating a binary that evades or mis-classifies takes a generator
+script we write once. The literature ("Assessing the Effectiveness of
+YARA Rules," arXiv 2111.13910) acknowledges YARA's brittleness
+against deliberately-engineered evasion.
+
+**7. What does *not* work: pretending it isn't ELF.**
+
+Magic-byte spoofing (e.g., trying to make the binary look like a
+shell script) requires kernel support and breaks `execve`. Don't try.
+The attacker can always determine "this is an ELF" from `file binary`;
+we accept that and concentrate the deception on *which* ELF.
+
+### Implications for the plan
+
+1. **M3-critical deliverable: the banner-spoofing wrapper.** Generic
+   thin loader; per-binary wrapped via a build script that takes
+   `real_path` + `name_for_strings` + `banner_table`. Strips heavily,
+   no `.comment`, no debug info.
+2. **The wrapper is the binary-identity-obfuscation primitive PLAN.md
+   §2a-1 named.** Update PLAN.md §10 "Fingerprint obfuscation" row from
+   "hard and ongoing" → "banner-spoofing wrapper; M3 ships baseline
+   stripped+null-output, M3.5 adds plausible-wrong banner deception."
+3. **Adversarial test against public fingerprint corpora.** Before M3
+   release: run our wrapped binaries against Wappalyzer, WhatWeb's
+   plugins, ObserverWard. Hit count → 0 is the bar.
+4. **Deception banner library is a community-extensible asset.**
+   Like the wordlist (T13): seed with a couple hundred plausible
+   `--help` outputs scraped from real tools (license clean); accept
+   community contributions.
+5. **`ldd` invocations on untrusted-tier binaries are an IDS
+   tripwire.** They're *both* fingerprinting attempts *and*
+   arbitrary-code-execution chances we can detect via the wrapper
+   itself. Wire to the honey-mapping IDS hook (T4 §3).
+6. **Hash-based identification has a low-cost defeat.** Append per-host
+   random padding bytes (in a no-op padding section) so two Babbleon
+   hosts never share a binary hash. Defeats VirusTotal-style
+   identification of our wrappers across hosts. ~16 bytes is enough.
+7. **The wrapper must be tier-aware.** Reads its caller's
+   `/proc/self/status` or equivalent to determine trust tier; behaves
+   differently. The mechanism: untrusted tier sees the wrapper at the
+   scrambled path; the wrapper itself is the same binary; behavior
+   diverges on detected caller context.
+
+### Confidence
+
+- **High:** the fingerprinting taxonomy and the inadequacy of `strip`
+  alone (constant strings survive).
+- **High:** banner-spoofing wrapper is the right v1 architecture.
+- **High:** WhatWeb / Wappalyzer / ObserverWard are tractable to
+  adversarially test against; they're rule-driven and open.
+- **High:** `ldd`-as-execution is a documented Linux behavior, real
+  attack surface, real IDS opportunity.
+- **Medium:** deception banner library quality. The idea is right; the
+  curation effort is real and grows with the wrapped-binary set.
+- **Medium:** caller-tier detection from inside the wrapper. The
+  mount-namespace path the wrapper was reached through is the
+  signal; encoding that reliably needs careful design.
+
+### Open follow-ups
+
+- Prototype generic wrapper: `babbleon-wrap <real-bin> <name> <banner-
+  table>` → emits stripped null-output binary. Verify against
+  WhatWeb/Wappalyzer/ObserverWard corpora.
+- Curate v1 banner-spoof table (50 most-fingerprinted dev/recon tools:
+  curl, wget, ssh, nmap, nc, python, bash, git, gcc, …). Each gets a
+  plausible-wrong response per `--help`/`--version`.
+- Decide caller-tier detection mechanism for the wrapper (probe
+  `/proc/self/mountinfo`? read a known-named env var injected by the
+  trusted-shim launcher? rely purely on which namespace executed
+  us?).
+- Per-host random padding bytes design: which ELF section? How is the
+  per-host value derived (from the vault) and applied at install time?
+
+### Sources
+
+- "Unstripping Stripped Binaries" (Tavis Ormandy) — https://lock.cmpxchg8b.com/symbols.html
+- Stripping symbols from an ELF (Cerbero Blog) — https://blog.cerbero.io/stripping-symbols-from-an-elf/
+- strip (GNU Binutils) — https://sourceware.org/binutils/docs/binutils/strip.html
+- "A Survey of Binary Code Fingerprinting Approaches" (ACM CSUR 2022) — https://dl.acm.org/doi/10.1145/3486860
+- ldd(1) — Julio Merino: "ldd and untrusted binaries" — https://jmmv.dev/2023/07/ldd-untrusted-binaries.html
+- ldd(1) Linux man page — https://linux.die.net/man/1/ldd
+- WhatWeb / Wappalyzer recon overview — https://hackertarget.com/whatweb-scan/
+- OWASP: Fingerprint Web Application Framework — https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/01-Information_Gathering/08-Fingerprint_Web_Application_Framework
+- ObserverWard repo — https://github.com/HLY-TW/ObserverWard
+- "Assessing the Effectiveness of YARA Rules" (arXiv 2111.13910) — https://arxiv.org/pdf/2111.13910
+- awesome-yara (InQuest curated YARA rule list) — https://github.com/inquest/awesome-yara
 
 ---
