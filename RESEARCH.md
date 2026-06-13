@@ -18,7 +18,7 @@ Status legend: ⬜ not started · 🟡 in progress · ✅ done · 🟥 blocked
 
 - ✅ **T6. LLM/BPE tokenizer behavior** on lowercase concatenated compounds
 - ✅ **T7. Credential-store inventories** across modern dev/cloud tooling
-- ⬜ **T8. Env-var vocabulary** attackers actually scrape
+- ✅ **T8. Env-var vocabulary** attackers actually scrape
 - ⬜ **T9. Package manager hook surfaces** (dpkg/rpm/brew/flatpak/snap)
 - ⬜ **T10. Binary fingerprinting countermeasures**
 - ⬜ **T11. `/proc` and PID-namespace gotchas**
@@ -1498,5 +1498,222 @@ path can't `getenv()` the right key.
 - Pen Test Partners: 2025, the year of the Infostealer — https://www.pentestpartners.com/security-blog/2025-the-year-of-the-infostealer/
 - DeepStrike: Infostealer Malware in 2025 — https://deepstrike.io/blog/infostealer-malware-credential-theft-2025
 - Microsoft: Hunting Infostealers — macOS Threats — https://techcommunity.microsoft.com/blog/microsoftsecurityexperts/hunting-infostealers---macos-threats/4494435
+
+---
+
+## T8 — Environment-variable vocabulary attackers scrape
+
+**Question:** PLAN.md §6 names env-var **names** (`AWS_*`,
+`GITHUB_TOKEN`, `*_API_KEY`, `*_SECRET`) as tier-1 must-scramble. What
+does the attacker actually look for? What's in the gitleaks/trufflehog
+detection corpus? How does an attacker read another process's env in
+practice? Where does scrambling the *name* help vs scrambling the
+*value*?
+
+**Method:** 5-angle search: common secret env-var name patterns,
+gitleaks/trufflehog/detect-secrets rule corpora, official cloud SDK
+env-var schemas (AWS/Azure/GCP), CI/CD secret patterns
+(GITHUB_TOKEN/VAULT_*/DATABASE_URL), and `/proc/<pid>/environ` access
+semantics.
+
+### Findings
+
+**1. Env-vars are the dominant credential channel and the easy scrape.**
+
+> "Secrets are mostly stolen from environment variables." — CyberArk
+> Developer (2024), confirmed by Recorded Future 2025 telemetry.
+
+Three structural reasons:
+
+- **Designed-to-be-read** by the *owning* process. `getenv()` is one
+  call; no parsing, no decryption, no socket dance.
+- **Inherited across `fork`/`exec`** unless explicitly stripped. A
+  payload launched from a shell inherits everything in the shell's
+  env.
+- **Exposed via `/proc/<pid>/environ`** on Linux to anyone passing
+  `PTRACE_MODE_READ_FSCREDS` (typically: same uid). A sibling process
+  running as the same user can `cat /proc/<pid>/environ` of every
+  other process the user owns. Babbleon's untrusted tier *running
+  under the user's own uid* gets `/proc/<pid>/environ` access by
+  default — this is the leak vector PLAN.md §6 promises to address
+  via PID-namespace + `hidepid=2`. Confirms T11 priority.
+
+**2. Detection-rule corpora as a proxy for attacker target list.**
+
+Gitleaks (~60 rules) and TruffleHog v3 (~790 detectors, ~800+ secret
+types) define empirically what attackers go after. Cross-referenced
+patterns:
+
+- **Cloud SDK family:**
+  `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`,
+  `AWS_PROFILE`, `AWS_REGION`, `AWS_SHARED_CREDENTIALS_FILE`,
+  `AWS_CONFIG_FILE`, `AWS_WEB_IDENTITY_TOKEN_FILE`.
+- **GCP family:**
+  `GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_CLOUD_PROJECT`,
+  `CLOUDSDK_*` (~50 vars in `CLOUDSDK_<section>_<property>` form),
+  `GCLOUD_PROJECT`.
+- **Azure family:**
+  `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_TENANT_ID`,
+  `AZURE_SUBSCRIPTION_ID`, `AZURE_CONFIG_DIR`.
+- **VCS / SCM:**
+  `GITHUB_TOKEN`, `GH_TOKEN`, `GITLAB_TOKEN`, `BITBUCKET_TOKEN`.
+- **CI/CD:**
+  `CI_JOB_TOKEN`, `JENKINS_API_TOKEN`, `CIRCLECI_TOKEN`, the entire
+  `GITHUB_*` GHA injected-context family.
+- **Service tokens:**
+  `STRIPE_SECRET_KEY`, `STRIPE_API_KEY`, `SENDGRID_API_KEY`,
+  `TWILIO_AUTH_TOKEN`, `SLACK_TOKEN`, `SLACK_BOT_TOKEN`,
+  `DISCORD_TOKEN`, `MAILGUN_API_KEY`, `DOCKERHUB_PASSWORD`,
+  `NPM_TOKEN`, `PYPI_TOKEN`.
+- **AI/LLM tokens (new and rapidly expanding 2024–2026):**
+  `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `HF_TOKEN`,
+  `HUGGING_FACE_HUB_TOKEN`, `REPLICATE_API_TOKEN`, `COHERE_API_KEY`,
+  `MISTRAL_API_KEY`, `GROQ_API_KEY`, `TOGETHER_API_KEY`.
+- **Secrets-manager bridge:**
+  `VAULT_TOKEN`, `VAULT_ADDR`, `VAULT_NAMESPACE`,
+  `DOPPLER_TOKEN`, `1PASSWORD_*`, `OP_SERVICE_ACCOUNT_TOKEN`.
+- **Database:**
+  `DATABASE_URL`, `POSTGRES_PASSWORD`, `MYSQL_PWD`,
+  `MONGO_URI`, `REDIS_URL`.
+- **Generic wildcards (the dominant filter):**
+  `*_TOKEN`, `*_SECRET`, `*_KEY`, `*_PASSWORD`, `*_PWD`, `*_API_KEY`,
+  `*_CREDENTIALS`. Attacker code typically does this filter first,
+  then dispatches on prefix.
+
+**Implication for Babbleon:**
+
+a) **The "*_TOKEN / *_SECRET / *_KEY / *_PASSWORD / *_API_KEY" wildcard
+filter is the actual primary attack pattern**, not the named-list
+match. Babbleon must scramble names so they **do not match these
+suffixes** in the untrusted view. Concretely: in the untrusted view,
+the canonical-suffix vars are *renamed away* and *removed* from the
+environment Block; the values live (if at all) under random compound
+names known only to the trusted-tier app that reads them. The
+wildcard-filter pattern is unequivocally Babbleon's weak point if we
+preserve the canonical suffixes.
+
+b) The named-list match is also relevant; the inventory above (50+
+patterns) is the M3 starting list for the scramble table, expandable
+via community-maintained rules (mirror the gitleaks/trufflehog
+schemas — they're MIT/Apache).
+
+c) **AI-SDK vars are an emerging class.** `ANTHROPIC_API_KEY`,
+`OPENAI_API_KEY` etc. are now the highest-leverage tokens on dev
+machines (API budget = real money, model access). Recently
+expanded; Babbleon's scramble list needs to track this rapidly-
+growing family. Add a v1 must.
+
+**3. The leak surfaces are well-understood.**
+
+Three leak channels for env vars, all attacker-tractable:
+
+- `/proc/<pid>/environ` (Linux). Same-uid read on most systems.
+  PLAN.md §6 row "Standard system paths (/proc/*/environ)" addresses
+  this at v2 with hidepid=2.
+- `ps eww` (BSDish; Linux supports via `/proc/<pid>/environ`).
+- **Process inheritance from a shell.** If the user `source`s a
+  `.env` into their interactive shell, every child inherits. A
+  payload spawned in the untrusted tier inherits whatever the
+  untrusted shell was started with.
+
+This last channel is the one Babbleon *cleanly* handles: at the
+trusted/untrusted boundary, **the env is rewritten by the spawn
+machinery**. Untrusted-tier shells start with an env stripped of all
+canonical-suffix vars; trusted-tier shells get the real env. The
+namespace boundary does the work; we don't need to touch `getenv()`.
+
+**4. Scrambling the *value* is harder and probably unnecessary.**
+
+Renaming `AWS_SECRET_ACCESS_KEY` → `<scrambled>` in the untrusted view
+defeats wildcard-suffix filtering. **Renaming the value** (e.g.
+encrypting and re-encoding it) would require the trusted-tier app to
+know how to decrypt — duplicating the credential-store mechanism.
+We don't need value scrambling: the untrusted tier doesn't get the
+canonical-name var *at all*, and the value (if present under a
+random-named var) is meaningless without knowing what app expects it.
+
+The right model: **names live in the per-host mapping; the
+untrusted view has neither the var nor the canonical name; the
+trusted view's app-launch shim injects the canonical name pointing
+to the real value at exec time**.
+
+**5. CI/CD context is out of scope but informs the design.**
+
+`GITHUB_TOKEN`, `CI_JOB_TOKEN`, `GHA secrets.*` are runtime-injected
+by the CI runner. Babbleon doesn't run on GitHub Actions hosted
+runners (it's a host-OS layer). But the **patterns** the CI ecosystem
+established (env-var injection per build step, short-lived OIDC
+tokens, scoped permissions) are exactly the right model for
+Babbleon's trusted-app launcher: inject only the env the named
+trusted app needs, scoped to its run.
+
+**Implication:** the M4 trusted-shim launcher should mirror GitHub
+Actions' `secrets: ${{ secrets.NAME }}` model — declare the env-vars
+each trusted app needs in its manifest; the launcher injects them at
+exec, strips them from inherited env.
+
+### Implications for the plan
+
+1. **Wildcard-suffix scramble is *the* primary defense, not the
+   named-list scramble.** Update PLAN.md §6 prose: "Env-var
+   *suffixes* matching `*_TOKEN`/`*_SECRET`/`*_KEY`/`*_PASSWORD`/
+   `*_API_KEY`/`*_CREDENTIALS`/`*_PWD` are stripped from the untrusted
+   env by name; canonical names are renamed in the per-host mapping;
+   values exist only in the trusted view, injected per-app at launch."
+2. **M3 starting scramble table = the 50+ patterns above**, with
+   gitleaks/trufflehog rule mirrors as the upgrade path.
+3. **AI-SDK token family is must-have for v1.** `ANTHROPIC_API_KEY`,
+   `OPENAI_API_KEY`, `HF_TOKEN`, etc. These are the *highest-leverage*
+   tokens on a 2026 dev machine and the family is growing monthly.
+4. **`/proc/<pid>/environ` is the kernel-side leak.** Confirms T11
+   priority: untrusted tier needs PID namespace + `hidepid=2`, not
+   just mount namespace. Mount namespace alone leaks every other
+   process's env to a same-uid attacker.
+5. **App-launcher injection model.** M4 trusted-shim spec needs a
+   per-app manifest declaring which env-vars to inject. Mirror GHA
+   `secrets: NAME` declaration syntax — well-understood pattern.
+6. **Value-scrambling is out of scope.** Renaming + IPC-isolation is
+   sufficient; don't duplicate the credential-store mechanism.
+
+### Confidence
+
+- **High:** the wildcard-suffix filter is the dominant attacker
+  pattern. The detection-rule corpora and incident telemetry agree.
+- **High:** `/proc/<pid>/environ` leak semantics; well-documented
+  kernel behavior.
+- **High:** the AI-SDK token family is the new high-value target.
+  Subjective but well-supported by 2025–2026 incident write-ups.
+- **Medium:** the 50+ pattern starting list. Definitely incomplete;
+  designed to be extended via gitleaks/trufflehog rule import.
+- **Medium:** the app-launcher injection model. Right shape; details
+  (manifest format, signing, capability scoping) need a design pass
+  before M4.
+
+### Open follow-ups
+
+- Mirror gitleaks `.gitleaks.toml` and trufflehog detector schemas;
+  pick the env-var-name rules; ship as Babbleon's default mapping
+  seed list. License: MIT / Apache 2.0 — clean.
+- Track AI-SDK token namespace growth quarterly; the family expands
+  with every new model vendor.
+- Spec the app-launcher manifest format. Borrow from systemd unit
+  files? Bespoke YAML? Compose with Linux capabilities and seccomp.
+- Resolve interaction with `.env`-loading tools (`dotenv`,
+  `direnv`, `mise`). They load `.env` files into shells; if the
+  shell is in the trusted view, the env lives in trusted view.
+  Untrusted-view shells should refuse to source `.env` files
+  located in trusted-view-only paths.
+
+### Sources
+
+- proc_pid_environ(5) — https://man7.org/linux/man-pages/man5/proc_pid_environ.5.html
+- Group-IB: Linux /proc filesystem manipulation — https://www.group-ib.com/blog/linux-pro-manipulation/
+- CyberArk: Environment Variables Don't Keep Secrets — https://developer.cyberark.com/blog/environment-variables-dont-keep-secrets-best-practices-for-plugging-application-credential-leaks/
+- TruffleHog vs Gitleaks comparison (Jit) — https://www.jit.io/resources/appsec-tools/trufflehog-vs-gitleaks-a-detailed-comparison-of-secret-scanning-tools
+- Secrets Patterns DB (Mazin Ahmed) — https://mazinahmed.net/blog/secrets-patterns-db/
+- google.auth.environment_vars docs — https://google-auth.readthedocs.io/en/latest/reference/google.auth.environment_vars.html
+- gcloud CLI properties / env-var schema — https://cloud.google.com/sdk/docs/properties
+- GitHub: Securing CI/CD pipelines with secrets — https://resources.github.com/learn/pathways/automation/advanced/securing-ci-cd-pipelines-with-secrets-and-variables/
+- HashiCorp: Secure CI/CD secrets — https://developer.hashicorp.com/well-architected-framework/secure-systems/secure-applications/ci-cd-secrets
 
 ---
