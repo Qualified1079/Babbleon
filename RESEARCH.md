@@ -10,7 +10,7 @@ Status legend: ⬜ not started · 🟡 in progress · ✅ done · 🟥 blocked
 
 - ✅ **T1. Moving Target Defense vs LLM/automated attackers** — prior art sweep
 - ✅ **T2. Agentic-exploitation capability literature** — what current LLM exploit harnesses actually do
-- ⬜ **T3. Per-process filesystem view mechanisms on Linux** — mount ns / OverlayFS / FUSE / pam_namespace
+- ✅ **T3. Per-process filesystem view mechanisms on Linux** — mount ns / OverlayFS / FUSE / pam_namespace
 - ⬜ **T4. eBPF-LSM maturity** for file/exec gating
 - ⬜ **T5. Hardware-unlock primitives** — FIDO2 hmac-secret, TPM 2.0 sealing, OS keychains
 
@@ -439,5 +439,221 @@ view as a sibling project; it stacks cleanly with Babbleon.
 - Container sandbox escape (arXiv 2603.02277) — https://arxiv.org/pdf/2603.02277
 - Prompt-injection-as-defense — https://arxiv.org/pdf/2410.20911
 - CSA whitepaper (LLM exploit automation) — https://labs.cloudsecurityalliance.org/research/csa-whitepaper-llm-exploit-automation-threat-landscape-20260/
+
+---
+
+## T3 — Per-process filesystem view mechanisms on Linux
+
+**Question:** What kernel primitives let us present different filesystem
+views to different processes on the same host? Which is the right substrate
+for Babbleon's M3 (mount-namespace integration)? What are the bypass paths
+and operational costs of each?
+
+**Method:** 5-angle parallel web search across mount namespaces, OverlayFS,
+FUSE performance, `pam_namespace` polyinstantiation, and `setns`/escape
+semantics. Cross-referenced against PLAN.md D1 (scramble the view, not the
+disk) and §8 (enforcement tiers).
+
+### Candidate mechanisms
+
+**1. Mount namespaces (`CLONE_NEWNS`) — the load-bearing primitive.**
+
+Created via `clone(2)` or `unshare(2)` with `CLONE_NEWNS`. Each namespace
+holds its own mount-point list; the new namespace is initialized as a
+*copy* of the caller's mount list at creation time, and subsequent mounts
+are (by default propagation) visible only inside the namespace. `/proc/pid/
+mounts`, `/proc/pid/mountinfo`, `/proc/pid/mountstats` reflect the
+namespace the named PID lives in.
+
+This is the right substrate for Babbleon. Properties that matter:
+
+- **Kernel-enforced.** Path resolution happens in the kernel against the
+  per-namespace mount table; raw syscalls (`openat`, `execve`) cannot
+  bypass it the way they bypass LD_PRELOAD.
+- **Inherited at fork/exec.** A scrambled-tier process spawning a child
+  cannot give the child a different view without `setns()`, which itself
+  requires `CAP_SYS_ADMIN` *in the user namespace owning the target mount
+  namespace* (post-Lutomirski hardening). That gate is exactly the tier
+  boundary PLAN.md §2a-2 prescribes.
+- **Propagation modes (shared / private / slave / unbindable)** govern
+  whether mount events cross namespace boundaries. Babbleon's mappings
+  must mount **private or slave** in the untrusted view so the trusted
+  view's real mounts don't leak in, and so untrusted-view mount events
+  cannot influence the trusted view.
+
+**2. `pam_namespace` + `namespace.conf` — the polyinstantiation precedent.**
+
+`pam_namespace.so` is the existing, supported PAM module that creates a
+per-session mount namespace at login and bind-mounts instance directories
+into it. `/etc/security/namespace.conf` syntax: `polydir instance_prefix
+method list_of_uids`. RHEL has shipped polyinstantiated `/tmp` and
+`/var/tmp` against it for years; SELinux ties an instance to user +
+security context.
+
+This is *exactly* the architectural shape Babbleon needs at session-
+unlock time: PAM hook → create namespace → populate with trusted-view
+binds → execute the user's shell inside it. We can ship a `pam_babbleon.so`
+that does the same lifecycle, or piggyback on `pam_namespace` and supply
+the polyinstantiation method as an external helper. **Recommendation:
+ship our own PAM module.** `pam_namespace`'s config language is too
+restricted (path-list with per-uid filter) for the per-host mapping table
+Babbleon needs, and reusing it would force us to round-trip the mapping
+through a text file at every login.
+
+PAM hook is the right *integration point*, not the right *implementation*.
+
+**3. OverlayFS — the mechanism for materializing the trusted view.**
+
+Layered union mount: `lowerdir` (read-only, possibly many, colon-
+separated), `upperdir` (writable), `workdir` (private scratch), `merged`
+(the unified result). Copy-on-write on first write into a lower file.
+Mature, in-tree, used by every Docker install on Earth.
+
+For Babbleon, OverlayFS is the natural way to build a *trusted view* from
+the real system: `lowerdir=/` plus per-app `upperdir`s for credential
+profile dirs. The *untrusted view* is the simpler case — it's the
+unmodified real filesystem with the scramble layer applied via bind
+mounts on top of `/usr/bin`, `/etc`, `$HOME/.aws`, etc.
+
+But — and this is the load-bearing realization — Babbleon does **not** need
+OverlayFS to do the renaming. Renaming is just a bag of bind mounts:
+`mount --bind /usr/bin/curl /usr/bin/<scrambledname>` inside the untrusted
+namespace, then mask `/usr/bin/curl` itself. The bind-mount approach
+preserves inode identity (PLAN.md D1 TOCTOU promise) trivially. OverlayFS
+enters only when we need *per-app writable upper layers* (M4 credential
+vault), not for the namespace renaming itself.
+
+Implication: M3 ships **mount namespace + bind mounts**; M4 adds
+**OverlayFS upper layers** for path-gated credential dirs. Cleanly
+separable.
+
+**4. FUSE — viable fallback, but the wrong default.**
+
+FUSE lets us implement the scramble lookup in userspace as a filesystem.
+Conceptually clean (one path-resolution callback gets to see every
+lookup, perfect for honey-mapping IDS). Operationally expensive:
+
+> "FUSE can perform 3× slower than the underlying Ext4 in the worst case;
+> for the least friendly workload, FUSE can consume as much as 18× more
+> CPU cycles than Ext4." (Vangoor et al., FAST '17; replicated in ACM
+> Transactions on Storage 2019.)
+
+Every userspace round-trip costs context switches and data copies.
+RFUSE (FAST '24) improves this with a ring-buffer transport, but it is
+not the upstream FUSE driver and is not deployed.
+
+Even at best-case parity, FUSE adds a userspace daemon to the trusted
+computing base: it has to be running, it has to authenticate to the
+vault, and an attacker who kills it crashes the namespace. Mount
+namespaces + bind mounts route entirely through the kernel and need no
+helper daemon at runtime.
+
+**Verdict:** FUSE is the right substrate for the M1 sandbox demo (fast
+iteration, no root) and a candidate for the macOS port (no mount
+namespaces there). Not the right substrate for the M3 Linux production
+path.
+
+**5. `setns()` and the escape model.**
+
+`setns(2)` moves the calling process into an existing namespace. Post-
+Lutomirski (2013 fix), `setns()` requires `CAP_SYS_ADMIN` in the user
+namespace *owning* the target namespace, not just the caller's own
+capabilities. This is the kernel enforcement behind PLAN.md §2a-2:
+"namespaces inherited at fork (no `setns()` without `CAP_SYS_ADMIN`)."
+
+The standard escape patterns are: (a) container has `CAP_SYS_ADMIN`
+→ mount host filesystem → pivot; (b) unprivileged user namespaces
+abused for kernel exploits (cdk-team CDK wiki documents this class).
+Babbleon mitigations track these directly:
+
+- The untrusted namespace must **not** own a user namespace giving its
+  processes `CAP_SYS_ADMIN`. Drop `CAP_SYS_ADMIN` from the bounding set
+  via `prctl(PR_CAPBSET_DROP)` before exec into the untrusted view; pair
+  with `no_new_privs` so `setuid` binaries cannot re-acquire it.
+- `yama.ptrace_scope=2` (admin-only ptrace) prevents an untrusted process
+  from `ptrace`-ing a trusted-view process and reading its mappings out
+  of `/proc/self/maps`. PLAN.md §2a-2 already names this.
+- seccomp-bpf filter denies `setns`, `unshare(CLONE_NEWNS)`,
+  `pivot_root`, `mount`, `chroot` to untrusted processes. Belt-and-
+  suspenders against the capability drop.
+
+The kernel security model lines up exactly with PLAN.md's enforcement
+tier. The gaps are operational (correct capability/seccomp wiring at
+exec time), not architectural.
+
+### Implications for the plan
+
+1. **M3 substrate decided: mount namespaces + bind mounts, kernel-only,
+   no FUSE.** OverlayFS deferred to M4 for credential-dir writable
+   upper layers. Update PLAN.md §8 "Strong" row to name these primitives
+   explicitly.
+2. **Ship `pam_babbleon.so`.** Don't reuse `pam_namespace`; its config
+   model is wrong shape for per-host mapping tables. Borrow the lifecycle
+   pattern (PAM session open → unshare → bind-mounts → exec user shell)
+   verbatim — it's a solved problem at the integration-point level.
+3. **Bind mounts preserve inode identity** → the D1 TOCTOU promise holds
+   without any extra machinery. Rotation = swap the bind-mount table;
+   open FDs unaffected; cached inodes unaffected. Confirmed.
+4. **Propagation: mount the untrusted namespace as `slave` of root, not
+   `shared`.** Real-system mount events (USB drives, package-manager
+   tmpfs) need to propagate *in*; untrusted-namespace events must not
+   propagate *out*. `slave` is the textbook mode for this and is what
+   `systemd-nspawn` uses.
+5. **Capability + seccomp wiring is the bug-prone part.** Drop
+   `CAP_SYS_ADMIN` from the bounding set, set `no_new_privs`, install
+   seccomp filter denying `setns`/`unshare`/`pivot_root`/`mount`/`chroot`.
+   Wire `yama.ptrace_scope=2` system-wide. This belongs in M3 as a
+   named sub-deliverable, not as "we'll do it later."
+6. **FUSE is the right M1 demo substrate.** Lets the sandbox demo run
+   unprivileged in `./sandbox/`, no namespace cap needed. Lift to mount
+   namespaces at M3 when we move into VM scope.
+7. **macOS portability question opens up.** Mount namespaces are
+   Linux-only. macOS has APFS volume firmlinks and per-process
+   filesystem views via Endpoint Security, but no direct equivalent of
+   `CLONE_NEWNS`. Likely M5+ concern; record now (T15 follow-up).
+
+### Confidence
+
+- **High:** mount namespaces are the right kernel substrate; FUSE is too
+  slow for the production path; `pam_namespace` is the right integration-
+  point pattern but the wrong implementation; `setns` capability model
+  matches the tier boundary we need.
+- **High:** bind mounts preserve inode identity → D1 TOCTOU promise.
+- **Medium:** propagation-mode choice (`slave`). Right by convention and
+  by `systemd-nspawn` precedent, but the exact propagation graph needs
+  prototyping against real mount events (USB, snap, flatpak) before M3
+  ships.
+- **Medium:** capability/seccomp filter completeness. The named list
+  (`setns`/`unshare`/`pivot_root`/`mount`/`chroot`) is the obvious one;
+  a real audit needs to consider `move_mount`, `open_tree`, `fsmount`,
+  `fsopen`, `fspick`, the newer mount API (Linux 5.2+) — easy to miss
+  one and leak an escape.
+
+### Open follow-ups
+
+- Confirm propagation behavior against real-world events (USB mount,
+  apt/dpkg, snap, flatpak) on a throwaway VM before M3 design freeze.
+- New mount API (`fsopen`/`fsmount`/`move_mount`/`open_tree`, Linux 5.2+)
+  audit for seccomp filter completeness.
+- Idmapped mounts (Linux 5.12+) — possibly useful for per-tier UID
+  mapping on shared inodes; not load-bearing for v1 but worth a note.
+- Prototype FUSE-based M1 demo to confirm path-resolution callback latency
+  is acceptable for an interactive shell.
+
+### Sources
+
+- mount_namespaces(7) — https://man7.org/linux/man-pages/man7/mount_namespaces.7.html
+- LWN: Mount namespaces and shared subtrees — https://lwn.net/Articles/689856/
+- pam_namespace(8) — https://man7.org/linux/man-pages/man8/pam_namespace.8.html
+- namespace.conf(5) — https://man.archlinux.org/man/namespace.conf.5.en
+- Red Hat: Configuring polyinstantiated directories — https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/8/html/using_selinux/configuring-polyinstantiated-directories_using-selinux
+- Kernel docs: Overlay Filesystem — https://docs.kernel.org/filesystems/overlayfs.html
+- Docker OverlayFS storage driver — https://docs.docker.com/engine/storage/drivers/overlayfs-driver/
+- Vangoor et al., "To FUSE or Not to FUSE" (FAST '17) — https://www.usenix.org/system/files/conference/fast17/fast17-vangoor.pdf
+- "Performance and Resource Utilization of FUSE" (ACM TOS 2019) — https://dl.acm.org/doi/10.1145/3310148
+- RFUSE (FAST '24) — https://www.usenix.org/system/files/fast24-cho.pdf
+- LWN: Namespaces in operation, part 6 (user namespaces) — https://lwn.net/Articles/540087/
+- Wiz: Container escape — https://www.wiz.io/academy/container-security/container-escape
+- CDK abuse-unpriv-userns — https://github.com/cdk-team/CDK/wiki/Exploit:-abuse-unpriv-userns
 
 ---
