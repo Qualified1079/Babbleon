@@ -39,6 +39,68 @@ movement → establish persistence → propagate.
    This is a race between its probing speed and our **rotation** cadence.
    Probing is loud → high IDS signal.
 
+## 2a. Adversarial assumption: Babbleon is public knowledge
+
+Design discipline: **assume the attacker has read the Babbleon source, knows
+the wordlist, knows the rotation cadence, knows the architecture, and knows
+it is running on this host.** Kerckhoffs's principle: the algorithm is
+public, the **per-host mapping is the only secret**. Concrete consequences:
+
+1. **Binary-identity obfuscation is the actual battlefield, not a nice-to-have.**
+   A public-knowledge attacker won't try `curl` blindly — they will
+   fingerprint every binary in `$PATH` by `--help`, `strings`, `ldd`, magic
+   bytes, behavior. If a scrambled binary returns curl's help verbatim, the
+   rename is theater. Strip symbols; replace/scramble help text; consider
+   plausible-wrong help (deception); wrap binaries in thin loaders that gate
+   help/strings output by trust tier. Promoted to M3-critical.
+
+2. **The trusted-view boundary becomes the prize.** A public-knowledge
+   attacker skips the scrambled view and attacks tier escalation. Defenses:
+   namespaces inherited at fork (no `setns()` without `CAP_SYS_ADMIN`);
+   seccomp denies `ptrace` to untrusted processes; `yama.ptrace_scope=2`;
+   `no_new_privs`; untrusted-view binaries cannot be `exec`'d from the
+   trusted view by absolute path without explicit allow-list.
+
+3. **Rotation is load-bearing, not optional.** Public-knowledge means slow
+   accumulation attacks (probe-and-exfiltrate over weeks). Default cadence
+   drops to **daily**; weekly is the "low-paranoia" setting.
+
+4. **Vault must be unforgeable to an on-host attacker.** Honest tier copy:
+   - **Soft:** "raises cost of automated theft; not a defense against
+     persistent code execution."
+   - **TPM-sealed:** key released only to measured boot states; never leaves
+     TPM in usable form except in-memory during use.
+   - **FIDO2:** strongest; requires physical key + tap.
+   Standard authenticated encryption (libsodium / age). No clever crypto.
+
+5. **Honey-mappings (free IDS).** Seed the mapping with ~50 tripwire names
+   that look like plausible scrambled binaries but legitimately map to
+   nothing. Any process invoking one of them = 100%-confidence hostile, with
+   process attribution. Detection scales with attacker probing.
+
+6. **Side-channel budget.** Public-knowledge attacker may attempt timing
+   attacks on resolution, filesystem-metadata leaks (inodes, mtimes),
+   `/proc/self/maps`. These must be *named and bounded* in the design even
+   if v1 doesn't close all of them.
+
+7. **New explicit threat class: the studious attacker.** Read the source,
+   has the wordlist, has hijacked an untrusted user-mode process, willing to
+   probe for weeks. Babbleon's answers: (a) rotation outpaces accumulation,
+   (b) honey-mappings catch probing, (c) tier boundary prevents escalation,
+   (d) vault holds. If any of these fail, Babbleon does not stop this
+   attacker — and we say so.
+
+## 2b. Scope vs. the anti-LLM bundle
+
+Babbleon is **one component** of a planned anti-LLM defense suite that will
+also include: honeypot files using canonical naming conventions, prompt-
+injection bait in `passwords.txt`-style files, and other LLM-specific
+deception layers. These are explicitly **out of scope for Babbleon itself**
+and must not be pulled into its codebase or threat model. Babbleon does one
+thing — per-host randomized namespace obfuscation with trusted-view/untrusted-
+view separation and rotation — and ships independently. Bundle integration
+is a packaging concern, not an architecture concern.
+
 ## 3. Non-goals / honest limits
 
 - Not a replacement for sandboxing, seccomp, least-privilege, or egress control.
