@@ -12,7 +12,7 @@ Status legend: ⬜ not started · 🟡 in progress · ✅ done · 🟥 blocked
 - ✅ **T2. Agentic-exploitation capability literature** — what current LLM exploit harnesses actually do
 - ✅ **T3. Per-process filesystem view mechanisms on Linux** — mount ns / OverlayFS / FUSE / pam_namespace
 - ✅ **T4. eBPF-LSM maturity** for file/exec gating
-- ⬜ **T5. Hardware-unlock primitives** — FIDO2 hmac-secret, TPM 2.0 sealing, OS keychains
+- ✅ **T5. Hardware-unlock primitives** — FIDO2 hmac-secret, TPM 2.0 sealing, OS keychains
 
 ## Tier 2 — shapes implementation
 
@@ -872,5 +872,223 @@ a microbenchmark before v2.**
 - Cilium: Migrating from Falco to Tetragon — https://cilium.io/blog/2026/01/19/tetragon-falco-migrate/
 - Hunting TOCTOU and LD_PRELOAD attacks with eBPF LSM — https://medium.com/@satyam012005/hunting-toctou-and-ld-preload-attacks-with-ebpf-lsm-ea7f4e6c3884
 - "Analyzing the Overhead of Filesystem Protection Using LSMs" (arXiv 2101.11611) — https://arxiv.org/pdf/2101.11611
+
+---
+
+## T5 — Hardware-unlock primitives (FIDO2, TPM 2.0, OS keychains, KDF)
+
+**Question:** PLAN.md §7 names four unlock tiers (Soft / Soft+ / Portable
+/ Hardware) all feeding one vault. For each tier, what's the actual
+primitive, what does it guarantee against an on-host attacker (PLAN.md
+§2a-4 honesty bar), what's the implementation pattern, and what are
+the gotchas?
+
+**Method:** 5-angle parallel search across FIDO2 hmac-secret, TPM 2.0
+PCR sealing, systemd-cryptenroll as production pattern, macOS Keychain
++ Secure Enclave, and modern Argon2id parameters.
+
+### Findings
+
+**1. FIDO2 `hmac-secret` is exactly the right primitive for the Hardware tier.**
+
+The CTAP2 `hmac-secret` extension lets the authenticator compute
+**HMAC-SHA-256(credential_secret, salt)** and return the result. The
+credential's secret never leaves the token; the host supplies a salt
+and receives a 32-byte pseudorandom output. Two salts are supported per
+call (enables rolling the symmetric secret without re-enrolling the
+credential).
+
+Key properties for Babbleon's vault KEK:
+
+- **The token must be present and tapped for every unlock.** Physical
+  presence + user verification ≡ the "Hardware" tier promise. An on-host
+  attacker without the token cannot derive the KEK even with full root.
+- **`hmac-secret` is scoped to one credential**, so the same YubiKey can
+  back Babbleon, age, SSH, and KeePassXC independently with no
+  cross-extraction.
+- **Production precedent: age**, KeePassXC, and systemd-cryptenroll all
+  use `hmac-secret` to derive symmetric KEKs. FiloSottile age discussion
+  #390 is the canonical design write-up. We borrow this pattern
+  verbatim.
+- **Browser/SDK caveat:** Safari/WebAuthn `prf` (the WebAuthn surface
+  for hmac-secret) does not yet work with YubiKeys as of iOS 18 / macOS
+  15. Irrelevant to Babbleon — we use the native CTAP2 path via
+  `libfido2`, not the browser.
+
+**Recommended pattern:** Babbleon enrollment generates a per-host
+random salt (stored on disk, *not* secret), registers a resident
+credential on the FIDO2 token tagged `babbleon:<hostname>`, and at
+unlock time calls `hmac-secret(credential, salt) → KEK`. KEK never
+touches disk.
+
+**2. TPM 2.0 PCR-sealed keys = the Soft+ tier (PLAN.md §7).**
+
+A TPM 2.0 can seal an arbitrary blob to a policy expressing "PCR
+registers X,Y,Z must equal these values." The TPM releases the blob
+only when current PCR state matches. PCRs 0–7 record firmware/bootloader
+measurements (Secure Boot chain); 8–9 record kernel + initrd; 14
+records cryptographically-bound configurations. A disk pulled out of
+the laptop, or a kernel swapped under it, fails the policy and the key
+is not released.
+
+`tpm2_createpolicy --policy-pcr -l sha256:0,1,2 …` defines the policy;
+`tpm2_create` + `tpm2_load` seal the blob; `tpm2_unseal` retrieves it
+when PCRs match. **Authorized policies** (signed by a known key) let
+the user re-seal automatically after legitimate firmware/kernel updates
+without re-enrolling — important for usability on a host that gets
+patched monthly.
+
+For Babbleon: TPM-sealed KEK released only at measured-boot match.
+Honest copy per PLAN.md §2a-4: *"key released only to measured boot
+states; never leaves TPM in usable form except in-memory during use."*
+That's verbatim what TPM sealing delivers, no more.
+
+Two real attacks to document:
+
+- **TPM bus sniffing (LPC/SPI).** Discrete TPMs on a low-speed bus can
+  be passively sniffed during the unseal handshake. fTPMs (firmware
+  TPMs on the CPU) and Pluton avoid this; discrete TPMs are vulnerable.
+  Document in tier-strength copy.
+- **PCR11 / Secure Boot policy bypass.** The oddlama 2024 writeup
+  documents systemd-cryptenroll TPM2 unlock being bypassed when sealing
+  was bound only to PCR7 (Secure Boot state) without binding to the
+  kernel command line or initrd; an attacker swaps `init=/bin/sh` into
+  cmdline and the TPM still releases the key. **Implication:** Babbleon
+  must seal against PCRs covering the kernel command line and initrd
+  hashes (PCR8/9 + PCR14 for the boot config), not just Secure Boot
+  state. systemd 254+ has `--tpm2-pcrs` documented patterns.
+
+**3. systemd-cryptenroll is the reference implementation.**
+
+`systemd-cryptenroll` manages LUKS2 unlock methods: password, recovery
+key, PKCS#11, FIDO2 (`hmac-secret`), TPM2. **All four of Babbleon's
+unlock tiers map cleanly onto systemd-cryptenroll backends**, which is
+the strongest possible existence proof that the architecture is
+shippable: somebody has already built the multi-tier unlock-to-one-
+vault pattern at the LUKS layer in production.
+
+**Implication for plan:** Babbleon's vault should not be LUKS2 (it's a
+per-app mapping file, not a block device), but its unlock-method abstraction
+should **structurally mirror** systemd-cryptenroll. Concretely:
+
+- One pluggable "KEK backend" interface; backends register a `unlock()
+  → 32-byte KEK` method.
+- Backends shipped in v1: `password` (Argon2id), `tpm2` (PCR-sealed),
+  `fido2` (`hmac-secret`), `keyfile` (raw bytes from path, ± password
+  for 2FA per PLAN.md §7 "Portable").
+- The vault file is age-format (PLAN.md §2a-4 endorses age/libsodium).
+  KEK wraps the age identity; rotating the unlock method = re-wrap, no
+  re-encrypt of the vault contents.
+
+**4. macOS Keychain + Secure Enclave is the macOS Soft+ analog.**
+
+`kSecAttrTokenIDSecureEnclave` generates a P-256 key inside the SE; the
+private key never leaves. Add `kSecAttrAccessControl` with
+`.userPresence` or `.biometryCurrentSet` and the SE evaluates the ACL
+internally; key is usable only after Touch ID. The SE-protected key
+wraps a symmetric key that wraps the vault KEK — same pattern as TPM.
+
+Hardware requirement: Apple Silicon or T2 (2018+). Pre-2018 Macs fall
+back to file-based keychain entries; we tier-label that honestly as
+Soft, not Soft+.
+
+For Babbleon on macOS: the SE wraps the KEK; Touch ID or device
+password is required at unlock; key never extractable. Equivalent
+security promise to TPM PCR-sealed on Linux. **macOS port path is
+unblocked from a unlock-tier perspective**; the filesystem-view problem
+(T3 follow-up) is the harder macOS port question.
+
+**5. Argon2id parameters for the Soft tier (password unlock).**
+
+OWASP 2025 minimum: **m=19 MiB, t=2, p=1**. Alternative profile
+**m=46 MiB, t=1, p=1** (the one OWASP empirically benchmarks as
+reducing compromise rate by 42.5% vs SHA-256 at a $1/account budget).
+RFC 9106 is the IETF standard.
+
+For Babbleon: ship the OWASP "high" profile (**m=46 MiB, t=2, p=1**) as
+default — Babbleon's password unlock runs once per session, not once
+per HTTPS request, so we can afford to be stricter than OWASP's
+web-app minimum. Document `m`/`t`/`p` in the vault header so future
+upgrades to harder parameters can re-derive at next unlock.
+
+**Rate-limiting:** PLAN.md §7 names "hard rate-limiting on unlock
+attempts." Argon2id's per-attempt cost is the first line; an explicit
+counter in the vault header (incremented before each derivation,
+cleared on success) is the second. **Open follow-up:** decide the
+backoff schedule (linear? exponential? lock-out at N?).
+
+### Implications for the plan
+
+1. **Tier mapping confirmed and tightened:**
+
+   | PLAN tier | Primitive | Concrete API |
+   |---|---|---|
+   | Soft | Argon2id KEK from password | `libsodium` argon2id, m=46 MiB t=2 p=1 |
+   | Soft+ | TPM2 PCR-sealed KEK (Linux) / SE-wrapped KEK (macOS) | `tpm2-tss` / Security framework |
+   | Portable | Raw keyfile bytes ± Argon2id over passphrase (2FA) | filesystem read + libsodium |
+   | Hardware | FIDO2 `hmac-secret` over per-host salt | `libfido2` |
+
+2. **Vault format: age (libsodium under the hood).** PLAN.md §2a-4
+   already endorses this. KEK wraps the age identity file; unlock-tier
+   changes re-wrap only the identity, not the vault.
+3. **Reference architecture: systemd-cryptenroll.** Mirror its
+   pluggable-backend interface. We are not the first to ship this
+   shape; do not invent a new abstraction.
+4. **TPM PCR sealing must cover kernel cmdline + initrd**, not just
+   Secure Boot state (PCR7). The oddlama bypass is the specific failure
+   mode to design against. Bake the correct `--tpm2-pcrs` pattern into
+   our enrollment helper.
+5. **Document discrete-TPM bus-sniffing exposure** in the Soft+ tier
+   copy. fTPM/Pluton = full strength; discrete TPM = labeled-weak
+   sub-variant.
+6. **macOS unlock path is unblocked.** Filesystem-view problem
+   (T15 follow-up) remains the macOS porting blocker, not the vault
+   layer.
+7. **Argon2id default: m=46 MiB, t=2, p=1.** Vault header records the
+   parameters; future bumps re-derive at next unlock.
+8. **Define rate-limit schedule.** Open follow-up; suggested default
+   exponential backoff to 30s after 3 failures, lock requiring
+   recovery-key after 10.
+
+### Confidence
+
+- **High:** all four unlock primitives are real, shippable, and have
+  production precedent (systemd-cryptenroll, age, KeePassXC, FileVault).
+- **High:** the systemd-cryptenroll mirror as Babbleon's KEK-backend
+  abstraction.
+- **High:** the oddlama TPM-cmdline-bypass requires sealing the cmdline,
+  not just PCR7 — well-documented and replicable.
+- **Medium:** discrete-TPM bus-sniffing exposure. Real attack class but
+  requires physical access + hardware probe; document, don't over-
+  weight in user-facing copy.
+- **Medium:** browser-side FIDO2 PRF support irrelevant to our path,
+  but worth noting in case anyone proposes a web unlock surface in v2.
+
+### Open follow-ups
+
+- Decide rate-limit backoff schedule (default proposal: 1s→2s→4s→…
+  exponential to 30s after 3 failures, lock at 10 requiring recovery
+  key).
+- Verify `libfido2` CTAP2 `hmac-secret` path works without Yubico's
+  yesdk dependency (we want it in C/Rust with no JS/SDK indirection).
+- Determine which PCRs to seal against on each Linux distro (PCR
+  semantics differ slightly between systemd-boot, GRUB, sd-stub).
+- Spec the on-disk vault header fields (Argon2id m/t/p, attempt
+  counter, KEK-backend type tag, version).
+
+### Sources
+
+- FIDO2 `hmac-secret` (Yubico developer docs) — https://docs.yubico.com/yesdk/users-manual/application-fido2/hmac-secret.html
+- WebAuthn PRF Developers Guide (Yubico) — https://developers.yubico.com/WebAuthn/Concepts/PRF_Extension/Developers_Guide_to_PRF.html
+- age discussion #390 (FIDO2 hmac-secret design) — https://github.com/FiloSottile/age/discussions/390
+- tpm2-tools sealing policies (wolfSSL writeup) — https://www.wolfssl.com/tpm-2-0-sealing-policies-with-wolftpm-pcr-policies-policy-authorize-and-nv-storage-for-tpm-2-0-secrets/
+- LUKS + TPM2 sealing with measured boot — https://www.systemshardening.com/articles/linux/luks-tpm2-sealing/
+- oddlama: Bypassing TPM2 LUKS unlock when only PCR7 is sealed — https://oddlama.org/blog/bypassing-disk-encryption-with-tpm2-unlock/
+- systemd-cryptenroll FIDO2/TPM2 enrollment (Fedora Magazine) — https://fedoramagazine.org/use-systemd-cryptenroll-with-fido-u2f-or-tpm2-to-decrypt-your-disk/
+- systemd-boot + FDE with TPM and FIDO2 (openSUSE MicroOS) — https://microos.opensuse.org/blog/2023-12-20-sdboot-fde/
+- Apple Keychain data protection — https://support.apple.com/en-ca/guide/security/secb0694df1a/web
+- Apple developer forum: Storing SE key into Keychain w/ LA protection — https://developer.apple.com/forums/thread/658821
+- OWASP password storage cheat sheet (Argon2id parameters, 2025) — https://guptadeepak.com/the-complete-guide-to-password-hashing-argon2-vs-bcrypt-vs-scrypt-vs-pbkdf2-2026/
+- RFC 9106 (Argon2) — https://datatracker.ietf.org/doc/rfc9106/
 
 ---
