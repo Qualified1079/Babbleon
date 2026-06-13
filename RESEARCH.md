@@ -19,7 +19,7 @@ Status legend: ⬜ not started · 🟡 in progress · ✅ done · 🟥 blocked
 - ✅ **T6. LLM/BPE tokenizer behavior** on lowercase concatenated compounds
 - ✅ **T7. Credential-store inventories** across modern dev/cloud tooling
 - ✅ **T8. Env-var vocabulary** attackers actually scrape
-- ⬜ **T9. Package manager hook surfaces** (dpkg/rpm/brew/flatpak/snap)
+- ✅ **T9. Package manager hook surfaces** (dpkg/rpm/brew/flatpak/snap)
 - ⬜ **T10. Binary fingerprinting countermeasures**
 - ⬜ **T11. `/proc` and PID-namespace gotchas**
 
@@ -1715,5 +1715,239 @@ exec, strips them from inherited env.
 - gcloud CLI properties / env-var schema — https://cloud.google.com/sdk/docs/properties
 - GitHub: Securing CI/CD pipelines with secrets — https://resources.github.com/learn/pathways/automation/advanced/securing-ci-cd-pipelines-with-secrets-and-variables/
 - HashiCorp: Secure CI/CD secrets — https://developer.hashicorp.com/well-architected-framework/secure-systems/secure-applications/ci-cd-secrets
+
+---
+
+## T9 — Package manager hook surfaces (dpkg / rpm / brew / flatpak / snap)
+
+**Question:** PLAN.md §9 commits to running package managers in an
+"audited maintenance namespace on real names; a post-install hook
+assigns mappings to new binaries inside the transaction." §10 names the
+install-window race as a known-open. What hook surfaces actually exist
+on each package manager? Where do we attach? What's the install-window
+race in concrete terms? What changes per ecosystem?
+
+**Method:** 5-angle search across dpkg/APT, rpm/dnf, Homebrew, Flatpak/
+Snap, and package-manager TOCTOU literature.
+
+### Findings
+
+**1. APT / dpkg — well-supported, two attach points.**
+
+Two clean hook surfaces:
+
+- **APT hooks** in `/etc/apt/apt.conf.d/`. Configuration-file entries:
+  `DPkg::Pre-Invoke { "cmd"; }`, `DPkg::Post-Invoke { "cmd"; }`,
+  `APT::Update::Post-Invoke { "cmd"; }`. Fire around the entire APT
+  transaction (before/after `dpkg` runs). Multiple hook files execute
+  alphabetically; numeric prefixes control order.
+- **dpkg triggers** (`/var/lib/dpkg/triggers/`). Lower-level; requires
+  ship­ping a Babbleon package that registers a trigger on
+  `/usr/bin`. Triggers fire mid-transaction when other packages touch
+  the watched path. More precise than APT hooks but tied to dpkg's
+  trigger lifecycle.
+
+**Recommended attach point: APT post-invoke hook**, supplemented by a
+dpkg trigger on `/usr/bin` (and `/usr/local/bin`, `/usr/sbin`) for
+direct-dpkg invocations bypassing APT. Two-layer coverage: APT covers
+the common case; the trigger catches `dpkg -i foo.deb`.
+
+Hook script responsibilities: enumerate post-transaction set of new/
+removed binaries (`dpkg-query -W -f='${Conffiles}\n'` and diff-against-
+mapping); assign random compound names; commit mapping to the vault;
+update the bind-mount table; signal active namespaces to re-bind.
+
+**2. RPM / DNF — plugin API + scriptlets + post-transaction-actions plugin.**
+
+Three attach points, increasing in cleanliness:
+
+- **RPM scriptlets** (`%post` in package spec) — ship a Babbleon
+  package whose `%post` runs the mapping-assignment for *itself*.
+  Doesn't help us cover *other* packages.
+- **RPM plugin API** (`scriptlet_pre`/`scriptlet_post`/`tsm_pre`/
+  `tsm_post`). Native C plugin, loaded by rpm at transaction start.
+  Fine-grained but heavier engineering.
+- **DNF plugin API** (`transaction` hook called after successful
+  transaction) and the **`dnf-plugins-core` post-transaction-actions
+  plugin** (declarative config in
+  `/etc/dnf/plugins/post-transaction-actions.d/*.action`, format
+  `package_filter:transaction_state:command`).
+
+**Recommended attach point: DNF post-transaction-actions plugin.**
+Declarative, easy to ship, covers the common case. Fall back to an
+RPM plugin if we need to gate the transaction mid-flight (we
+probably don't for v1).
+
+**3. Homebrew — formula post_install, brew bundle, no global hook.**
+
+Homebrew has no global post-install hook. **Open issue #2202** in the
+Homebrew repo (still open as of 2026) explicitly tracks a feature
+request for pre/post-install hooks at the brew level. Three
+workarounds:
+
+- **Per-formula `post_install` block** in formula DSL — only works if
+  we ship every formula (we don't).
+- **`brew bundle`'s `postinstall:` directive** in `Brewfile` — only
+  fires for that bundle, not arbitrary brew invocations.
+- **Wrap `brew` itself** — symlink `brew` to a Babbleon shim that
+  invokes real brew and then runs the mapping-assignment.
+
+**Recommended attach point on macOS: shim `brew` itself.** Cleanest of
+bad options. Document the lack of a native hook surface as an
+ecosystem limitation; submit an upstream feature request that aligns
+with #2202.
+
+**4. Flatpak / Snap — sandboxed apps, mostly *don't need* scrambling.**
+
+Both Flatpak and Snap install apps into per-app sandboxes:
+
+- **Flatpak** mounts each app under `/app/bin` inside a bubblewrap
+  sandbox. Apps see their own restricted PATH; host `/usr/bin` is
+  not visible inside the sandbox.
+- **Snap** uses `snap-confine` to set up per-app mount namespaces.
+  Each snap sees `/home/user/snap/<name>/<rev>/` as its home; host
+  PATH is similarly isolated.
+
+**Implication:** the *binaries themselves* installed by Flatpak/Snap
+live in sandboxes Babbleon's untrusted-tier attacker can't easily
+reach via the canonical-PATH route. **What we still need to scramble**
+are the **`flatpak run org.foo.Bar`** and **`snap run foo`** entry-
+point commands themselves (which live in host `/usr/bin/flatpak`,
+`/usr/bin/snap`), and the **app-IDs** an attacker would invoke. App-IDs
+are reverse-DNS strings (`org.mozilla.firefox`) — a different name
+space from binary names but the same scramble logic applies.
+
+For v1: scramble the host-side flatpak/snap CLIs (already covered by
+the general `/usr/bin` mechanism). Don't try to penetrate the per-app
+sandboxes; they're already isolated. v2: optionally scramble app-IDs
+in the per-namespace flatpak/snap registry.
+
+**5. The install-window race (PLAN.md §10) is real and has a fix.**
+
+The race: between the moment a new binary `/usr/bin/foo` lands on disk
+and the moment Babbleon assigns it a scrambled name and updates the
+mount table, an untrusted-tier process can `open()` the canonical
+path `/usr/bin/foo` directly. Window is short but exploitable by a
+patient attacker spinning on `stat()`.
+
+**Fix: run the package transaction in a dedicated *maintenance
+namespace*.**
+
+Concretely:
+
+- Babbleon spawns a transient mount namespace at transaction start.
+  The namespace has **the real `/usr/bin`** (i.e. the trusted view).
+- The package manager runs *inside* that namespace; `dpkg`/`rpm`
+  writes binaries to real names there.
+- The new binaries are **not yet visible** in any *other* namespace
+  (untrusted views, currently-running scrambled shells) because mount
+  propagation is set to `private` outward.
+- Post-transaction hook runs, computes the new mapping, atomically
+  updates the bind-mount tables in *every* attached namespace via
+  a small helper that uses `setns()`+`mount(MS_BIND)` per namespace.
+- Only after the atomic update do the new binaries become reachable
+  (under scrambled names) from untrusted namespaces.
+
+This closes the race by design: the new binary *never exists under
+its canonical name in any untrusted namespace*. The maintenance
+namespace is the kernel-enforced quarantine.
+
+Reference: util-linux mount(8) TOCTOU advisory (GHSA-qq4x-vfq4-9h9g)
+documents the symmetric attack class — path validated, then re-
+canonicalized at use, with a race window between. The mitigation
+pattern (use file descriptors not paths between phases, hold
+operations open across the entire flow) applies directly.
+
+**6. The "needs real view" manifest for cron / systemd / scripts.**
+
+PLAN.md §9 promises "admin tags specific units 'needs real view' with
+justification (manifest)." Concrete shape borrowed from the env-var
+injection model in T8:
+
+```
+[babbleon-grant]
+unit = postgresql.service
+needs-real-view = true
+allowed-binaries = postgres,psql,pg_ctl
+allowed-credentials = ~/.pgpass
+justification = "DB needs canonical postgres binary at boot."
+signature = <admin-key signature over above fields>
+```
+
+Justification + signature is the operational pattern: any persistent
+service granted the trusted view is recorded with a reason, signed by
+an admin key. Forms the audit log automatically.
+
+### Implications for the plan
+
+1. **Per-ecosystem attach-point table:**
+
+   | Ecosystem | Attach point | v1 effort |
+   |---|---|---|
+   | APT/dpkg (Debian/Ubuntu) | `/etc/apt/apt.conf.d/99babbleon` + dpkg trigger on `/usr/bin` | low |
+   | RPM/DNF (Fedora/RHEL) | DNF `post-transaction-actions` plugin | low |
+   | Homebrew (macOS) | shim `brew` binary | medium |
+   | Flatpak | scramble host-side `flatpak` CLI only; app IDs v2 | low |
+   | Snap | scramble host-side `snap` CLI only | low |
+   | snap/flatpak per-app sandboxes | N/A — already isolated | n/a |
+
+2. **Maintenance-namespace pattern is the install-window-race fix.**
+   Update PLAN.md §10 from "Mitigation: hook runs inside the package
+   transaction; new binary invisible to untrusted namespaces until
+   commit. Design carefully in M3." → name the maintenance-namespace
+   architecture explicitly: transient mount NS, private propagation
+   outward, atomic cross-namespace bind update post-transaction.
+3. **Homebrew is a recognized limitation.** No native hook surface;
+   shim is the workaround; track upstream issue #2202.
+4. **Flatpak/Snap app sandboxes shrink Babbleon's surface helpfully.**
+   We don't need to penetrate them; the host-side CLIs are the only
+   attack-relevant binaries.
+5. **`/usr/local/bin`, `/opt/`, language-package binaries
+   (`~/.cargo/bin`, `~/.local/bin`, `node_modules/.bin`)** are not
+   covered by system package managers. Need separate hook: a watcher
+   on these dirs (inotify) that assigns mappings on add/remove. M3
+   sub-deliverable.
+6. **Manifest format with signature** for "needs real view" grants.
+   Borrow systemd unit syntax; admin key signs the manifest; audit
+   trail comes for free.
+
+### Confidence
+
+- **High:** APT and DNF hook surfaces. Documented, mature, widely used.
+- **High:** Flatpak/Snap sandbox isolation reducing Babbleon's host-
+  side surface.
+- **Medium:** the maintenance-namespace install-window fix. Architecturally
+  clean; needs prototyping against real `apt upgrade` with mid-flight
+  inotify monitoring before M3 ships.
+- **Medium:** Homebrew shim approach. Works but fragile to brew
+  upstream changes; upstream feature request is the long-term fix.
+- **Medium:** `~/.cargo/bin`-style language-PMs. The inotify watcher
+  works but is a different mechanism — separate codepath.
+
+### Open follow-ups
+
+- Prototype maintenance-namespace transition: `apt upgrade` inside a
+  transient namespace with `mount --make-private` outward, post-
+  transaction `setns()`+rebind sweep.
+- Inotify watcher for `~/.cargo/bin`, `~/.local/bin`, `~/.npm-global/
+  bin`, `pipx`/`uv`/`rye` venvs. Language-PM coverage.
+- Submit upstream Homebrew issue: machine-readable post-install hook
+  in `brew` itself. Reference issue #2202.
+- Investigate Nix/Guix interaction: store-based PMs use content-
+  addressed paths, not canonical names — possibly orthogonal or
+  possibly a clean integration point. Worth a follow-up.
+
+### Sources
+
+- APT hooks/triggers (oneuptime tutorial) — https://oneuptime.com/blog/post/2026-03-02-how-to-configure-apt-hooks-and-triggers-on-ubuntu/view
+- dpkg(1) — https://man7.org/linux/man-pages/man1/dpkg.1.html
+- DNF Plugin Interface — https://dnf.readthedocs.io/en/latest/api_plugins.html
+- DNF post-transaction-actions plugin — https://dnf-plugins-core.readthedocs.io/en/latest/post-transaction-actions.html
+- RPM Plugin Interface (DRAFT) — https://rpm-software-management.github.io/rpm/manual/plugins.html
+- Homebrew issue #2202 (pre/post-install hooks feature request) — https://github.com/Homebrew/brew/issues/2202
+- Homebrew Brew-Bundle-and-Brewfile docs — https://docs.brew.sh/Brew-Bundle-and-Brewfile
+- Flatpak sandbox wiki — https://github.com/flatpak/flatpak/wiki/Sandbox
+- Flatpak command reference — https://docs.flatpak.org/en/latest/flatpak-command-reference.html
+- util-linux mount(8) TOCTOU advisory — https://github.com/util-linux/util-linux/security/advisories/GHSA-qq4x-vfq4-9h9g
 
 ---
