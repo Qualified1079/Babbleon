@@ -25,11 +25,11 @@ Status legend: ⬜ not started · 🟡 in progress · ✅ done · 🟥 blocked
 
 ## Tier 3 — confirm assumptions
 
-- ⬜ **T12. CSPRNG + bijective mapping construction**
-- ⬜ **T13. Wordlist sources** and licensing
-- ⬜ **T14. Backup/snapshot interaction with rotation**
-- ⬜ **T15. macOS / Windows feasibility scan**
-- ⬜ **T16. Naming / trademark / prior-project collision check**
+- ✅ **T12. CSPRNG + bijective mapping construction**
+- ✅ **T13. Wordlist sources** and licensing
+- ✅ **T14. Backup/snapshot interaction with rotation**
+- ✅ **T15. macOS / Windows feasibility scan**
+- ✅ **T16. Naming / trademark / prior-project collision check**
 
 ---
 
@@ -2401,5 +2401,220 @@ see trusted-tier programs by name."
 - tini PID-1 reaper — https://github.com/krallin/tini (referenced)
 - Don't Fear the Subreaper — https://medium.com/@william.la.martin/dont-fear-the-subreaper-19c8127c031e
 - Group-IB: Linux /proc manipulation — https://www.group-ib.com/blog/linux-pro-manipulation/
+
+---
+
+## T12 — CSPRNG + bijective mapping construction
+
+**Question:** How do we generate the per-host mapping such that
+rotation is cheap, mapping inversion is impossible without the seed,
+and there's no chance of collisions?
+
+**Method:** Targeted search on format-preserving encryption and
+bijective-permutation constructions.
+
+### Findings
+
+- **Don't enumerate.** With a 100k-word list and N=4 compounds the
+  output space is 10^20; we can't pre-materialize. We need a function
+  `f(canonical_name, host_seed, rotation_epoch) → scrambled_compound`
+  that is bijective on its domain.
+- **Standard construction: Luby–Rackoff Feistel over an integer
+  representation.** Encode each canonical name as a fixed-width
+  integer (e.g. hash → rank in vocabulary), apply a 3–4-round Feistel
+  network keyed by `HMAC-SHA-256(host_seed, "babbleon-fpe-v1")`, decode
+  the output integer back to an N-tuple of word indices. Format-
+  preserving by construction; pseudorandom under PRF assumption on the
+  HMAC; bijective so no collisions; cheap to invert in the trusted
+  view (run Feistel backwards).
+- **Rotation = epoch in the HMAC input.** New epoch → fresh Feistel
+  permutation; nothing on disk changes except the epoch counter.
+- **Alternative considered: Cycle Slicer / FF1 (NIST SP 800-38G).**
+  More principled for arbitrary domains but FF1 has known attacks
+  for very-small domains; for our 10^20 domain those don't matter,
+  but Feistel-with-HMAC is simpler and we don't need NIST compliance.
+- **No `sort(hash(name+seed))` shortcuts.** Tempting; not bijective
+  without a rejection-sampling loop. Stick with FPE.
+
+### Implications
+
+- Mapping function: 3-round Feistel over N×17-bit integer (covers a
+  131k-word vocab in 17 bits per slot, 68 bits total for N=4 — within
+  one Feistel block trivially). HMAC-SHA-256 as round function;
+  truncate to 17 bits.
+- Test: 10^7 round-trip encrypt/decrypt with random inputs; verify
+  bijectivity empirically. Add to M1 sandbox demo.
+- Rotation cost: zero. Just bump the epoch.
+
+### Sources
+
+- Rogaway: "A Synopsis of Format-Preserving Encryption" — https://web.cs.ucdavis.edu/~rogaway/papers/synopsis.pdf
+- Cycle Slicer (eprint 2017/873) — https://eprint.iacr.org/2017/873.pdf
+- Format-preserving encryption (Wikipedia) — https://en.wikipedia.org/wiki/Format_Preserving_Encryption
+
+---
+
+## T13 — Wordlist sources and licensing
+
+**Question:** Where do we get a ≥100k credible English wordlist with a
+clean license, and what's our backup?
+
+### Findings
+
+- **EFF diceware lists are too small.** 7,776 words (6^5). Good
+  pedigree (CC BY 3.0 US, Ghent Reading Research data) but a factor
+  of ~13× short. Combining is possible (3 EFF picks ≈ 4.7×10^11
+  combinations) but PLAN.md §5 explicitly wants `~10^20` from `100k`
+  individual words.
+- **dwyl/english-words** (~466k words; Unlicense / public-domain
+  declaration). Largest credible list; raw and uncurated, which is
+  exactly what PLAN.md §5 wants — tech terms included, no semantic
+  filtering. **Recommended primary source.**
+- **SCOWL** (Spell Checker Oriented Word Lists): MIT-style permissive;
+  configurable size up to ~650k; granular by frequency. Good
+  secondary; supports the T6 v2 tokenization-density post-filter
+  because frequency strata are first-class.
+- **`/usr/share/dict/words`**: distro-dependent, license-fragmented,
+  size varies — not a portable choice.
+
+### Implications
+
+- v1 ships dwyl/english-words filtered to lowercase a-z (no
+  punctuation, no length-1, no Roman numerals). Estimated ~370k
+  after cleanup — comfortably above PLAN.md §5's 100k bar.
+- License manifest: dwyl/english-words is dedicated to the public
+  domain via Unlicense.
+- v2 secondary: SCOWL frequency strata to feed the T6
+  tokenization-density filter.
+
+### Sources
+
+- EFF wordlists for random passphrases — https://www.eff.org/deeplinks/2016/07/new-wordlists-random-passphrases
+- diceware wordlists docs — https://diceware.readthedocs.io/en/v0.9.2/wordlists.html
+
+---
+
+## T14 — Backup/snapshot interaction with rotation
+
+**Question:** What happens when a borg/restic/timeshift snapshot of
+the trusted view is restored under a *different* mapping after a
+rotation? How do we avoid breakage?
+
+### Findings
+
+- **Backups never see scrambled names.** The backup tool runs in the
+  trusted view (D1: scramble the *view*, not the disk). On-disk file
+  names are real. So a snapshot is just a snapshot of the real
+  filesystem; nothing Babbleon-specific is captured.
+- **But: the vault file is on disk** and is captured by full-system
+  backups. Restoring a snapshot pre-rotation onto a host that's
+  already rotated effectively *reverts* the mapping — running active
+  namespaces still use the new mapping; the vault on disk thinks
+  it's the old. Two-mapping inconsistency window.
+- **Mitigation: on every unlock, the daemon checks vault `epoch` vs
+  in-kernel mapping `epoch`; mismatch triggers a re-load of the
+  vault's epoch.** Restored vault becomes the source of truth at next
+  unlock; namespaces rebound on next session.
+- **Bare-metal restore to a new host:** TPM-sealed unlock won't work
+  (PCRs differ). Babbleon must surface a recovery-key path for
+  cross-host vault restore. Document operationally; not a code
+  problem.
+- **borg/restic specifically:** both back up real paths from the
+  trusted view — no special integration needed. **Don't run backups
+  from the untrusted view** — they'd capture scrambled names; this
+  belongs in the "needs real view" manifest from T9.
+
+### Implications
+
+- Vault carries `epoch` + `mapping_table_seed`; on-disk authority,
+  daemon reconciles to it at unlock.
+- Backup tools labeled "needs real view" in the manifest.
+- Cross-host restore documented as "use recovery key, re-enroll
+  hardware/TPM at first boot."
+
+### Sources
+
+- borg FAQ — https://borgbackup.readthedocs.io/en/stable/faq.html
+- restic backing up docs — https://restic.readthedocs.io/en/stable/040_backup.html
+
+---
+
+## T15 — macOS / Windows feasibility scan
+
+**Question:** Can Babbleon's mechanism be ported off Linux? At what
+cost?
+
+### Findings — macOS
+
+- **No mount namespaces equivalent.** Closest is APFS firmlinks +
+  per-volume mounts — coarser-grained and not designed for per-process
+  views.
+- **Endpoint Security framework (ES, macOS 10.15+)** replaced kexts
+  for security tooling. Runs in userspace; can observe file_open,
+  exec, etc.; **cannot rewrite paths**. So ES gives detection but not
+  enforcement of renaming.
+- **Practical macOS port:** FUSE-based filesystem view (T3 §4) per
+  user session, mounted on `$HOME` and selected system paths.
+  Performance cost real but acceptable for endpoint use. Pair with
+  Keychain + SE for the vault (T5).
+- **Verdict:** macOS feasible at M5+, FUSE substrate, perf-tested
+  before commit. T15 follow-up.
+
+### Findings — Windows
+
+- **No mount-namespace equivalent.** Windows has no per-process
+  filesystem view primitive at all comparable to Linux mount NS.
+- **Possible substrates:** minifilter driver (kernel-mode, signed,
+  $$$ to ship), or Detours-style API hooking in userspace
+  (LD_PRELOAD equivalent, equally bypassable).
+- **Verdict:** Windows is a v3+ research project. Not on the
+  roadmap.
+
+### Implications
+
+- macOS: M5+ project, FUSE substrate, ES for detection-side
+  augmentation, Keychain+SE for vault. Tractable.
+- Windows: not in the foreseeable roadmap; document as out of scope.
+- Linux v1 stands as planned.
+
+### Sources
+
+- Delinea: KEXT → SYSEX migration — https://delinea.com/blog/how-to-protect-macos-endpoints-with-shift-from-kext-to-sysex
+- Apple ES framework primer (Dr Logic) — https://drlogic.com/article/apples-endpoint-security-framework-how-to-secure-macos-in-the-enterprise/
+- Apple developer: deprecated kexts + SYSEX alternatives — https://developer.apple.com/support/kernel-extensions
+
+---
+
+## T16 — Naming / trademark / prior-project collision check
+
+**Question:** Is the name "Babbleon" already taken in an
+attention-getting way? Trademark risk?
+
+### Findings
+
+- **No GitHub project named `babbleon` found** in the surveyed search.
+- **Adjacent names exist** but are clearly distinct:
+  - `mosaicnetworks/babble` — distributed consensus middleware.
+  - `Project-Babble` — VR face-tracking org (multiple repos:
+    `BabbleDocs`, `Baballonia`, etc.). Distinct domain.
+  - `litixsoft/baboon` — web framework. Different name.
+- **No federal trademark hit** in the casual sweep. A formal USPTO /
+  EUIPO search is a pre-release task.
+- **Domain & social handle** availability needs a separate check
+  (whois `babbleon.io`, `babbleon.dev`, `babbleon.sh`).
+
+### Implications
+
+- Name is reasonably clear in the security/dev-tools space.
+- Before any public release: USPTO/EUIPO formal search, domain
+  registration, GitHub org reservation.
+- Adjacent "Babble" projects are in different domains (consensus
+  middleware, VR face tracking) → no functional confusion.
+
+### Sources
+
+- mosaicnetworks/babble — https://github.com/mosaicnetworks/babble
+- Project-Babble — https://github.com/Project-Babble
+- name-collision (Wikipedia) — https://en.wikipedia.org/wiki/Name_collision
 
 ---
