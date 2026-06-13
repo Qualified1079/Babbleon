@@ -21,7 +21,7 @@ Status legend: ⬜ not started · 🟡 in progress · ✅ done · 🟥 blocked
 - ✅ **T8. Env-var vocabulary** attackers actually scrape
 - ✅ **T9. Package manager hook surfaces** (dpkg/rpm/brew/flatpak/snap)
 - ✅ **T10. Binary fingerprinting countermeasures**
-- ⬜ **T11. `/proc` and PID-namespace gotchas**
+- ✅ **T11. `/proc` and PID-namespace gotchas**
 
 ## Tier 3 — confirm assumptions
 
@@ -2170,5 +2170,236 @@ we accept that and concentrate the deception on *which* ELF.
 - ObserverWard repo — https://github.com/HLY-TW/ObserverWard
 - "Assessing the Effectiveness of YARA Rules" (arXiv 2111.13910) — https://arxiv.org/pdf/2111.13910
 - awesome-yara (InQuest curated YARA rule list) — https://github.com/inquest/awesome-yara
+
+---
+
+## T11 — `/proc` and PID-namespace gotchas
+
+**Question:** PLAN.md §6 lists `/proc/*/environ` as a v2 must, and T8
+confirms env vars leak through it. What's the full `/proc` surface
+Babbleon's untrusted tier sees? What does `hidepid` actually buy us,
+and what breaks? Do we need a separate PID namespace, and what's the
+PID-1 init-process pain that introduces? What about `/proc/<pid>/root`
+and the container-escape literature?
+
+**Method:** 5-angle search across `hidepid` configuration and systemd
+integration, `/proc/self/maps` + `/proc/PID/cmdline` access rules,
+PID-namespace init/zombie reaper semantics, `/proc/PID/root` container-
+escape paths, and Yama `ptrace_scope`.
+
+### Findings
+
+**1. The kernel already protects more than I thought.**
+
+Per `proc(5)` and the LKML "avoid information leaks" patch series, the
+kernel has progressively tightened `/proc/<pid>/*` access:
+
+- A process can always read its **own** `/proc/<self>/*` files.
+- Reading **another** process's sensitive files (`maps`, `smaps`,
+  `pagemap`, `environ`, `auxv`, `stat` (some fields), `syscall`)
+  requires `PTRACE_MODE_READ_FSCREDS` — i.e., the reading process can
+  ptrace the target. Yama `ptrace_scope` further restricts this.
+- `cmdline`, `comm`, `status` (most fields) are world-readable by
+  default.
+
+This is the right baseline mental model: **same-uid is the broad-leak
+boundary by default**, and Yama narrows it further. A Babbleon-
+untrusted process running as the user's uid can, without special
+config:
+- read every other user-process's `cmdline` (gets program names +
+  args — leaks paths the trusted view used!),
+- read every other user-process's `environ` if Yama allows ptrace,
+- read every other user-process's `maps` ditto,
+- `kill(target)` any of them.
+
+This is the threat T8 surfaced: an untrusted-tier process scrapes
+trusted-tier shells via `/proc`.
+
+**2. `hidepid` is the standard mitigation, with known systemd friction.**
+
+`/proc` accepts mount options:
+
+- `hidepid=0` (default): standard behaviour.
+- `hidepid=1`: process directories visible but contents restricted.
+- `hidepid=2`: process directories of *other* users entirely hidden
+  (`stat /proc/<other-pid>` → ENOENT).
+- `gid=<gid>`: members of that group are exempt.
+
+`hidepid=2,gid=proc` + add specific services (systemd-logind,
+user@.service) to `proc` group is the documented production pattern
+(Kicksecure / Linux-Audit). RHEL7+ supports it. **Known breakage:**
+systemd's D-Bus interface still exposes process info regardless of
+`hidepid` (systemd issue #29893 — open). So `hidepid=2` plugs the
+direct `/proc` leak but does not plug the systemd D-Bus side channel.
+
+**Implication for Babbleon:** `hidepid=2` is necessary but not
+sufficient. The trusted/untrusted split also needs the untrusted tier
+to **not have access to the user dbus** (already true via the IPC
+isolation policy from T7).
+
+**3. PID namespaces are the stronger move — and bring init-process pain.**
+
+A PID namespace gives the untrusted tier a wholly distinct process
+view: it sees only processes inside its own namespace. Trusted-tier
+shells are simply *not in the namespace* — no `/proc/<pid>/*` entry
+exists from the untrusted side regardless of `hidepid`.
+
+This is qualitatively stronger than `hidepid`: an attacker in the
+untrusted namespace cannot enumerate trusted processes *at all*, not
+even by guessing PIDs.
+
+But PID namespaces have a hard requirement: **PID 1 inside the
+namespace must be a real init**. PID 1 has special kernel semantics
+— signals not delivered the normal way, zombies must be reaped, if PID
+1 dies the entire namespace is torn down. Without a proper init,
+zombie processes accumulate and signals are dropped.
+
+Two solutions, both production-proven:
+
+- **Ship `tini`** (or `dumb-init`) as the namespace's PID 1. ~10KB,
+  single-purpose, well-understood. The pattern docker/containerd use.
+- **Use `prctl(PR_SET_CHILD_SUBREAPER)`** on a parent process to
+  collect orphans without being PID 1. Linux 3.4+. Chrome uses this.
+
+For Babbleon: **launch the untrusted namespace with `tini` as PID 1**;
+exec the user shell as a child. Standard pattern, ~10KB cost, no
+exotic kernel deps.
+
+**4. `/proc/<pid>/root` is the container-escape path we must close.**
+
+`/proc/<pid>/root` is a magic symlink to the root of a process's mount
+namespace. If an untrusted-tier process can reach `/proc/<pid>/root`
+for a *trusted-tier* PID, it can traverse the trusted mount namespace
+via that symlink — completely bypassing the mount-namespace boundary.
+
+This is documented as a primary container-escape vector (HackTricks,
+Red Canary, 0xn3va). The PID namespace closes it cleanly: the
+trusted-tier PID isn't visible in the untrusted namespace's `/proc`,
+so there's no `/proc/<pid>/root` to follow.
+
+**Without** a PID namespace, `hidepid=2` does *not* fully close this:
+the symlink exists at `/proc/<pid>/root`; whether it's traversable
+depends on permission. Belt-and-suspenders: combine PID namespace +
+`hidepid=2`.
+
+**5. Yama `ptrace_scope=2` is the third leg.**
+
+Even with PID namespace + `hidepid=2`, a trusted-tier process whose
+PID *is* visible inside its own namespace can be `ptrace`d by a sibling
+in the same namespace. Yama `ptrace_scope` settings:
+
+- `0` (default many distros): any process can ptrace any same-uid.
+- `1` (Ubuntu default): only declared parent/child.
+- `2`: only with `CAP_SYS_PTRACE` (admin-only).
+- `3`: ptrace disabled entirely.
+
+For Babbleon: **`ptrace_scope=2` system-wide**. Belongs in the
+recommended baseline; the host-hardening helper applies it. Real cost
+is debugger friction (gdb needs sudo); document.
+
+PLAN.md §2a-2 already names this; this just confirms the value and
+documents the cost.
+
+**6. Other `/proc` leak sources to remember.**
+
+- `/proc/cpuinfo`, `/proc/meminfo`, `/proc/version` — leak kernel
+  version, CPU model. Used by fingerprint harnesses to pick
+  kernel-specific exploits. Not user-process leaks but inform
+  attacker choice. Babbleon doesn't directly hide these in v1.
+- `/proc/net/{tcp,udp,unix}` — leak open sockets per uid. Should be
+  in untrusted-namespace network namespace too, but that's a bigger
+  decision.
+- `/proc/sys/kernel/random/boot_id` — host-unique. Not credential but
+  identifying. v2 spoof candidate.
+- `/proc/mounts`, `/proc/self/mountinfo` — leak the mount table. PID
+  NS shows only its own view, so this is fine *if* PID NS is on.
+
+**7. The Babbleon untrusted-tier procfs profile.**
+
+Stacked configuration:
+
+```
+mount -t proc proc /proc \
+      -o hidepid=2,gid=proc \
+      (inside untrusted PID + mount NS)
+prctl(PR_SET_CHILD_SUBREAPER) on tini
+tini → user-shell (untrusted view)
+sysctl kernel.yama.ptrace_scope=2
+seccomp: deny ptrace, process_vm_readv, kcmp
+```
+
+This stack plus the namespace isolation gives untrusted tier exactly
+"can see its own processes, can ptrace nothing, cannot enumerate
+trusted shells, cannot follow `/proc/<pid>/root`, cannot use `ps` to
+see trusted-tier programs by name."
+
+### Implications for the plan
+
+1. **PID namespace is required, not optional.** Promote from "v2" to
+   "M3 must" alongside the mount namespace. They install together;
+   the operational cost is the same; the security delta is large.
+   Update PLAN.md §6 "Standard system paths (`/proc/*/environ`)"
+   from "v2" → "M3" and rename the row to "PID-namespace + hidepid=2".
+2. **Ship `tini` (or write an even smaller bespoke init).** Pure-Rust
+   replacement is a ~200-line afternoon project; we own the binary;
+   no third-party dependency.
+3. **`hidepid=2,gid=proc` belongs inside the untrusted namespace's
+   `/proc` mount.** Separate from `hidepid` on the host's `/proc`
+   (which can stay default — trusted tier uses the real `/proc`).
+4. **`ptrace_scope=2` is a global sysctl.** Apply system-wide via the
+   Babbleon baseline-hardening helper; document the gdb friction.
+5. **seccomp filter additions (T3 §5):** also deny `process_vm_readv`,
+   `process_vm_writev`, `kcmp` — alternative-channel inter-process
+   poking. Add to the named list.
+6. **`/proc/<pid>/root` symlink closure is automatic** once PID
+   namespace is on — the symlink simply doesn't exist for trusted
+   PIDs from inside the untrusted NS. No special config needed.
+7. **systemd D-Bus side-channel (issue #29893) is a known-open.**
+   Untrusted tier already has IPC isolation (no user dbus access per
+   T7), so we're not exposed; document the upstream issue.
+8. **v2 fingerprint-hiding for /proc/cpuinfo, /proc/version,
+   /proc/sys/kernel/random/boot_id.** Defer; record as v2 task.
+
+### Confidence
+
+- **High:** PID namespace + `hidepid=2` + Yama `ptrace_scope=2`
+  combined gives the desired untrusted-tier procfs profile. Every
+  primitive is in-tree, well-documented, production-deployed.
+- **High:** PID-1 init requirement and the tini/subreaper solutions.
+  Standard container engineering.
+- **High:** systemd D-Bus side-channel is real but doesn't affect us
+  because we already isolate user dbus.
+- **Medium:** the bespoke micro-init vs `tini` choice. Either works;
+  bespoke gives us full control over name/fingerprint (it gets its
+  own scramble like every other binary).
+- **Medium:** gdb friction from `ptrace_scope=2` for power-user dev
+  workflows. Worth proper docs and an explicit per-session override.
+
+### Open follow-ups
+
+- Decide: ship `tini` or write a Babbleon micro-init? Trade-offs are
+  small; lean toward bespoke for fingerprint control.
+- Confirm `hidepid=2,gid=proc` inside namespace works as expected
+  across kernel versions; should be fine on 6.x.
+- Audit ptrace-adjacent syscalls for seccomp filter completeness:
+  `ptrace`, `process_vm_readv`, `process_vm_writev`, `kcmp`,
+  `pidfd_open`, `pidfd_getfd`, `pidfd_send_signal`.
+- v2 task: `/proc/cpuinfo`, `/proc/version`, boot_id spoofing for
+  the untrusted tier — fingerprint-hiding completeness.
+
+### Sources
+
+- proc(5) — https://man7.org/linux/man-pages/man5/proc.5.html
+- The /proc Filesystem (kernel docs) — https://docs.kernel.org/filesystems/proc.html
+- Linux Audit: hidepid hardening — https://linux-audit.com/linux-system-hardening-adding-hidepid-to-proc/
+- Kicksecure proc-hidepid.service & systemd integration — https://github.com/Kicksecure/security-misc/issues/208
+- systemd issue #29893: hidepid compatibility — https://github.com/systemd/systemd/issues/29893
+- PID Namespace (HackTricks) — https://hacktricks.wiki/en/linux-hardening/privilege-escalation/container-security/protections/namespaces/pid-namespace.html
+- Sensitive Mounts (HackTricks) — https://book.hacktricks.wiki/en/linux-hardening/privilege-escalation/docker-security/docker-breakout-privilege-escalation/sensitive-mounts.html
+- Yama kernel docs — https://docs.kernel.org/admin-guide/LSM/Yama.html
+- NSA: Limiting ptrace on Production Linux Systems — https://media.defense.gov/2019/Jul/16/2002158062/-1/-1/0/CSI-LIMITING-PTRACE-ON-PRODUCTION-LINUX-SYSTEMS.PDF
+- tini PID-1 reaper — https://github.com/krallin/tini (referenced)
+- Don't Fear the Subreaper — https://medium.com/@william.la.martin/dont-fear-the-subreaper-19c8127c031e
+- Group-IB: Linux /proc manipulation — https://www.group-ib.com/blog/linux-pro-manipulation/
 
 ---
