@@ -212,13 +212,60 @@ fn cmd_untrusted() -> Result<()> {
 }
 
 fn cmd_status() -> Result<()> {
+    use babbleon::enforcement::ebpf;
+
     let vp = vault_path();
     if !vp.exists() {
         println!("no vault present; run `babbleon init`");
         std::process::exit(1);
     }
     let meta = std::fs::metadata(&vp)?;
-    println!("vault: {} ({} bytes)", vp.display(), meta.len());
+    println!("vault:   {} ({} bytes)", vp.display(), meta.len());
+
+    // Kernel feature probes
+    #[cfg(target_os = "linux")]
+    {
+        use babbleon::enforcement::ebpf::BpfLsmStatus;
+        match ebpf::probe() {
+            BpfLsmStatus::Available => println!("bpf-lsm: available"),
+            BpfLsmStatus::PermissionDenied => {
+                println!("bpf-lsm: needs CAP_BPF (run as root or grant capability)")
+            }
+            BpfLsmStatus::Unavailable { reason } => println!("bpf-lsm: unavailable — {reason}"),
+        }
+
+        // Landlock availability
+        let ll_status = if std::path::Path::new("/sys/kernel/security/lsm").exists() {
+            std::fs::read_to_string("/sys/kernel/security/lsm")
+                .map(|s| {
+                    if s.split(',').any(|l| l.trim() == "landlock") {
+                        "active"
+                    } else {
+                        "not in lsm= list"
+                    }
+                })
+                .unwrap_or("unknown")
+        } else {
+            "unknown"
+        };
+        println!("landlock: {ll_status}");
+
+        // Seccomp
+        let seccomp = std::fs::read_to_string("/proc/sys/kernel/seccomp/actions_avail")
+            .unwrap_or_else(|_| "not available".into());
+        if seccomp.contains("kill") {
+            println!("seccomp:  available");
+        } else {
+            println!("seccomp:  {}", seccomp.trim());
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = ebpf::probe();
+        println!("bpf-lsm: n/a (not Linux)");
+    }
+
     Ok(())
 }
 

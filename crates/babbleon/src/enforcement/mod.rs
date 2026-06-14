@@ -6,6 +6,7 @@ pub mod simulated;
 pub mod view;
 pub mod wrapper;
 
+pub mod ebpf;
 #[cfg(target_os = "linux")]
 pub mod landlock;
 #[cfg(target_os = "linux")]
