@@ -20,9 +20,13 @@ Legend: `[ ]` open · `[x]` done · `[~]` in-progress · `(M?)` target milestone
 
 ## M2 — Vault hardening
 
-- [ ] FIDO2 `get_assertion` flow (hmac-secret extension) — `crates/babbleon/src/vault/fido2.rs`
-- [ ] TPM2 PCR-sealed backend via `tss-esapi` — `crates/babbleon/src/vault/tpm.rs`
-- [ ] Argon2id second profile for headless/IoT (lower m, higher t); store profile in vault header
+- [~] FIDO2 `get_assertion` flow (hmac-secret extension) — skeleton at
+      `vault/fido2.rs`; returns `HardwareUnavailable` until M2 wires
+      authenticator-rs behind `--features fido2`.
+- [~] TPM2 PCR-sealed backend — skeleton at `vault/tpm.rs`; SEAL_PCRS=4,7,8,9;
+      tss-esapi wiring deferred to M2.5 (see DEFERRED.md).
+- [x] Argon2id second profile for headless/IoT (`Profile::Headless`,
+      m=8 MiB, t=12); selectable via `Tier::SoftHeadless`.
 - [ ] Vault header schema version field; migration path
 - [ ] USB-keyfile backend hardening tests (multi-authenticator matrix)
 - [ ] `babbleon tpm-reseal` subcommand for kernel-update re-seal
