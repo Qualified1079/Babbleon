@@ -346,7 +346,7 @@ fn cmd_demo() -> Result<()> {
 
     // Use the simulated driver once so the dependency is exercised
     let mut driver: Box<dyn EnforcementDriver> = Box::new(SimulatedDriver);
-    let _ = driver.present_trusted(&bin, &s.tracked)?;
+    let _ = driver.mount_real_view(&bin, &s.tracked)?;
 
     println!("=== DEMO COMPLETE ===");
     Ok(())
@@ -542,7 +542,7 @@ fn cmd_apply_ns(real_root: &std::path::Path) -> Result<()> {
         let _reader = HoneyFifoReader::spawn(bus_arc, s.payload.epoch, HONEY_FIFO.to_string());
 
         let mut driver = LinuxNamespaceDriver::default().with_wrappers(wrapper_dir.to_path_buf());
-        let result = driver.present_untrusted(real_root, &s.mapping)?;
+        let result = driver.mount_scrambled_view(real_root, &s.mapping)?;
         println!("tier: {}", result.tier);
         for note in &result.notes {
             println!("  {note}");

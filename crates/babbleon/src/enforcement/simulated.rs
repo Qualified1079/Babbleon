@@ -1,4 +1,8 @@
 //! No-op driver: returns dict-style views without touching the kernel.
+//!
+//! Used for tests, demos, and any platform where the namespace driver is not
+//! available.  Does not defeat any real attacker — calling code is responsible
+//! for selecting a real driver in production via `enforcement::factory`.
 
 use super::driver::{EnforcementDriver, EnforcementResult};
 use super::view::View;
@@ -14,7 +18,7 @@ impl EnforcementDriver for SimulatedDriver {
         "simulated"
     }
 
-    fn present_trusted(
+    fn mount_real_view(
         &mut self,
         real_root: &Path,
         tracked: &[String],
@@ -30,7 +34,7 @@ impl EnforcementDriver for SimulatedDriver {
         })
     }
 
-    fn present_untrusted(
+    fn mount_scrambled_view(
         &mut self,
         real_root: &Path,
         mapping: &MappingTable,
@@ -74,7 +78,7 @@ mod tests {
         let (_d, bin) = stub_root();
         let tracked = vec!["curl".to_string(), "ssh".to_string(), "git".to_string()];
         let mut driver = SimulatedDriver;
-        let r = driver.present_trusted(&bin, &tracked).unwrap();
+        let r = driver.mount_real_view(&bin, &tracked).unwrap();
         assert_eq!(r.tier, "trusted");
         assert_eq!(r.visible.len(), 3);
     }
@@ -88,7 +92,7 @@ mod tests {
             .collect();
         let table = Mapper::new(&[5u8; 32]).build_table(&tracked, 0);
         let mut driver = SimulatedDriver;
-        let r = driver.present_untrusted(&bin, &table).unwrap();
+        let r = driver.mount_scrambled_view(&bin, &table).unwrap();
         assert_eq!(r.tier, "untrusted");
         for scrambled in r.visible.keys() {
             assert!(

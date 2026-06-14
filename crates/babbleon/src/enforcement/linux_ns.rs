@@ -57,8 +57,9 @@ impl LinuxNamespaceDriver {
         }
     }
 
-    /// Set the wrapper directory; subsequent `present_untrusted` calls will
-    /// bind-mount `wrapper_root/<scrambled>` instead of the raw real binary.
+    /// Set the wrapper directory; subsequent `mount_scrambled_view` calls
+    /// will bind-mount `wrapper_root/<scrambled>` instead of the raw real
+    /// binary.
     pub fn with_wrappers(mut self, wrapper_root: PathBuf) -> Self {
         self.wrapper_root = Some(wrapper_root);
         self
@@ -81,7 +82,7 @@ impl EnforcementDriver for LinuxNamespaceDriver {
 
     /// Present the trusted view: real names, no scrambling, real binary paths.
     /// Records the current mount-NS inode so wrapper scripts can detect tier.
-    fn present_trusted(
+    fn mount_real_view(
         &mut self,
         real_root: &Path,
         tracked: &[String],
@@ -114,7 +115,7 @@ impl EnforcementDriver for LinuxNamespaceDriver {
     /// `unshare(NEWNS|NEWPID)` and `make_root_private()`.  If those haven't
     /// happened we still try — worst case the bind-mounts leak to the host,
     /// which is caught by `make_root_private()` re-running here.
-    fn present_untrusted(
+    fn mount_scrambled_view(
         &mut self,
         real_root: &Path,
         mapping: &MappingTable,

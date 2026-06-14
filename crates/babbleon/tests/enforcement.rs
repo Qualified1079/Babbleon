@@ -21,7 +21,7 @@ fn simulated_driver_trusted_view() {
 
     let s = make_session(tmp.path());
     let mut driver = SimulatedDriver;
-    let result = driver.present_trusted(&bin, &s.tracked).unwrap();
+    let result = driver.mount_real_view(&bin, &s.tracked).unwrap();
     assert_eq!(result.tier, "trusted");
     assert!(result.visible.len() <= s.tracked.len());
 }
@@ -38,7 +38,7 @@ fn simulated_driver_untrusted_view() {
 
     let s = make_session(tmp.path());
     let mut driver = SimulatedDriver;
-    let result = driver.present_untrusted(&bin, &s.mapping).unwrap();
+    let result = driver.mount_scrambled_view(&bin, &s.mapping).unwrap();
     assert_eq!(result.tier, "untrusted");
     // At least the two stubs should be visible.
     assert!(result.visible.len() >= 2);
