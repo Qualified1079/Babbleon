@@ -77,37 +77,6 @@ Legend: `[ ]` open · `[x]` done · `[~]` in-progress · `(M?)` target milestone
 - [ ] SIEM event sinks (Splunk HEC, syslog RFC5424, JSON-over-HTTPS) — enterprise crate
 - [ ] Enterprise console (separate private repo; depends on public `babbleon` crate)
 
-## Research track: LLM-driven install-time semantic diversification (v3+)
-
-A natural successor / complement to Babbleon's runtime-name scrambling:
-diversify the *implementation itself* per-device using a local code LLM.
-Prior art: compiler-based MTD (ACM MTD workshops, 2014+), Polyverse
-Polymorphic Linux (commercial since ~2017, compile-time ASLR-style binary
-randomization), source-level "device diversity paradigm" papers.
-
-What's new vs Polyverse: semantic AST-level rewrites (rename, control-flow
-restructure, struct-field reorder, equivalent stdlib swap) instead of just
-binary-layout randomization.  Forces the attacker to fingerprint each
-function independently, not just defeat ASLR.
-
-Shape (≤40B-param local model + tight harness):
-- AST chunker (tree-sitter, one function per chunk).
-- Mutation menu (~15 semantic-preserving transforms).
-- Per-function test extractor + cargo/pytest sandbox.
-- Property-test-gated infinite retry loop; fallback = keep original fn.
-- Reproducer: pinned seed + model produces deterministic variant.
-- Variant store at `.babbleon-variants/<file>.json` (seed → mutation log).
-
-Resource math (single 4090/5090 + 32B-class coder):
-- ~50-100 tok/s; 200k LOC ≈ 2M tokens; ~20-30 h fresh install,
-  single-digit minutes incremental.  Matches Babbleon's weekly epoch cadence.
-
-Privacy property is load-bearing here — sending source to a frontier API
-to obfuscate against attackers is a weird threat model.  Local-only is the
-honest pitch.
-
-Out of scope for v1 Babbleon (M5+); track here as a research direction.
-
 ## Auditability / readability
 
 - [ ] Rename pass: every public fn/type/module gets a name that says what it
