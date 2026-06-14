@@ -68,8 +68,19 @@ fn run() -> Result<()> {
     // No new privileges ever.
     prctl::set_no_new_privs().context("PR_SET_NO_NEW_PRIVS")?;
 
-    // Seccomp deny-list: process-inspection syscalls.
-    apply_seccomp().context("seccomp")?;
+    // Seccomp deny-list: process-inspection syscalls (single source of truth
+    // in the babbleon crate).
+    babbleon::enforcement::seccomp::apply_untrusted_filter()
+        .map_err(|e| anyhow::anyhow!("seccomp: {e}"))?;
+
+    // Landlock LSM self-sandbox: restrict filesystem access to an allowlist.
+    // Best-effort — gracefully degrades if kernel < 5.13.
+    let landlock_cfg = babbleon::enforcement::landlock::default_config(std::path::Path::new(
+        "/run/babbleon/scrambled",
+    ));
+    if let Err(e) = babbleon::enforcement::landlock::apply_sandbox(&landlock_cfg) {
+        tracing::warn!("landlock not applied: {e}");
+    }
 
     // Fork: we (parent) become PID 1 init-reaper; child execs the command.
     match unsafe { fork() }.context("fork")? {
@@ -141,44 +152,3 @@ fn drop_bounding_set() -> Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
-fn apply_seccomp() -> Result<()> {
-    use seccompiler::{BpfProgram, SeccompAction, SeccompFilter, SeccompRule};
-    use std::collections::BTreeMap;
-
-    let denied: &[i64] = &[
-        libc::SYS_ptrace,
-        libc::SYS_process_vm_readv,
-        libc::SYS_process_vm_writev,
-        libc::SYS_kcmp,
-        libc::SYS_pidfd_open,
-        libc::SYS_pidfd_getfd,
-        libc::SYS_pidfd_send_signal,
-        libc::SYS_perf_event_open,
-        libc::SYS_bpf,
-        libc::SYS_userfaultfd,
-    ];
-
-    let mut rules: BTreeMap<i64, Vec<SeccompRule>> = BTreeMap::new();
-    for &nr in denied {
-        rules.insert(nr, vec![]);
-    }
-
-    let arch = std::env::consts::ARCH
-        .try_into()
-        .unwrap_or(seccompiler::TargetArch::x86_64);
-
-    let filter = SeccompFilter::new(
-        rules,
-        SeccompAction::Allow,
-        SeccompAction::KillProcess,
-        arch,
-    )
-    .map_err(|e| anyhow::anyhow!("seccomp build: {e}"))?;
-
-    let prog: BpfProgram = filter
-        .try_into()
-        .map_err(|e| anyhow::anyhow!("seccomp compile: {e}"))?;
-
-    seccompiler::apply_filter(&prog).map_err(|e| anyhow::anyhow!("seccomp apply: {e}"))
-}

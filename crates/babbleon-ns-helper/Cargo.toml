@@ -18,3 +18,4 @@ tracing-subscriber = { workspace = true }
 nix = { workspace = true }
 seccompiler = { workspace = true }
 libc = { workspace = true }
+babbleon = { path = "../babbleon" }

@@ -131,10 +131,29 @@ impl EnforcementDriver for LinuxNamespaceDriver {
         syscalls::mount_tmpfs(&self.scrambled_root, "mode=0555")?;
         self.mounts.push(self.scrambled_root.clone());
 
+        // Bind-mount honey-name wrappers FIRST so an attacker probing them
+        // triggers the tripwire just like any other scrambled name.  Honey
+        // wrappers live in wrapper_root with their honey name as filename.
+        let mut visible: HashMap<String, PathBuf> = HashMap::new();
+        if let Some(wrap_dir) = &self.wrapper_root {
+            for honey in &mapping.honey_names {
+                let src = wrap_dir.join(honey);
+                if !src.exists() {
+                    continue;
+                }
+                let dst = self.scrambled_root.join(honey);
+                std::fs::write(&dst, b"").map_err(|e| {
+                    BabbleonError::Enforcement(format!("create honey stub {}: {e}", dst.display()))
+                })?;
+                syscalls::bind_mount(&src, &dst)?;
+                self.mounts.push(dst.clone());
+                visible.insert(honey.clone(), dst);
+            }
+        }
+
         // Bind-mount the wrapper (if configured) or the real binary under
         // its scrambled name.  Bind-mounting the wrapper is what makes the
         // tier-detection + banner-deception layer actually fire on exec.
-        let mut visible: HashMap<String, PathBuf> = HashMap::new();
         for (real, scrambled) in &mapping.real_to_scrambled {
             let src = match &self.wrapper_root {
                 Some(wrap_dir) => {

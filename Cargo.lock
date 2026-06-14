@@ -185,6 +185,7 @@ name = "babbleon-ns-helper"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "babbleon",
  "libc",
  "nix",
  "seccompiler",
