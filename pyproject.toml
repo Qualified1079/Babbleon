@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "babbleon"
+version = "0.1.0"
+description = "Per-host randomized namespace obfuscation to defeat automated LLM-driven attackers"
+requires-python = ">=3.10"
+license = { text = "PolyForm-Noncommercial-1.0.0" }
+dependencies = [
+    "argon2-cffi>=23.0",
+    "pyrage>=1.2",
+]
+
+[project.optional-dependencies]
+fido2 = ["fido2>=1.1"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+babbleon = "babbleon.cli:main"
+
+# Enterprise packages register extensions under these groups.
+# Public package discovers them at runtime via babbleon.plugins.PluginRegistry.
+[project.entry-points."babbleon.vault_backends"]
+# (built-in backends are instantiated directly; external ones go here)
+# example: hsm = "babbleon_enterprise.vault.hsm:HSMBackend"
+
+[project.entry-points."babbleon.event_sinks"]
+# example: siem = "babbleon_enterprise.sinks.siem:SIEMSink"
+
+[project.entry-points."babbleon.enforcement"]
+# example: fleet = "babbleon_enterprise.enforcement.fleet:FleetNamespaceBackend"
+
+[project.entry-points."babbleon.manifest_sources"]
+# example: mdm = "babbleon_enterprise.manifest.mdm:MDMManifestSource"
+
+[tool.setuptools.packages.find]
+include = ["babbleon*"]
+
+[tool.setuptools.package-data]
+"babbleon.mapping.wordlist" = ["words.txt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

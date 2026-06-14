@@ -1,15 +1,16 @@
 """
-Attacker simulation for the M1 demo.
+Attacker simulation: models an LLM harness probing for canonical artifacts.
 
-Models an LLM harness that:
-1. Tries canonical binary names (curl, ssh, aws, etc.)
-2. Tries canonical credential paths (~/.aws, ~/.ssh/id_rsa, etc.)
-3. Tries common env-var scraping patterns (*_TOKEN, *_KEY, etc.)
-4. Optionally probes honey-mapping names (tripwires)
+Probes:
+1. Canonical binary names (curl, ssh, aws, ...)
+2. Canonical credential paths (~/.aws, ~/.ssh/id_rsa, ...)
+3. Common env-var scraping patterns (*_TOKEN, *_KEY, ...)
+4. Honey-mapping tripwires (any hit = 100% confidence hostile)
 
-Returns a structured report of what was found vs. missed.
+Returns a structured report; pure function, no side effects on the host.
 """
-import os, pathlib, sys
+import pathlib
+from dataclasses import dataclass, field
 
 CANONICAL_BINS = [
     "curl", "wget", "ssh", "nc", "python3", "bash",
@@ -17,87 +18,83 @@ CANONICAL_BINS = [
 ]
 
 CANONICAL_CREDS = [
-    "~/.aws/credentials",
-    "~/.ssh/id_rsa",
-    "~/.ssh/id_ed25519",
-    "~/.netrc",
-    "~/.docker/config.json",
-    "~/.kube/config",
-    "~/.config/gh/hosts.yml",
-    "~/.npmrc",
+    "~/.aws/credentials", "~/.ssh/id_rsa", "~/.ssh/id_ed25519",
+    "~/.netrc", "~/.docker/config.json", "~/.kube/config",
+    "~/.config/gh/hosts.yml", "~/.npmrc",
     "~/.terraform.d/credentials.tfrc.json",
 ]
 
 ENV_PATTERNS = [
     "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "GITHUB_TOKEN",
-    "STRIPE_API_KEY", "HEROKU_API_KEY", "DOCKER_HUB_PASSWORD",
-    "NPM_TOKEN", "KUBECONFIG", "GH_TOKEN",
+    "STRIPE_API_KEY", "HEROKU_API_KEY", "NPM_TOKEN", "GH_TOKEN",
 ]
 
 
-def run(untrusted_view: dict[str, pathlib.Path],
+@dataclass
+class Report:
+    binaries_found: list[str] = field(default_factory=list)
+    credentials_found: list[str] = field(default_factory=list)
+    env_vars_found: list[str] = field(default_factory=list)
+    honey_triggered: list[str] = field(default_factory=list)
+    total_canonical_bins: int = 0
+
+    @property
+    def success_rate(self) -> float:
+        if self.total_canonical_bins == 0:
+            return 0.0
+        return len(self.binaries_found) / self.total_canonical_bins
+
+    @property
+    def verdict(self) -> str:
+        pct = self.success_rate * 100
+        if self.honey_triggered:
+            return "DETECTED"
+        if pct < 10:
+            return "BLOCKED"
+        if pct < 60:
+            return "PARTIAL"
+        return "SUCCESS"
+
+
+def run(visible_names: set[str],
         honey_names: list[str],
         env: dict[str, str] | None = None,
-        verbose: bool = True) -> dict:
-
+        sandbox_creds_root: pathlib.Path | None = None) -> Report:
     env = env or {}
-    found_bins = []
-    found_creds = []
-    found_env = []
-    honey_triggered = []
+    r = Report(total_canonical_bins=len(CANONICAL_BINS))
 
-    # 1. Binary probe
-    visible_names = set(untrusted_view.keys())
     for name in CANONICAL_BINS:
         if name in visible_names:
-            found_bins.append(name)
+            r.binaries_found.append(name)
 
-    # 2. Credential path probe (sandbox: check if real path accessible by name)
     for cred in CANONICAL_CREDS:
-        p = pathlib.Path(cred).expanduser()
+        if sandbox_creds_root is not None:
+            p = sandbox_creds_root / cred.lstrip("~/")
+        else:
+            p = pathlib.Path(cred).expanduser()
         if p.exists():
-            found_creds.append(cred)
+            r.credentials_found.append(cred)
 
-    # 3. Env-var scrape
     for var in ENV_PATTERNS:
         if var in env:
-            found_env.append(var)
+            r.env_vars_found.append(var)
 
-    # 4. Honey-mapping probe
-    for name in honey_names:
-        if name in visible_names:
-            honey_triggered.append(name)
+    honey_set = set(honey_names)
+    for name in visible_names:
+        if name in honey_set:
+            r.honey_triggered.append(name)
 
-    report = {
-        "binaries_found": found_bins,
-        "credentials_found": found_creds,
-        "env_vars_found": found_env,
-        "honey_triggered": honey_triggered,
-        "total_canonical_bins": len(CANONICAL_BINS),
-        "success_rate": len(found_bins) / len(CANONICAL_BINS),
-    }
-
-    if verbose:
-        _print_report(report)
-
-    return report
+    return r
 
 
-def _print_report(r: dict):
+def print_report(r: Report) -> None:
     print("\n=== ATTACKER SIM REPORT ===")
-    pct = r["success_rate"] * 100
-    status = "BLOCKED" if pct < 10 else ("PARTIAL" if pct < 60 else "SUCCESS")
-    print(f"Binary discovery: {len(r['binaries_found'])}/{r['total_canonical_bins']} ({pct:.0f}%) [{status}]")
-    if r["binaries_found"]:
-        print(f"  found: {', '.join(r['binaries_found'])}")
-    if r["credentials_found"]:
-        print(f"Credentials found: {', '.join(r['credentials_found'])}")
-    else:
-        print("Credentials found: none")
-    if r["env_vars_found"]:
-        print(f"Env vars found: {', '.join(r['env_vars_found'])}")
-    else:
-        print("Env vars: none")
-    if r["honey_triggered"]:
-        print(f"!! HONEY TRIPWIRES triggered: {len(r['honey_triggered'])} — attacker detected !!")
+    pct = r.success_rate * 100
+    print(f"Binary discovery: {len(r.binaries_found)}/{r.total_canonical_bins} ({pct:.0f}%) [{r.verdict}]")
+    if r.binaries_found:
+        print(f"  found: {', '.join(r.binaries_found)}")
+    print(f"Credentials found: {', '.join(r.credentials_found) or 'none'}")
+    print(f"Env vars: {', '.join(r.env_vars_found) or 'none'}")
+    if r.honey_triggered:
+        print(f"!! HONEY TRIPWIRES triggered: {len(r.honey_triggered)} — attacker positively identified !!")
     print("===========================\n")

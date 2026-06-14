@@ -1,168 +1,107 @@
 """
 Babbleon M1 sandbox demo.
 
-Usage:
-  python3 demo.py init           # create vault + populate sandbox/bin/
-  python3 demo.py trusted        # show trusted view (real names)
-  python3 demo.py untrusted      # show untrusted (scrambled) view
-  python3 demo.py attacker       # run attacker sim against untrusted view
-  python3 demo.py rotate         # rotate mapping (new epoch)
-  python3 demo.py all            # run full demo sequence
+Self-contained: doesn't touch the user's vault or real ~/.config.
+Spins up a temp directory, runs the full lifecycle, prints the result.
+
+Usage:  python3 sandbox/demo.py
 """
-import getpass, json, os, pathlib, stat, sys
-sys.path.insert(0, str(pathlib.Path(__file__).parent))
+import pathlib
+import sys
+import tempfile
 
-import vault as vlt
-import mapping as mp
-import views
-import attacker_sim
+sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
-SANDBOX_BIN = pathlib.Path(__file__).parent / "bin"
-STATE_FILE = pathlib.Path(__file__).parent / "vault" / "state.json"
-HONEY_N = 50
+from babbleon.enforcement import View
+from babbleon.session import DEFAULT_TRACKED, Session
+from sandbox import attacker_sim
 
 
-def _get_password(prompt: str = "passphrase: ") -> str:
-    if sys.stdin.isatty():
-        return getpass.getpass(prompt)
-    return sys.stdin.readline().strip()
+def _populate_fake_root(root: pathlib.Path) -> None:
+    bin_dir = root / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    for name in DEFAULT_TRACKED:
+        p = bin_dir / name
+        p.write_text(f"#!/bin/sh\necho '{name} stub'\n")
+        p.chmod(0o755)
 
 
-def _save_state(epoch: int):
-    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    STATE_FILE.write_text(json.dumps({"epoch": epoch}))
+def main() -> int:
+    print("=== BABBLEON M1 SANDBOX DEMO ===\n")
+    with tempfile.TemporaryDirectory(prefix="babbleon-demo-") as tmp:
+        root = pathlib.Path(tmp)
+        bin_dir = root / "bin"
+        vault_file = root / "vault.age"
+        _populate_fake_root(root)
+        password = "demo-passphrase"
 
+        # init
+        print("[1] Initializing vault (Argon2id + age, ~1s)...")
+        s = Session.initialize(password, vault_file=vault_file)
+        print(f"    vault at {vault_file}\n")
 
-def _load_state() -> int:
-    if STATE_FILE.exists():
-        return json.loads(STATE_FILE.read_text()).get("epoch", 0)
+        # show views
+        trusted = View.trusted(s.tracked, bin_dir)
+        untrusted = View.untrusted(s.mapping, bin_dir)
+
+        print("[2] Trusted view (humans see real names):")
+        for n in trusted.names()[:5]:
+            print(f"    {n}")
+        print(f"    ... ({len(trusted.names())} total)\n")
+
+        print("[3] Untrusted view (payloads see scrambled compounds):")
+        for n in untrusted.names()[:5]:
+            real = s.mapping.reveal(n)
+            print(f"    {n}  (was: {real})")
+        print(f"    ... ({len(untrusted.names())} total)\n")
+
+        # attacker against untrusted view
+        print("[4] Running attacker simulation against UNTRUSTED view...")
+        report = attacker_sim.run(
+            visible_names=set(untrusted.names()),
+            honey_names=s.payload.honey_names,
+            env={},
+            sandbox_creds_root=root,  # no creds in this sandbox
+        )
+        attacker_sim.print_report(report)
+
+        # rotation
+        print("[5] Rotating mapping (epoch 0 -> 1)...")
+        sample = s.tracked[0]
+        old = s.mapping.scramble(sample)
+        s.rotate(password, vault_file=vault_file)
+        new = s.mapping.scramble(sample)
+        print(f"    {sample}: {old}")
+        print(f"        ->  {new}\n")
+
+        # attacker against rotated view
+        untrusted2 = View.untrusted(s.mapping, bin_dir)
+        print("[6] Attacker re-runs against rotated view (old probes are stale):")
+        report2 = attacker_sim.run(
+            visible_names=set(untrusted2.names()),
+            honey_names=s.payload.honey_names,
+            env={},
+            sandbox_creds_root=root,
+        )
+        attacker_sim.print_report(report2)
+
+        # honey-tripwire demo
+        print("[7] Attacker probes a HONEY name from previous epoch...")
+        # use one of the prior honey names against current view: it's not there,
+        # but a probe could equally accidentally hit a current honey name.
+        # demo: inject one current honey into "visible" set and re-run.
+        honey_visible = set(untrusted2.names()) | {s.payload.honey_names[0]}
+        report3 = attacker_sim.run(
+            visible_names=honey_visible,
+            honey_names=s.payload.honey_names,
+            env={},
+            sandbox_creds_root=root,
+        )
+        attacker_sim.print_report(report3)
+
+    print("=== DEMO COMPLETE ===")
     return 0
 
 
-def _populate_sandbox():
-    """Create stub binaries in sandbox/bin/ for each tracked tool."""
-    SANDBOX_BIN.mkdir(parents=True, exist_ok=True)
-    for name in views.TRACKED:
-        p = SANDBOX_BIN / name
-        if not p.exists():
-            p.write_text(f"#!/bin/sh\necho '{name} stub'\n")
-            p.chmod(p.stat().st_mode | stat.S_IEXEC)
-    print(f"sandbox/bin/ populated with {len(views.TRACKED)} stub binaries.")
-
-
-def cmd_init():
-    _populate_sandbox()
-    password = _get_password("choose a passphrase: ")
-    host_secret = os.urandom(32)
-    epoch = 0
-
-    mapping = mp.build_mapping(views.TRACKED, host_secret, epoch)
-    honey = mp.build_honey_mapping(HONEY_N, host_secret, epoch)
-
-    vlt.save(password, host_secret, epoch, honey)
-    _save_state(epoch)
-
-    print(f"\nVault created (epoch {epoch}).")
-    print(f"Mapping sample: curl -> {mapping.get('curl', '?')}")
-    print(f"Honey sample:   {honey[0]}")
-
-
-def cmd_trusted():
-    v = views.trusted_view()
-    print("\n=== TRUSTED VIEW (what humans see) ===")
-    for name, path in sorted(v.items()):
-        print(f"  {name:<20} -> {path}")
-    print(f"Total: {len(v)} tools")
-
-
-def cmd_untrusted(payload: dict | None = None):
-    if payload is None:
-        password = _get_password()
-        payload = vlt.load(password)
-    host_secret = bytes.fromhex(payload["host_secret"])
-    epoch = payload["epoch"]
-    mapping = mp.build_mapping(views.TRACKED, host_secret, epoch)
-    uv = views.untrusted_view(mapping)
-    print("\n=== UNTRUSTED VIEW (what a payload sees) ===")
-    for scrambled, path in sorted(uv.items()):
-        real = next(k for k, v in mapping.items() if v == scrambled)
-        print(f"  {scrambled:<55} (was: {real})")
-    print(f"Total: {len(uv)} tools  |  epoch: {epoch}")
-
-
-def cmd_attacker(payload: dict | None = None):
-    if payload is None:
-        password = _get_password()
-        payload = vlt.load(password)
-    host_secret = bytes.fromhex(payload["host_secret"])
-    epoch = payload["epoch"]
-    mapping = mp.build_mapping(views.TRACKED, host_secret, epoch)
-    uv = views.untrusted_view(mapping)
-    honey = payload.get("honey_names", [])
-
-    print("\n[attacker has access to the UNTRUSTED view only]")
-    attacker_sim.run(uv, honey)
-
-
-def cmd_rotate():
-    password = _get_password()
-    payload = vlt.load(password)
-    host_secret = bytes.fromhex(payload["host_secret"])
-    old_epoch = payload["epoch"]
-    new_epoch = old_epoch + 1
-
-    honey = mp.build_honey_mapping(HONEY_N, host_secret, new_epoch)
-    vlt.save(password, host_secret, new_epoch, honey)
-    _save_state(new_epoch)
-
-    old_map = mp.build_mapping(views.TRACKED, host_secret, old_epoch)
-    new_map = mp.build_mapping(views.TRACKED, host_secret, new_epoch)
-    print(f"\nRotated epoch {old_epoch} -> {new_epoch}")
-    print(f"  curl: {old_map.get('curl')} -> {new_map.get('curl')}")
-
-
-def cmd_all():
-    print("=== BABBLEON M1 DEMO ===\n")
-    _populate_sandbox()
-    password = "demo-passphrase"
-    host_secret = os.urandom(32)
-    epoch = 0
-    mapping = mp.build_mapping(views.TRACKED, host_secret, epoch)
-    honey = mp.build_honey_mapping(HONEY_N, host_secret, epoch)
-    vault_bytes = vlt.create(password, host_secret, epoch, honey)
-    payload = vlt.unlock(password, vault_bytes)
-
-    cmd_trusted()
-    cmd_untrusted(payload)
-    cmd_attacker(payload)
-
-    # rotate and show attacker fails again
-    new_epoch = 1
-    new_mapping = mp.build_mapping(views.TRACKED, host_secret, new_epoch)
-    new_honey = mp.build_honey_mapping(HONEY_N, host_secret, new_epoch)
-    new_vault = vlt.create(password, host_secret, new_epoch, new_honey)
-    new_payload = vlt.unlock(password, new_vault)
-
-    print("--- After rotation (epoch 0 -> 1) ---")
-    print(f"curl mapping changed: {mapping['curl']} -> {new_mapping['curl']}")
-    print("[attacker re-runs with stale mapping from epoch 0 — all names now wrong]")
-    # run attacker against epoch-1 view with epoch-0 honey (stale names)
-    uv1 = views.untrusted_view(new_mapping)
-    attacker_sim.run(uv1, honey, verbose=True)
-
-
-COMMANDS = {
-    "init": cmd_init,
-    "trusted": cmd_trusted,
-    "untrusted": cmd_untrusted,
-    "attacker": cmd_attacker,
-    "rotate": cmd_rotate,
-    "all": cmd_all,
-}
-
 if __name__ == "__main__":
-    cmd = sys.argv[1] if len(sys.argv) > 1 else "all"
-    if cmd not in COMMANDS:
-        print(f"unknown command: {cmd}. choices: {', '.join(COMMANDS)}")
-        sys.exit(1)
-    COMMANDS[cmd]()
+    sys.exit(main())

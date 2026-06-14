@@ -1,4 +1,18 @@
-sandbox/wordlist/words.txt
-sandbox/bin/
-sandbox/__pycache__/
-sandbox/vault/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.coverage
+*.egg-info/
+build/
+dist/
+
+# Generated wordlist (fetched on first run)
+babbleon/mapping/wordlist/words.txt
+
+# User vaults / config
+*.age
+.config/
+
+# OS
+.DS_Store
