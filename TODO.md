@@ -48,7 +48,9 @@ Legend: `[ ]` open · `[x]` done · `[~]` in-progress · `(M?)` target milestone
 
 ## M3.5 — Deception layer
 
-- [ ] Banner deception table: scrambled `curl` returns plausible-wrong (`nano`-shaped) help
+- [x] Banner deception table: `deception.rs` maps real→decoy tool; wrapper
+      embeds decoy banner; untrusted `--help` returns `less`/`sort`/`date`
+      text instead of silence. 3 tests enforce full coverage of DEFAULT_TRACKED.
 - [x] Per-host SHA-256 padding in wrapper output — `enforcement/wrapper.rs`
       embeds HMAC(host_secret, scrambled_name)[0..16] in every wrapper script.
 - [ ] Adversarial fingerprint test vs ObserverWard / WhatWeb before ship
