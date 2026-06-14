@@ -1,25 +1,37 @@
-//! M3.5 banner deception table.
+//! Banner deception table — defeats `--help` / `--version` fingerprinting.
 //!
-//! When the wrapper is invoked with `--help` or `--version` from an
-//! *untrusted* namespace, it returns a plausible-wrong response rather than
-//! silence.  This defeats fingerprinters that distinguish "empty response"
-//! (blocked tool) from "has output" (tool found).
+//! # What this defeats
 //!
-//! The table maps a real tool name to a *decoy* tool whose help text the
-//! wrapper will imitate.  The decoy help text is embedded verbatim so the
-//! wrapper emits it without exec'ing the real binary.
+//! Network-facing fingerprinters (ObserverWard, WhatWeb, Wappalyzer) and
+//! local enumerators (env-script reconnaissance, malware staging loops)
+//! both decide what a tool is by reading its `--help` output.  If the
+//! untrusted-tier wrapper emitted silence on `--help`, the attacker would
+//! learn "this name is wrapped" (informational); if it emitted the real
+//! help, the wrapper would be transparent.
+//!
+//! The middle ground is to emit a *plausible-but-wrong* help banner — the
+//! help text of a different, unrelated, real tool.  An attacker probing
+//! the scrambled `curl` wrapper sees `less` help text and concludes the
+//! name resolves to a file pager; their next discovery step is wrong.
+//!
+//! The table is two-stage: `fake_tool_for` maps a real tool to its
+//! impersonated decoy, and `fake_help_text_for` maps a decoy name to the
+//! embedded help-text snippet.  This split keeps the impersonation
+//! coverage and the snippet library separately verifiable.
 
 use std::collections::HashMap;
 
-/// Returns the decoy tool name for a given real tool, if one is configured.
+/// Returns the impersonated tool name for a given real tool, if one is
+/// configured.  E.g. `fake_tool_for("curl") == Some("less")`.
 #[allow(dead_code)]
-pub fn decoy_for(real: &str) -> Option<&'static str> {
+pub fn fake_tool_for(real: &str) -> Option<&'static str> {
     deception_map().get(real).copied()
 }
 
-/// Returns the deceptive banner text for a decoy tool name.
+/// Returns the spoofed `--help` text that the wrapper will emit when
+/// impersonating `decoy`.
 #[allow(dead_code)]
-pub fn banner_for_decoy(decoy: &str) -> Option<&'static str> {
+pub fn fake_help_text_for(decoy: &str) -> Option<&'static str> {
     deception_snippets().get(decoy).copied()
 }
 
@@ -132,7 +144,7 @@ mod tests {
     #[test]
     fn decoy_does_not_equal_real_name() {
         for tool in babbleon::manifest::DEFAULT_TRACKED {
-            if let Some(decoy) = decoy_for(tool) {
+            if let Some(decoy) = fake_tool_for(tool) {
                 assert_ne!(*tool, decoy, "decoy for {tool} must not be the tool itself");
             }
         }
