@@ -34,6 +34,10 @@ pub struct LinuxNamespaceDriver {
     pub trusted_root: PathBuf,
     /// Home directory for credential gating.  None = skip credential gate.
     pub home: Option<PathBuf>,
+    /// Optional dir of pre-generated wrapper scripts keyed by scrambled name.
+    /// If set, the driver bind-mounts the wrapper instead of the real binary —
+    /// this is what enables banner-deception + trust-tier checks.
+    pub wrapper_root: Option<PathBuf>,
     /// Active mounts we need to tear down in reverse order.
     mounts: Vec<PathBuf>,
     /// Inode of /proc/self/ns/mnt at the time we set up the trusted namespace.
@@ -47,9 +51,17 @@ impl LinuxNamespaceDriver {
             scrambled_root,
             trusted_root,
             home,
+            wrapper_root: None,
             mounts: Vec::new(),
             trusted_ns_inode: None,
         }
+    }
+
+    /// Set the wrapper directory; subsequent `present_untrusted` calls will
+    /// bind-mount `wrapper_root/<scrambled>` instead of the raw real binary.
+    pub fn with_wrappers(mut self, wrapper_root: PathBuf) -> Self {
+        self.wrapper_root = Some(wrapper_root);
+        self
     }
 }
 
@@ -119,10 +131,24 @@ impl EnforcementDriver for LinuxNamespaceDriver {
         syscalls::mount_tmpfs(&self.scrambled_root, "mode=0555")?;
         self.mounts.push(self.scrambled_root.clone());
 
-        // Bind-mount each real binary under its scrambled name.
+        // Bind-mount the wrapper (if configured) or the real binary under
+        // its scrambled name.  Bind-mounting the wrapper is what makes the
+        // tier-detection + banner-deception layer actually fire on exec.
         let mut visible: HashMap<String, PathBuf> = HashMap::new();
         for (real, scrambled) in &mapping.real_to_scrambled {
-            let src = real_root.join(real);
+            let src = match &self.wrapper_root {
+                Some(wrap_dir) => {
+                    let wp = wrap_dir.join(scrambled);
+                    if wp.exists() {
+                        wp
+                    } else {
+                        // Wrapper missing — fall back to real binary so the
+                        // scrambled view still has *something* at that name.
+                        real_root.join(real)
+                    }
+                }
+                None => real_root.join(real),
+            };
             if !src.exists() {
                 continue;
             }

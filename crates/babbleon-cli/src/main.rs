@@ -480,6 +480,21 @@ fn cmd_apply_ns(real_root: &std::path::Path) -> Result<()> {
         let pw = read_password("passphrase: ")?;
         let s = babbleon::session::Session::unlock(&pw, None, None)?;
 
+        // Snapshot the *host* mount-NS inode BEFORE we unshare.  Wrapper
+        // scripts embed this as their "trusted" inode so they correctly
+        // detect when they're being invoked from inside the scrambled NS.
+        let host_ns_inode = std::fs::metadata("/proc/self/ns/mnt")
+            .ok()
+            .map(|m| {
+                use std::os::unix::fs::MetadataExt;
+                m.ino()
+            });
+        // Persist it so trusted-tier callers (PAM session, etc.) can read it.
+        if let Some(inode) = host_ns_inode {
+            let _ = std::fs::create_dir_all("/run/babbleon");
+            let _ = std::fs::write("/run/babbleon/trusted-ns-inode", inode.to_string());
+        }
+
         // Generate wrapper scripts with per-host padding + deceptive banners.
         let wrapper_dir = std::path::Path::new("/run/babbleon/wrappers");
         let mapping_pairs: Vec<(String, String)> = s
@@ -498,12 +513,12 @@ fn cmd_apply_ns(real_root: &std::path::Path) -> Result<()> {
             real_root,
             wrapper_dir,
             &host_secret,
-            None,
+            host_ns_inode,
             deception::deceptive_response,
         )
         .with_context(|| format!("write wrappers to {}", wrapper_dir.display()))?;
 
-        let mut driver = LinuxNamespaceDriver::default();
+        let mut driver = LinuxNamespaceDriver::default().with_wrappers(wrapper_dir.to_path_buf());
         let result = driver.present_untrusted(real_root, &s.mapping)?;
         println!("tier: {}", result.tier);
         for note in &result.notes {
