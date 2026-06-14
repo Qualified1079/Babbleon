@@ -78,6 +78,72 @@ pub fn write_wrapper(
     Ok(wp)
 }
 
+/// FIFO path where honey-name wrappers report access events.
+pub const HONEY_FIFO: &str = "/run/babbleon/honey.fifo";
+
+/// Shell template for a honey-name wrapper.
+///
+/// When executed (from any tier), it:
+///   1. Writes a minimal JSON event to HONEY_FIFO (non-blocking; fails silently if no reader).
+///   2. Exits 127 — "command not found" — so the caller sees a plausible missing-binary error.
+///
+/// The trusted-tier daemon reads from HONEY_FIFO and emits `Event::HoneyTriggered`.
+const HONEY_TEMPLATE: &str = r#"#!/bin/sh
+# babbleon honey-wrapper (host-pad:{padding})
+_BL_HONEY="{honey_name}"
+_BL_FIFO="{fifo}"
+_ts=$(date -u +%s 2>/dev/null || echo 0)
+_pid=$$
+printf '{"ts":%s,"pid":%s,"honey":"%s","args":"%s"}\n' \
+    "$_ts" "$_pid" "$_BL_HONEY" "$*" \
+    >> "$_BL_FIFO" 2>/dev/null || true
+exit 127
+"#;
+
+/// Write a honey-name wrapper script.
+///
+/// The wrapper does not exec any real binary — the scrambled name maps to
+/// nothing real.  On execution it appends a JSON line to `HONEY_FIFO` and
+/// returns exit code 127.
+pub fn write_honey_wrapper(
+    honey_name: &str,
+    output_dir: &Path,
+    host_secret: &[u8],
+    fifo: Option<&str>,
+) -> Result<PathBuf> {
+    std::fs::create_dir_all(output_dir)?;
+    let wp = output_dir.join(honey_name);
+    let fifo_path = fifo.unwrap_or(HONEY_FIFO);
+    let contents = HONEY_TEMPLATE
+        .replace("{padding}", &padding(honey_name, host_secret))
+        .replace("{honey_name}", honey_name)
+        .replace("{fifo}", fifo_path);
+    std::fs::write(&wp, contents)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&wp, std::fs::Permissions::from_mode(0o755))?;
+    }
+    Ok(wp)
+}
+
+/// Write honey-name wrapper scripts for every name in `honey_names`.
+pub fn write_honey_wrappers<'a, I>(
+    honey_names: I,
+    output_dir: &Path,
+    host_secret: &[u8],
+) -> Result<Vec<PathBuf>>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    let mut out = Vec::new();
+    for name in honey_names {
+        let p = write_honey_wrapper(name, output_dir, host_secret, None)?;
+        out.push(p);
+    }
+    Ok(out)
+}
+
 /// Write wrapper scripts for all entries in the mapping.
 ///
 /// `deception_fn` — optional lookup: given the real tool name, returns
@@ -171,6 +237,64 @@ mod tests {
         .unwrap();
         let contents = std::fs::read_to_string(wp).unwrap();
         assert!(contents.contains("12345"));
+    }
+
+    #[test]
+    fn honey_wrapper_exits_127() {
+        let dir = tempfile::tempdir().unwrap();
+        let tmp_fifo = dir.path().join("honey.fifo");
+        let wp = write_honey_wrapper(
+            "xq-marble-fern",
+            dir.path(),
+            b"secret",
+            Some(tmp_fifo.to_str().unwrap()),
+        )
+        .unwrap();
+        let status = std::process::Command::new("sh")
+            .arg(&wp)
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .status()
+            .unwrap();
+        assert_eq!(
+            status.code(),
+            Some(127),
+            "honey wrapper must exit 127 (command not found)"
+        );
+    }
+
+    #[test]
+    fn honey_wrapper_writes_to_fifo_file() {
+        use std::io::Read;
+        let dir = tempfile::tempdir().unwrap();
+        // Use a regular file instead of a real FIFO so we can read it after exec
+        let log_file = dir.path().join("honey.log");
+        let wp = write_honey_wrapper(
+            "xq-marble-fern",
+            dir.path(),
+            b"secret",
+            Some(log_file.to_str().unwrap()),
+        )
+        .unwrap();
+        std::process::Command::new("sh")
+            .arg(&wp)
+            .arg("--list")
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .status()
+            .unwrap();
+        let mut content = String::new();
+        std::fs::File::open(&log_file)
+            .unwrap()
+            .read_to_string(&mut content)
+            .unwrap();
+        assert!(
+            content.contains("xq-marble-fern"),
+            "honey name must appear in log: {content:?}"
+        );
+        // Should be valid JSON
+        let _: serde_json::Value =
+            serde_json::from_str(content.trim()).expect("honey log must be valid JSON");
     }
 
     #[test]

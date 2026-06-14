@@ -93,6 +93,85 @@ impl EventSink for JsonlFileSink {
     }
 }
 
+/// Reads honey-tripwire access events from the named FIFO and forwards them
+/// to an `EventBus`.
+///
+/// The honey wrapper scripts write a minimal JSON line to `HONEY_FIFO`.
+/// This reader opens the FIFO (blocking until a writer appears), parses each
+/// line, and emits `Event::HoneyTriggered` to the bus.
+///
+/// Call `spawn(bus, epoch, fifo_path)` from the trusted-tier daemon.  The
+/// returned `JoinHandle` runs until the FIFO is removed or an error occurs.
+pub struct HoneyFifoReader;
+
+#[derive(serde::Deserialize)]
+struct HoneyLine {
+    ts: Option<u64>,
+    pid: Option<u64>,
+    honey: String,
+    args: Option<String>,
+}
+
+impl HoneyFifoReader {
+    /// Spawn a background thread that reads from `fifo_path` and emits events.
+    ///
+    /// The thread exits cleanly when the FIFO is deleted or read returns EOF.
+    pub fn spawn(
+        bus: std::sync::Arc<EventBus>,
+        epoch: u64,
+        fifo_path: impl AsRef<std::path::Path> + Send + 'static,
+    ) -> std::thread::JoinHandle<()> {
+        std::thread::spawn(move || {
+            Self::run(bus, epoch, fifo_path.as_ref());
+        })
+    }
+
+    fn run(bus: std::sync::Arc<EventBus>, epoch: u64, fifo_path: &std::path::Path) {
+        use std::io::{BufRead, BufReader};
+
+        // Create the FIFO if it doesn't exist.
+        #[cfg(unix)]
+        {
+            if !fifo_path.exists() {
+                unsafe {
+                    let path_cstr = std::ffi::CString::new(fifo_path.to_string_lossy().as_bytes())
+                        .unwrap_or_default();
+                    libc::mkfifo(path_cstr.as_ptr(), 0o600);
+                }
+            }
+        }
+
+        let f = match std::fs::OpenOptions::new().read(true).open(fifo_path) {
+            Ok(f) => f,
+            Err(e) => {
+                tracing::warn!("honey fifo open failed: {e}");
+                return;
+            }
+        };
+
+        let reader = BufReader::new(f);
+        for line in reader.lines() {
+            let line = match line {
+                Ok(l) if !l.is_empty() => l,
+                _ => break,
+            };
+            if let Ok(entry) = serde_json::from_str::<HoneyLine>(&line) {
+                let hint = format!(
+                    "pid={} ts={} args={}",
+                    entry.pid.unwrap_or(0),
+                    entry.ts.unwrap_or(0),
+                    entry.args.as_deref().unwrap_or("")
+                );
+                bus.emit(Event::HoneyTriggered {
+                    epoch,
+                    names: vec![entry.honey],
+                    process_hint: hint,
+                });
+            }
+        }
+    }
+}
+
 pub struct EventBus {
     sinks: Vec<Box<dyn EventSink>>,
 }
@@ -160,6 +239,62 @@ mod tests {
                 new_epoch: 2
             }
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn honey_fifo_reader_fires_event() {
+        use std::io::Write;
+        use std::sync::Arc;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let fifo_path = tmp.path().join("honey.fifo");
+
+        // Create FIFO
+        unsafe {
+            let cstr =
+                std::ffi::CString::new(fifo_path.to_string_lossy().as_bytes()).unwrap();
+            libc::mkfifo(cstr.as_ptr(), 0o600);
+        }
+
+        let store = Arc::new(Mutex::new(vec![]));
+        let mut bus = EventBus::new();
+        bus.add_sink(Box::new(Capture(store.clone())));
+        let bus = Arc::new(bus);
+
+        let fp = fifo_path.clone();
+        let handle = HoneyFifoReader::spawn(bus.clone(), 7, fp);
+
+        // Give the reader thread time to open the FIFO.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        // Write a honey line as if a honey wrapper did it.
+        {
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&fifo_path)
+                .unwrap();
+            writeln!(
+                f,
+                r#"{{"ts":1234,"pid":9999,"honey":"xq-marble-fern","args":"--list"}}"#
+            )
+            .unwrap();
+        }
+        // Close the FIFO so the reader sees EOF.
+        std::fs::remove_file(&fifo_path).ok();
+
+        handle.join().ok();
+
+        let s = store.lock().unwrap();
+        assert_eq!(s.len(), 1, "expected exactly one HoneyTriggered event");
+        match &s[0] {
+            Event::HoneyTriggered { epoch, names, process_hint } => {
+                assert_eq!(*epoch, 7);
+                assert_eq!(names[0], "xq-marble-fern");
+                assert!(process_hint.contains("9999"), "pid should appear in hint");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
     }
 
     #[test]
