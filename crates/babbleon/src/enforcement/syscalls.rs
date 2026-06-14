@@ -1,7 +1,19 @@
 //! Isolated Linux syscall wrappers (via `nix`).
 //!
-//! ALL kernel calls live here. Other enforcement modules never use `nix`
-//! directly; this keeps the audit surface for privileged operations small.
+//! # Why this module exists
+//!
+//! Every privileged kernel call Babbleon makes goes through one of these
+//! functions.  Other enforcement modules import this module instead of
+//! `nix` directly.  The audit consequence:
+//!
+//!   - To verify "what kernel-level primitives can Babbleon invoke?", read
+//!     this file.  It is the complete list.
+//!   - To verify "does Babbleon do anything dangerous with raw mounts /
+//!     namespaces?", read this file again.  Any new attack surface lands
+//!     here first.
+//!
+//! Reviewers should reject any PR that adds a `nix::` or `libc::` mount /
+//! umount / unshare call outside this file.
 
 #![cfg(target_os = "linux")]
 

@@ -1,4 +1,9 @@
-//! Trusted/untrusted view abstraction.
+//! The catalog a driver returns: which names map to which real binaries.
+//!
+//! Decouples "what does the tier see" (a `View`) from "how do we make the
+//! kernel show it" (a driver).  Tests use `View` directly so they can
+//! verify scrambling logic without mounting anything; the production driver
+//! uses `View` as the source-of-truth for its bind-mount target list.
 
 use crate::mapping::MappingTable;
 use std::collections::HashMap;

@@ -79,30 +79,23 @@ Legend: `[ ]` open · `[x]` done · `[~]` in-progress · `(M?)` target milestone
 
 ## Auditability / readability
 
-- [ ] Rename pass: every public fn/type/module gets a name that says what it
-      does in plain English, not what it's named after.  The runtime
-      obfuscation is the product; the source code should be maximally
-      readable so security auditors can verify the implementation is honest.
-      Examples: `present_untrusted` → `mount_scrambled_view`,
+- [x] Rename pass: every public fn/type/module gets a name that says what it
+      does in plain English.  Landed: `present_trusted` → `mount_real_view`,
+      `present_untrusted` → `mount_scrambled_view`,
       `apply_untrusted_filter` → `block_process_inspection_syscalls`,
-      `write_honey_wrapper` → `write_tripwire_script`,
-      `decoy_for` → `fake_help_text_for`.  Target: any function name should
-      be guessable from its purpose without reading the code.
-- [ ] Module-level doc comment pass: every file's top-of-file doc says
-      WHY this module exists (what attack it defeats), not just WHAT it
-      contains.  Threat-model-first comments make forks and downstream
-      audits faster.
+      `write_honey_wrapper(s)` → `write_tripwire_script(s)`,
+      `decoy_for` → `fake_tool_for`, `banner_for_decoy` → `fake_help_text_for`.
+- [x] Module-level doc comment pass: every file in `enforcement/` and
+      `deception.rs` has a threat-model-first header explaining what
+      attack the module defeats, not just what it contains.
 
 ## Known leak: wrapper-size fingerprint
 
-- [ ] Honey wrappers (~350B) and real-tool wrappers (~510B+) are
-      distinguishable by `ls -la` alone — an attacker with read access to
-      the scrambled dir can partition the set into "tripwire" vs
-      "tracked tool" without executing anything.  Fix: pad every wrapper
-      to a uniform size (e.g. 1024B) with shell-comment whitespace whose
-      content is per-host HMAC bytes so the padding itself can't be
-      stripped via a deterministic test.  Caught during live VM test
-      2026-06-14.
+- [x] Fixed via unified template — honey (tripwire) and real-tool
+      wrappers now share byte-for-byte the same shell template;
+      runtime branch via `/run/babbleon/honey.list` instead of by
+      file content.  Test: `honey_and_real_wrapper_same_structure` in
+      `enforcement/wrapper.rs`.
 
 ## Cross-cutting / hygiene
 
