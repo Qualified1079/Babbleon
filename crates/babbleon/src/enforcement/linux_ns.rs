@@ -32,6 +32,8 @@ pub struct LinuxNamespaceDriver {
     pub scrambled_root: PathBuf,
     /// Root where the trusted (real-name) view lives; usually the real $PATH dir.
     pub trusted_root: PathBuf,
+    /// Home directory for credential gating.  None = skip credential gate.
+    pub home: Option<PathBuf>,
     /// Active mounts we need to tear down in reverse order.
     mounts: Vec<PathBuf>,
     /// Inode of /proc/self/ns/mnt at the time we set up the trusted namespace.
@@ -40,9 +42,11 @@ pub struct LinuxNamespaceDriver {
 
 impl LinuxNamespaceDriver {
     pub fn new(scrambled_root: PathBuf, trusted_root: PathBuf) -> Self {
+        let home = std::env::var_os("HOME").map(PathBuf::from);
         Self {
             scrambled_root,
             trusted_root,
+            home,
             mounts: Vec::new(),
             trusted_ns_inode: None,
         }
@@ -133,12 +137,22 @@ impl EnforcementDriver for LinuxNamespaceDriver {
         }
 
         // /proc with hidepid=2 — only meaningful inside a PID NS.
-        // We attempt it here; the ns-helper must have established the PID NS
-        // first.  Failure is logged but not fatal — the mount-NS boundary
-        // is the primary isolation mechanism.
         match syscalls::mount_proc_hidepid(Path::new("/proc")) {
             Ok(()) => tracing::debug!("/proc remounted hidepid=2"),
             Err(e) => tracing::warn!("/proc hidepid remount failed (PID NS not set up?): {e}"),
+        }
+
+        // Gate credential directories: overlay each with an empty tmpfs so
+        // the path exists (avoids telltale "no such file" errors) but leaks nothing.
+        let mut gated_creds = 0usize;
+        if let Some(home) = &self.home.clone() {
+            match crate::credentials::apply_untrusted_gate(home) {
+                Ok(gated) => {
+                    gated_creds = gated.len();
+                    self.mounts.extend(gated);
+                }
+                Err(e) => tracing::warn!("credential gate failed: {e}"),
+            }
         }
 
         let count = visible.len();
@@ -146,7 +160,7 @@ impl EnforcementDriver for LinuxNamespaceDriver {
             tier: "untrusted".into(),
             visible,
             notes: vec![format!(
-                "{count} bind-mounts at {}; scrambled view active",
+                "{count} bind-mounts at {}; {gated_creds} cred dirs gated; scrambled view active",
                 self.scrambled_root.display()
             )],
         })

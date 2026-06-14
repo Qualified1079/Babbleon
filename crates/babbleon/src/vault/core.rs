@@ -9,21 +9,34 @@ use std::io::{Read, Write};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VaultPayload {
+    /// Schema version.  Bump only on breaking changes to this struct.
+    /// Old vaults without this field deserialize to 0.
+    #[serde(default)]
+    pub schema: u32,
     pub epoch: u64,
     /// 32-byte secret as hex.
     pub host_secret_hex: String,
     #[serde(default)]
     pub honey_names: Vec<String>,
+    /// KEK backend tier used to seal this vault.  Informational; not enforced
+    /// at unseal (the backend is caller-selected).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<String>,
 }
+
+/// Current payload schema.  Increment when fields become non-backward-compatible.
+pub const PAYLOAD_SCHEMA: u32 = 1;
 
 impl VaultPayload {
     pub fn new(epoch: u64, honey_names: Vec<String>) -> Self {
         let mut secret = [0u8; 32];
         rand::thread_rng().fill_bytes(&mut secret);
         Self {
+            schema: PAYLOAD_SCHEMA,
             epoch,
             host_secret_hex: hex::encode(secret),
             honey_names,
+            tier: None,
         }
     }
 

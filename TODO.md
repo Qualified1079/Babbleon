@@ -27,7 +27,8 @@ Legend: `[ ]` open · `[x]` done · `[~]` in-progress · `(M?)` target milestone
       tss-esapi wiring deferred to M2.5 (see DEFERRED.md).
 - [x] Argon2id second profile for headless/IoT (`Profile::Headless`,
       m=8 MiB, t=12); selectable via `Tier::SoftHeadless`.
-- [ ] Vault header schema version field; migration path
+- [x] Vault header schema version field (`VaultPayload.schema`); old vaults
+      deserialize schema=0; migration path is re-seal.
 - [ ] USB-keyfile backend hardening tests (multi-authenticator matrix)
 - [ ] `babbleon tpm-reseal` subcommand for kernel-update re-seal
 
@@ -55,30 +56,32 @@ Legend: `[ ]` open · `[x]` done · `[~]` in-progress · `(M?)` target milestone
 - [x] Path-gated credential dirs (`credentials::discover` + `apply_untrusted_gate`)
 - [x] IPC socket env-var deny-list (`SSH_AUTH_SOCK`, gpg-agent, DBUS, XDG_RUNTIME_DIR)
 - [x] Env-var scrubber: deny-list from RESEARCH T8 (`credentials::scrub_env`)
-- [ ] OverlayFS per-app writable upper layers (decision: tmpfs-over for M4 baseline,
-      overlayfs only if apps need to actually *write* cred-shaped files)
-- [ ] Wire credential gate into `LinuxNamespaceDriver::present_untrusted`
-- [ ] CLI `babbleon credentials --apply` to invoke the gate (currently dry-run only)
+- [x] Wire credential gate into `LinuxNamespaceDriver::present_untrusted`
+      (reads `$HOME`; tmpfs-overlays each cred dir; count reported in EnforcementResult notes)
+- [ ] OverlayFS per-app writable upper layers — deferred; tmpfs-overlay is the M4 default
+- [ ] CLI `babbleon credentials --apply` live gate (currently dry-run/discovery only)
 
 ## M5 — Enterprise + escrow
 
 - [x] Plugin registry seam (`plugins::PluginRegistry`) — enterprise crate registers
       `KekBackend` / `EnforcementDriver` / `EventSink` impls at startup
 - [x] `JsonlFileSink` baseline audit sink (community-side)
+- [x] Auditability: `audit::ChainedAuditLog` — SHA-256 hash chain; verify() detects
+      truncation/tampering; reopening continues chain.
 - [ ] Escrow backend (admin recovery) via separate KEK wrap — enterprise crate
 - [ ] SIEM event sinks (Splunk HEC, syslog RFC5424, JSON-over-HTTPS) — enterprise crate
 - [ ] Enterprise console (separate private repo; depends on public `babbleon` crate)
-- [ ] Auditability: signed event log; tamper-evident hash chain (community-side)
 
 ## Cross-cutting / hygiene
 
 - [x] CI: fmt + clippy + cargo-audit + cargo-deny (`.github/workflows/ci.yml`)
-- [ ] Reproducible release builds (musl static binaries)
-- [ ] Operator docs (`docs/operator.md`): install, rotate, recover, decommission
+- [x] Reproducible release builds: `.cargo/config.toml` with musl static flags;
+      `cargo build --release --target x86_64-unknown-linux-musl` produces a
+      static binary with no glibc dep.
+- [x] Operator docs (`docs/operator.md`): install, rotate, recover, decommission
 - [x] Threat-model doc (`docs/threat-model.md`) with attacker capabilities table
-- [x] Tamper-evident audit log (`audit::ChainedAuditLog`) — SHA-256 hash chain;
-      verify() detects truncation, in-place edits, and chain breaks.
-- [ ] Backup/restore tooling that's mapping-aware (epoch + wordlist version)
+- [x] Backup/restore: `backup::BackupBundle` — versions epoch + host_secret +
+      tracked manifest + wordlist hash alongside any filesystem snapshot.
 - [ ] macOS driver (Endpoint Security + Keychain) — explicit M5+ stretch
 - [ ] Windows driver — research-only, v3+
 
