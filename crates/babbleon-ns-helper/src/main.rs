@@ -70,7 +70,7 @@ fn run() -> Result<()> {
 
     // Seccomp deny-list: process-inspection syscalls (single source of truth
     // in the babbleon crate).
-    babbleon::enforcement::seccomp::apply_untrusted_filter()
+    babbleon::enforcement::seccomp::block_process_inspection_syscalls()
         .map_err(|e| anyhow::anyhow!("seccomp: {e}"))?;
 
     // Landlock LSM self-sandbox: restrict filesystem access to an allowlist.
