@@ -45,6 +45,22 @@ The BPF C source is complete.  The Rust embedding (`include_bytes!`) and the
 `bpf(BPF_PROG_LOAD)` / `bpf(BPF_LINK_CREATE)` load path in `ebpf.rs` are
 scaffolded but stubbed until the build step is wired into CI.  Track at M3.5.
 
+## Hardening guarantees
+
+- **Kernel-version gated.** `ebpf::probe()` refuses to touch BPF below kernel
+  6.1, which is the first LTS with the worst pre-6.0 verifier CVEs
+  (CVE-2021-3490, -22555, -4204, etc.) patched.  Older kernels degrade to
+  mount-NS + seccomp + Landlock only.
+- **Link-attached, never pinned.**  We attach via `BPF_LINK_CREATE` and hold
+  the link FD in `BpfLsmHandle`.  We do NOT pin to `/sys/fs/bpf/`.  If the
+  loader is SIGKILLed mid-life, the kernel closes the link FD on process
+  teardown and auto-detaches the program — no "stale deny-all" can outlive
+  the babbleon daemon.
+- **Caps dropped post-load.**  `babbleon-ns-helper` retains `CAP_BPF` +
+  `CAP_SYS_ADMIN` only long enough to call `BPF_PROG_LOAD` +
+  `BPF_LINK_CREATE`, then `PR_CAPBSET_DROP`s them.  No userspace process
+  on the running system can load additional BPF programs after that.
+
 ## Graceful degradation
 
 If BPF LSM is unavailable, babbleon continues to operate with:

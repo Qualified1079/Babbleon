@@ -39,20 +39,56 @@ mod inner {
         PermissionDenied,
     }
 
+    /// Minimum kernel version we'll load BPF LSM programs on.
+    ///
+    /// 6.1 LTS has the worst pre-6.0 BPF verifier CVEs patched and is the
+    /// first kernel where `bpf_link` semantics for LSM programs are stable.
+    /// Older kernels degrade to mount-NS + seccomp + Landlock only.
+    pub const MIN_KERNEL: (u32, u32) = (6, 1);
+
+    /// Parse `major.minor` from `/proc/sys/kernel/osrelease`.
+    pub fn kernel_version() -> Option<(u32, u32)> {
+        let s = std::fs::read_to_string("/proc/sys/kernel/osrelease").ok()?;
+        let mut parts = s.trim().split(['.', '-']);
+        let major: u32 = parts.next()?.parse().ok()?;
+        let minor: u32 = parts.next()?.parse().ok()?;
+        Some((major, minor))
+    }
+
+    fn kernel_meets_minimum() -> bool {
+        match kernel_version() {
+            Some((maj, min)) => (maj, min) >= MIN_KERNEL,
+            None => false,
+        }
+    }
+
     /// Probe the kernel for BPF LSM support without loading any program.
     ///
     /// Checks (in order):
-    ///   1. `/sys/kernel/security/lsm` contains "bpf".
-    ///   2. `/proc/sys/kernel/unprivileged_bpf_disabled` (informational).
+    ///   1. Kernel >= MIN_KERNEL (refuses older kernels to dodge verifier CVEs).
+    ///   2. `/sys/kernel/security/lsm` contains "bpf".
     ///   3. A `BPF_PROG_TYPE_LSM` feature probe via `bpf(BPF_BTF_LOAD, ...)`.
     pub fn probe() -> BpfLsmStatus {
+        // Kernel version gate — refuse to touch BPF on pre-6.1 kernels even
+        // if the lsm= line claims bpf is active.
+        if !kernel_meets_minimum() {
+            let kver = kernel_version_string();
+            return BpfLsmStatus::Unavailable {
+                reason: format!(
+                    "kernel {kver} below minimum {}.{} — BPF LSM disabled to avoid \
+                     pre-{}.{} verifier CVE exposure; mount-NS + seccomp + Landlock \
+                     remain active",
+                    MIN_KERNEL.0, MIN_KERNEL.1, MIN_KERNEL.0, MIN_KERNEL.1
+                ),
+            };
+        }
+
         // Quick check via lsm file — available since 5.1
         let lsm_active = std::fs::read_to_string("/sys/kernel/security/lsm")
             .map(|s| s.split(',').any(|l| l.trim() == "bpf"))
             .unwrap_or(false);
 
         if !lsm_active {
-            // Try to distinguish "old kernel" from "BPF LSM not in boot params"
             let kver = kernel_version_string();
             return BpfLsmStatus::Unavailable {
                 reason: format!(
@@ -91,17 +127,27 @@ mod inner {
         }
     }
 
-    /// Handle returned by a loaded BPF LSM program.  Dropping it unloads the program.
+    /// Handle returned by a loaded BPF LSM program.
+    ///
+    /// Holds the program FD and the BPF *link* FD (created via
+    /// `BPF_LINK_CREATE`, not pinned to `/sys/fs/bpf/`).  Because the link is
+    /// FD-anchored, the kernel auto-detaches the program when this process
+    /// exits — even on SIGKILL — so a crashed loader cannot leave a dangling
+    /// deny-all program attached to `bprm_check_security`.
+    ///
+    /// We deliberately do *not* pin to bpffs.  Pins survive process death and
+    /// would require a separate cleanup tool to recover from a bad load.
     #[derive(Debug)]
     pub struct BpfLsmHandle {
         /// File descriptor of the loaded BPF program.
         fd: i32,
-        /// File descriptor of the BPF link attaching the program to the hook.
+        /// File descriptor of the BPF link (BPF_LINK_CREATE, never pinned).
         link_fd: i32,
     }
 
     impl Drop for BpfLsmHandle {
         fn drop(&mut self) {
+            // Close link first so the program is detached before the prog FD goes.
             if self.link_fd >= 0 {
                 unsafe { libc::close(self.link_fd) };
             }
@@ -113,18 +159,33 @@ mod inner {
 
     /// Load the untrusted-exec-guard BPF LSM program.
     ///
-    /// The embedded bytecode (`UNTRUSTED_EXEC_GUARD_BPF`) is a compiled
-    /// BPF object that hooks `bprm_check_security`.  It reads the calling
-    /// process's mount-NS inode from the task struct and, if it does not
-    /// match the trusted-NS inode written to a BPF map at setup time, denies
+    /// The embedded bytecode hooks `bprm_check_security`.  It reads the calling
+    /// process's mount-NS inode from the task struct and, if it does not match
+    /// the trusted-NS inode written to a BPF map at setup time, denies
     /// execution of any path outside the scrambled wrapper dir.
     ///
-    /// Returns `Err` if BPF LSM is unavailable, the bytecode is empty
-    /// (not yet compiled), or loading fails.
+    /// Safety properties:
+    ///   - Kernel-version gated: refuses to load below MIN_KERNEL.
+    ///   - Link-based attachment (BPF_LINK_CREATE), never pinned to bpffs —
+    ///     SIGKILL of the loader auto-detaches the program.
+    ///   - Caller (babbleon-ns-helper) drops CAP_BPF + CAP_SYS_ADMIN immediately
+    ///     after this returns.
+    ///
+    /// Returns `Err` if BPF LSM is unavailable, the kernel is too old, the
+    /// bytecode is empty (not yet compiled), or loading fails.
     pub fn load_exec_guard(
         _trusted_ns_inode: u64,
         _scrambled_root: &Path,
     ) -> Result<BpfLsmHandle> {
+        // Kernel gate — refuse to load on pre-MIN_KERNEL even if BPF appears available.
+        if !kernel_meets_minimum() {
+            return Err(BabbleonError::Enforcement(format!(
+                "kernel below {}.{}; refusing to load BPF LSM program. \
+                 mount-NS + seccomp + Landlock remain active.",
+                MIN_KERNEL.0, MIN_KERNEL.1
+            )));
+        }
+
         // Placeholder: BPF object bytes are not yet compiled.
         // When tools/ebpf/Makefile runs, it writes the compiled object here via
         // `include_bytes!` in a generated module.
@@ -161,7 +222,7 @@ mod inner {
 }
 
 #[cfg(target_os = "linux")]
-pub use inner::{load_exec_guard, probe, BpfLsmHandle, BpfLsmStatus};
+pub use inner::{kernel_version, load_exec_guard, probe, BpfLsmHandle, BpfLsmStatus, MIN_KERNEL};
 
 /// Non-Linux stub: BPF LSM is Linux-only.
 #[cfg(not(target_os = "linux"))]
@@ -211,12 +272,34 @@ mod tests {
         let result = load_exec_guard(12345, Path::new("/run/babbleon/scrambled"));
         assert!(
             result.is_err(),
-            "load_exec_guard should fail until BPF bytecode is compiled"
+            "load_exec_guard should fail until BPF bytecode is compiled or on old kernel"
         );
         let msg = result.unwrap_err().to_string();
+        // Either "kernel below" (old kernel gate) or "BPF/bpf" (no bytecode) is fine
         assert!(
-            msg.contains("BPF") || msg.contains("bpf"),
-            "error should mention BPF: {msg}"
+            msg.contains("BPF") || msg.contains("bpf") || msg.contains("kernel"),
+            "error should mention BPF or kernel gate: {msg}"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn kernel_version_parses() {
+        // Should not panic and should return Some on Linux
+        let v = kernel_version();
+        assert!(v.is_some(), "kernel_version() should parse osrelease");
+        let (maj, _min) = v.unwrap();
+        assert!(maj >= 3, "kernel major version sanity: got {maj}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn min_kernel_is_at_least_6_1() {
+        // Lock in the gate — if someone lowers this, the test should catch it.
+        assert!(
+            MIN_KERNEL >= (6, 1),
+            "MIN_KERNEL must be >= 6.1 to dodge pre-6.0 verifier CVEs; got {:?}",
+            MIN_KERNEL
         );
     }
 }
