@@ -14,16 +14,27 @@ impl EnforcementDriver for SimulatedDriver {
         "simulated"
     }
 
-    fn present_trusted(&mut self, real_root: &Path, tracked: &[String]) -> Result<EnforcementResult> {
+    fn present_trusted(
+        &mut self,
+        real_root: &Path,
+        tracked: &[String],
+    ) -> Result<EnforcementResult> {
         let view = View::trusted(tracked, real_root);
         Ok(EnforcementResult {
             tier: "trusted".into(),
             visible: view.entries,
-            notes: vec![format!("simulated trusted view over {}", real_root.display())],
+            notes: vec![format!(
+                "simulated trusted view over {}",
+                real_root.display()
+            )],
         })
     }
 
-    fn present_untrusted(&mut self, real_root: &Path, mapping: &MappingTable) -> Result<EnforcementResult> {
+    fn present_untrusted(
+        &mut self,
+        real_root: &Path,
+        mapping: &MappingTable,
+    ) -> Result<EnforcementResult> {
         let view = View::untrusted(mapping, real_root);
         let count = view.entries.len();
         Ok(EnforcementResult {
@@ -71,13 +82,19 @@ mod tests {
     #[test]
     fn simulated_untrusted_view() {
         let (_d, bin) = stub_root();
-        let tracked: Vec<String> = ["curl", "ssh", "git"].iter().map(|s| s.to_string()).collect();
+        let tracked: Vec<String> = ["curl", "ssh", "git"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         let table = Mapper::new(&[5u8; 32]).build_table(&tracked, 0);
         let mut driver = SimulatedDriver;
         let r = driver.present_untrusted(&bin, &table).unwrap();
         assert_eq!(r.tier, "untrusted");
         for scrambled in r.visible.keys() {
-            assert!(!tracked.contains(scrambled), "no canonical names should appear");
+            assert!(
+                !tracked.contains(scrambled),
+                "no canonical names should appear"
+            );
             assert!(table.reveal(scrambled).is_some());
         }
     }

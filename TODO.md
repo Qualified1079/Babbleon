@@ -72,10 +72,12 @@ Legend: `[ ]` open · `[x]` done · `[~]` in-progress · `(M?)` target milestone
 
 ## Cross-cutting / hygiene
 
-- [ ] CI: clippy + cargo-deny + cargo-audit on push
+- [x] CI: fmt + clippy + cargo-audit + cargo-deny (`.github/workflows/ci.yml`)
 - [ ] Reproducible release builds (musl static binaries)
 - [ ] Operator docs (`docs/operator.md`): install, rotate, recover, decommission
-- [ ] Threat-model doc with attacker capabilities table (drawn from RESEARCH T1-T16)
+- [x] Threat-model doc (`docs/threat-model.md`) with attacker capabilities table
+- [x] Tamper-evident audit log (`audit::ChainedAuditLog`) — SHA-256 hash chain;
+      verify() detects truncation, in-place edits, and chain breaks.
 - [ ] Backup/restore tooling that's mapping-aware (epoch + wordlist version)
 - [ ] macOS driver (Endpoint Security + Keychain) — explicit M5+ stretch
 - [ ] Windows driver — research-only, v3+

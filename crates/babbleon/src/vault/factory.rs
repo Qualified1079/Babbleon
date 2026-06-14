@@ -50,7 +50,7 @@ pub fn for_tier(tier: Tier, keyfile: Option<&Path>) -> Result<Box<dyn KekBackend
                 .ok_or_else(|| BabbleonError::HardwareUnavailable("usb requires keyfile".into()))?;
             Ok(Box::new(UsbBackend::new(p)))
         }
-        Tier::Tpm => Ok(Box::new(TpmBackend::default())),
+        Tier::Tpm => Ok(Box::new(TpmBackend)),
         Tier::Fido2 => {
             // Salt is normally read from the vault header; for factory dispatch
             // we use a zero salt and rely on the caller to wire the real one.

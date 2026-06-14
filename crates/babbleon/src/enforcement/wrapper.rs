@@ -88,7 +88,13 @@ where
         if !src.exists() {
             continue;
         }
-        let p = write_wrapper(scrambled.as_ref(), &src, output_dir, host_secret, trusted_ns_inode)?;
+        let p = write_wrapper(
+            scrambled.as_ref(),
+            &src,
+            output_dir,
+            host_secret,
+            trusted_ns_inode,
+        )?;
         out.insert(scrambled.as_ref().to_string(), p);
     }
     Ok(out)
@@ -105,7 +111,10 @@ mod tests {
         std::fs::write(&real, "#!/bin/sh\n").unwrap();
         let a = write_wrapper("name", &real, &dir.path().join("a"), &[1u8; 32], None).unwrap();
         let b = write_wrapper("name", &real, &dir.path().join("b"), &[2u8; 32], None).unwrap();
-        assert_ne!(std::fs::read_to_string(a).unwrap(), std::fs::read_to_string(b).unwrap());
+        assert_ne!(
+            std::fs::read_to_string(a).unwrap(),
+            std::fs::read_to_string(b).unwrap()
+        );
     }
 
     #[test]

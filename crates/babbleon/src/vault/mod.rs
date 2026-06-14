@@ -3,14 +3,14 @@
 pub mod backend;
 pub mod core;
 pub mod factory;
-pub mod soft;
-pub mod usb;
-pub mod tpm;
 pub mod fido2;
+pub mod soft;
+pub mod tpm;
+pub mod usb;
 
 pub use backend::KekBackend;
 pub use core::{Vault, VaultPayload};
-pub use soft::{Profile as SoftProfile, SoftBackend};
-pub use usb::UsbBackend;
-pub use tpm::TpmBackend;
 pub use fido2::Fido2Backend;
+pub use soft::{Profile as SoftProfile, SoftBackend};
+pub use tpm::TpmBackend;
+pub use usb::UsbBackend;

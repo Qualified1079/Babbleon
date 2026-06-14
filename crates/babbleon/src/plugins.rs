@@ -12,13 +12,16 @@ use crate::events::EventSink;
 use crate::vault::backend::KekBackend;
 use std::collections::HashMap;
 
+type VaultBackendFactory = Box<dyn Fn() -> Box<dyn KekBackend>>;
+type EnforcementDriverFactory = Box<dyn Fn() -> Box<dyn EnforcementDriver>>;
+
 /// Compile-time plugin set. Populated by the enterprise crate's builder
 /// before the application starts.
 #[derive(Default)]
 pub struct PluginRegistry {
-    vault_backends: HashMap<String, Box<dyn Fn() -> Box<dyn KekBackend>>>,
+    vault_backends: HashMap<String, VaultBackendFactory>,
     event_sinks: Vec<Box<dyn EventSink>>,
-    enforcement_drivers: HashMap<String, Box<dyn Fn() -> Box<dyn EnforcementDriver>>>,
+    enforcement_drivers: HashMap<String, EnforcementDriverFactory>,
 }
 
 impl PluginRegistry {
@@ -43,7 +46,8 @@ impl PluginRegistry {
         name: impl Into<String>,
         factory: impl Fn() -> Box<dyn EnforcementDriver> + 'static,
     ) {
-        self.enforcement_drivers.insert(name.into(), Box::new(factory));
+        self.enforcement_drivers
+            .insert(name.into(), Box::new(factory));
     }
 
     pub fn vault_backend(&self, name: &str) -> Option<Box<dyn KekBackend>> {
@@ -59,6 +63,9 @@ impl PluginRegistry {
     }
 
     pub fn available_enforcement_drivers(&self) -> Vec<&str> {
-        self.enforcement_drivers.keys().map(|s| s.as_str()).collect()
+        self.enforcement_drivers
+            .keys()
+            .map(|s| s.as_str())
+            .collect()
     }
 }

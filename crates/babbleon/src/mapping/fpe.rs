@@ -23,7 +23,9 @@ type HmacSha256 = Hmac<Sha256>;
 type Key = ([u8; 32], u64, usize);
 
 /// (permutation, inverse) for a given key.
-static CACHE: Lazy<Mutex<HashMap<Key, (Vec<u32>, Vec<u32>)>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+type Tables = (Vec<u32>, Vec<u32>);
+
+static CACHE: Lazy<Mutex<HashMap<Key, Tables>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
 fn derive_chacha_seed(seed: &[u8], epoch: u64) -> [u8; 32] {
     let mut mac = HmacSha256::new_from_slice(seed).expect("hmac accepts any key length");
@@ -37,7 +39,10 @@ fn derive_chacha_seed(seed: &[u8], epoch: u64) -> [u8; 32] {
 
 fn build(seed: &[u8], epoch: u64, n: usize) -> (Vec<u32>, Vec<u32>) {
     assert!(n > 0, "n must be positive");
-    assert!(n <= u32::MAX as usize, "n must fit in u32 for cache compaction");
+    assert!(
+        n <= u32::MAX as usize,
+        "n must fit in u32 for cache compaction"
+    );
 
     let chacha_seed = derive_chacha_seed(seed, epoch);
     let mut rng = ChaCha20Rng::from_seed(chacha_seed);
@@ -67,10 +72,10 @@ where
     let cache_key: Key = (key, epoch, n);
 
     let mut cache = CACHE.lock().unwrap();
-    if !cache.contains_key(&cache_key) {
+    cache.entry(cache_key).or_insert_with(|| {
         let (p, inv) = build(seed, epoch, n);
-        cache.insert(cache_key, (p, inv));
-    }
+        (p, inv)
+    });
     let (p, inv) = cache.get(&cache_key).unwrap();
     f(p, inv)
 }

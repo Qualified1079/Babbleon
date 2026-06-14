@@ -102,7 +102,11 @@ impl Session {
         let new = old + 1;
         let secret = self.payload.host_secret()?;
         let table = Mapper::new(&secret).build_table(&self.tracked, new);
-        let payload = self.payload.clone().with_epoch(new).with_honey(table.honey_names.clone());
+        let payload = self
+            .payload
+            .clone()
+            .with_epoch(new)
+            .with_honey(table.honey_names.clone());
 
         let vault = Vault::new(SoftBackend::default());
         let sealed = vault.seal(&payload, Some(password))?;
@@ -110,7 +114,10 @@ impl Session {
 
         self.payload = payload;
         self.mapping = table;
-        self.bus.emit(Event::RotationComplete { old_epoch: old, new_epoch: new });
+        self.bus.emit(Event::RotationComplete {
+            old_epoch: old,
+            new_epoch: new,
+        });
         Ok(new)
     }
 

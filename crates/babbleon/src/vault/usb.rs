@@ -48,7 +48,9 @@ impl KekBackend for UsbBackend {
         }
         let keyfile_bytes = std::fs::read(&self.keyfile_path)?;
         if keyfile_bytes.len() < KEYFILE_SIZE {
-            return Err(BabbleonError::Vault("keyfile too short; may be corrupt".into()));
+            return Err(BabbleonError::Vault(
+                "keyfile too short; may be corrupt".into(),
+            ));
         }
 
         let material = if let Some(password) = credential {

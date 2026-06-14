@@ -76,7 +76,11 @@ impl<B: KekBackend> Vault<B> {
             .map_err(|e| BabbleonError::AgeDecrypt(e.to_string()))?
         {
             age::Decryptor::Passphrase(d) => d,
-            _ => return Err(BabbleonError::Vault("vault is not passphrase-encrypted".into())),
+            _ => {
+                return Err(BabbleonError::Vault(
+                    "vault is not passphrase-encrypted".into(),
+                ))
+            }
         };
         let mut reader = decryptor
             .decrypt(&Secret::new(passphrase), None)
@@ -100,8 +104,12 @@ mod tests {
     fn seal_unseal_roundtrip() {
         let v = Vault::new(SoftBackend::default());
         let payload = VaultPayload::new(3, vec!["a".into(), "b".into()]);
-        let sealed = v.seal(&payload, Some("correct horse battery staple")).unwrap();
-        let out = v.unseal(&sealed, Some("correct horse battery staple")).unwrap();
+        let sealed = v
+            .seal(&payload, Some("correct horse battery staple"))
+            .unwrap();
+        let out = v
+            .unseal(&sealed, Some("correct horse battery staple"))
+            .unwrap();
         assert_eq!(out.epoch, 3);
         assert_eq!(out.host_secret_hex, payload.host_secret_hex);
         assert_eq!(out.honey_names, vec!["a".to_string(), "b".to_string()]);

@@ -20,15 +20,11 @@ const HASH_LEN: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum Profile {
+    #[default]
     Laptop,
     Headless,
-}
-
-impl Default for Profile {
-    fn default() -> Self {
-        Profile::Laptop
-    }
 }
 
 impl Profile {
@@ -86,8 +82,10 @@ mod tests {
         let headless = SoftBackend::with_profile(Profile::Headless)
             .derive_age_passphrase(Some("same-pw"))
             .unwrap();
-        assert_ne!(laptop, headless,
-            "different Argon2 params must produce different KEKs");
+        assert_ne!(
+            laptop, headless,
+            "different Argon2 params must produce different KEKs"
+        );
     }
 
     #[test]

@@ -9,8 +9,8 @@
 
 use crate::errors::{BabbleonError, Result};
 use landlock::{
-    path_beneath_rules, Access, AccessFs, ABI, Ruleset, RulesetAttr,
-    RulesetCreatedAttr, RulesetStatus,
+    path_beneath_rules, Access, AccessFs, Ruleset, RulesetAttr, RulesetCreatedAttr, RulesetStatus,
+    ABI,
 };
 use std::path::{Path, PathBuf};
 

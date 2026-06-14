@@ -10,7 +10,11 @@ use clap::{Parser, Subcommand};
 use std::collections::HashSet;
 
 #[derive(Parser)]
-#[command(name = "babbleon", version, about = "Per-host randomized namespace obfuscation")]
+#[command(
+    name = "babbleon",
+    version,
+    about = "Per-host randomized namespace obfuscation"
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -88,11 +92,18 @@ fn cmd_credentials(home: Option<std::path::PathBuf>) -> Result<()> {
         println!("no credential directories present under {}", home.display());
         return Ok(());
     }
-    println!("would gate {} credential paths under {}:", found.len(), home.display());
+    println!(
+        "would gate {} credential paths under {}:",
+        found.len(),
+        home.display()
+    );
     for p in &found {
         println!("  {}", p.display());
     }
-    println!("\nenv-var scrub list ({} entries):", babbleon::credentials::SCRUB_ENV_VARS.len());
+    println!(
+        "\nenv-var scrub list ({} entries):",
+        babbleon::credentials::SCRUB_ENV_VARS.len()
+    );
     for v in babbleon::credentials::SCRUB_ENV_VARS {
         println!("  {v}");
     }
@@ -252,8 +263,20 @@ fn cmd_demo() -> Result<()> {
 }
 
 const CANONICAL_BINS: &[&str] = &[
-    "curl", "wget", "ssh", "nc", "python3", "bash",
-    "aws", "gh", "kubectl", "docker", "terraform", "npm", "pip", "git",
+    "curl",
+    "wget",
+    "ssh",
+    "nc",
+    "python3",
+    "bash",
+    "aws",
+    "gh",
+    "kubectl",
+    "docker",
+    "terraform",
+    "npm",
+    "pip",
+    "git",
 ];
 
 struct AttackerReport {
@@ -316,8 +339,7 @@ fn cmd_install(unit_dir: &std::path::Path, schedule: &str) -> Result<()> {
     std::fs::create_dir_all(unit_dir)
         .with_context(|| format!("create unit dir {}", unit_dir.display()))?;
 
-    let service = format!(
-        r#"[Unit]
+    let service = r#"[Unit]
 Description=Babbleon epoch rotation
 After=network.target
 
@@ -327,7 +349,7 @@ ExecStart=/usr/local/bin/babbleon rotate
 StandardInput=null
 Environment=BABBLEON_PASSPHRASE_FILE=/etc/babbleon/passphrase
 "#
-    );
+    .to_string();
 
     let timer = format!(
         r#"[Unit]

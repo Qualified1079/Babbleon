@@ -6,9 +6,7 @@
 //! guard that checks for root-equivalent privileges at runtime.
 
 use babbleon::enforcement::{EnforcementDriver, SimulatedDriver, View};
-use babbleon::mapping::MappingTable;
 use babbleon::session::Session;
-use std::collections::HashMap;
 
 fn make_session(tmpdir: &std::path::Path) -> Session {
     let vault = tmpdir.join("vault.age");
@@ -46,8 +44,10 @@ fn simulated_driver_untrusted_view() {
     assert!(result.visible.len() >= 2);
     // Visible names must not be real names — they must be scrambled compounds.
     for name in result.visible.keys() {
-        assert!(!name.eq("curl") && !name.eq("git"),
-            "untrusted view leaked real name: {name}");
+        assert!(
+            !name.eq("curl") && !name.eq("git"),
+            "untrusted view leaked real name: {name}"
+        );
         // Scrambled names are 4-word compounds joined by nothing — at least
         // longer than any single real name.
         assert!(name.len() > 8, "scrambled name suspiciously short: {name}");
@@ -74,7 +74,9 @@ fn view_trusted_and_untrusted_are_disjoint_names() {
     assert!(
         trusted_names.is_disjoint(&untrusted_names),
         "trusted and untrusted views share names: {:?}",
-        trusted_names.intersection(&untrusted_names).collect::<Vec<_>>()
+        trusted_names
+            .intersection(&untrusted_names)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -86,7 +88,8 @@ fn wrapper_embeds_inode_and_padding() {
     let real = tmp.path().join("curl");
     std::fs::write(&real, b"#!/bin/sh\ncurl real\n").unwrap();
 
-    let wp = wrapper::write_wrapper("scr-curl", &real, tmp.path(), b"host-secret", Some(99999)).unwrap();
+    let wp =
+        wrapper::write_wrapper("scr-curl", &real, tmp.path(), b"host-secret", Some(99999)).unwrap();
     let contents = std::fs::read_to_string(wp).unwrap();
 
     assert!(contents.contains("99999"), "inode not embedded");
@@ -103,9 +106,7 @@ fn install_writes_unit_files() {
     let unit_dir = tmp.path();
     let schedule = "daily";
 
-    let service = format!(
-        "[Unit]\nDescription=Babbleon epoch rotation\n\n[Service]\nType=oneshot\nExecStart=/usr/local/bin/babbleon rotate\nStandardInput=null\n"
-    );
+    let service = "[Unit]\nDescription=Babbleon epoch rotation\n\n[Service]\nType=oneshot\nExecStart=/usr/local/bin/babbleon rotate\nStandardInput=null\n".to_string();
     let timer = format!(
         "[Unit]\nDescription=Babbleon epoch rotation timer\n\n[Timer]\nOnCalendar={schedule}\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n"
     );

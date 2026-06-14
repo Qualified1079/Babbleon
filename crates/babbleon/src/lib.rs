@@ -16,7 +16,9 @@
 //! traits and register via the babbleon-enterprise crate, which depends on this
 //! one. No public-package code changes required.
 
+pub mod audit;
 pub mod credentials;
+pub mod enforcement;
 pub mod errors;
 pub mod events;
 pub mod manifest;
@@ -26,6 +28,5 @@ pub mod plugins;
 pub mod session;
 pub mod storage;
 pub mod vault;
-pub mod enforcement;
 
 pub use errors::{BabbleonError, Result};

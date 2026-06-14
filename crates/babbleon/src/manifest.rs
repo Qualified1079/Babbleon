@@ -8,8 +8,20 @@ use serde::Deserialize;
 use std::path::Path;
 
 pub const DEFAULT_TRACKED: &[&str] = &[
-    "curl", "ssh", "nc", "python3", "bash", "wget", "git",
-    "aws", "gh", "kubectl", "docker", "terraform", "npm", "pip",
+    "curl",
+    "ssh",
+    "nc",
+    "python3",
+    "bash",
+    "wget",
+    "git",
+    "aws",
+    "gh",
+    "kubectl",
+    "docker",
+    "terraform",
+    "npm",
+    "pip",
 ];
 
 #[derive(Debug, Clone)]

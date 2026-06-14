@@ -134,8 +134,7 @@ mod tests {
             ("GITHUB_TOKEN", "ghp_xxx"),
         ];
         let scrubbed = scrub_env(env);
-        let keys: std::collections::HashSet<_> =
-            scrubbed.iter().map(|(k, _)| k.as_str()).collect();
+        let keys: std::collections::HashSet<_> = scrubbed.iter().map(|(k, _)| k.as_str()).collect();
         assert!(keys.contains("PATH"));
         assert!(keys.contains("HOME"));
         assert!(!keys.contains("AWS_SECRET_ACCESS_KEY"));

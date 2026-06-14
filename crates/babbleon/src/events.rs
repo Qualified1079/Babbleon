@@ -52,7 +52,10 @@ pub struct StderrSink;
 
 impl EventSink for StderrSink {
     fn emit(&self, event: &Event) {
-        eprintln!("[babbleon] {}", serde_json::to_string(event).unwrap_or_default());
+        eprintln!(
+            "[babbleon] {}",
+            serde_json::to_string(event).unwrap_or_default()
+        );
     }
 }
 
@@ -114,7 +117,8 @@ impl EventBus {
     pub fn emit(&self, event: Event) {
         for sink in &self.sinks {
             // A panicking sink must not break others.
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sink.emit(&event)));
+            let result =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sink.emit(&event)));
             let _ = result;
         }
     }
@@ -137,13 +141,25 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("audit.jsonl");
         let sink = JsonlFileSink::new(&path);
-        sink.emit(&Event::RotationComplete { old_epoch: 1, new_epoch: 2 });
-        sink.emit(&Event::VaultSealed { epoch: 2, backend: "soft".into() });
+        sink.emit(&Event::RotationComplete {
+            old_epoch: 1,
+            new_epoch: 2,
+        });
+        sink.emit(&Event::VaultSealed {
+            epoch: 2,
+            backend: "soft".into(),
+        });
         let content = std::fs::read_to_string(&path).unwrap();
         let lines: Vec<&str> = content.lines().collect();
         assert_eq!(lines.len(), 2);
         let first: Event = serde_json::from_str(lines[0]).unwrap();
-        assert!(matches!(first, Event::RotationComplete { old_epoch: 1, new_epoch: 2 }));
+        assert!(matches!(
+            first,
+            Event::RotationComplete {
+                old_epoch: 1,
+                new_epoch: 2
+            }
+        ));
     }
 
     #[test]
@@ -156,7 +172,10 @@ mod tests {
             names: vec!["x".into()],
             process_hint: "pid=42".into(),
         });
-        bus.emit(Event::RotationComplete { old_epoch: 0, new_epoch: 1 });
+        bus.emit(Event::RotationComplete {
+            old_epoch: 0,
+            new_epoch: 1,
+        });
         let s = store.lock().unwrap();
         assert_eq!(s.len(), 2);
         assert!(matches!(s[0].severity(), Severity::Critical));

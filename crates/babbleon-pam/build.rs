@@ -18,14 +18,7 @@ fn main() {
     println!("cargo:rerun-if-changed={src}");
 
     let status = std::process::Command::new("cc")
-        .args([
-            "-fPIC",
-            "-shared",
-            "-Wall",
-            "-Wextra",
-            "-O2",
-            "-o",
-        ])
+        .args(["-fPIC", "-shared", "-Wall", "-Wextra", "-O2", "-o"])
         .arg(target_dir.join("pam_babbleon.so"))
         .arg(src)
         .args(["-lpam"])
@@ -33,10 +26,15 @@ fn main() {
 
     match status {
         Ok(s) if s.success() => {
-            println!("cargo:warning=built {}/pam_babbleon.so", target_dir.display());
+            println!(
+                "cargo:warning=built {}/pam_babbleon.so",
+                target_dir.display()
+            );
         }
         Ok(s) => {
-            println!("cargo:warning=pam_babbleon build failed (exit {s}); install libpam-dev to enable");
+            println!(
+                "cargo:warning=pam_babbleon build failed (exit {s}); install libpam-dev to enable"
+            );
         }
         Err(e) => {
             println!("cargo:warning=cc not available ({e}); skipping pam_babbleon");

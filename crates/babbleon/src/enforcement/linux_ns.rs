@@ -65,7 +65,11 @@ impl EnforcementDriver for LinuxNamespaceDriver {
 
     /// Present the trusted view: real names, no scrambling, real binary paths.
     /// Records the current mount-NS inode so wrapper scripts can detect tier.
-    fn present_trusted(&mut self, real_root: &Path, tracked: &[String]) -> Result<EnforcementResult> {
+    fn present_trusted(
+        &mut self,
+        real_root: &Path,
+        tracked: &[String],
+    ) -> Result<EnforcementResult> {
         // Snapshot the trusted NS inode.
         let inode = ns_mnt_inode()?;
         self.trusted_ns_inode = Some(inode);
@@ -94,7 +98,11 @@ impl EnforcementDriver for LinuxNamespaceDriver {
     /// `unshare(NEWNS|NEWPID)` and `make_root_private()`.  If those haven't
     /// happened we still try — worst case the bind-mounts leak to the host,
     /// which is caught by `make_root_private()` re-running here.
-    fn present_untrusted(&mut self, real_root: &Path, mapping: &MappingTable) -> Result<EnforcementResult> {
+    fn present_untrusted(
+        &mut self,
+        real_root: &Path,
+        mapping: &MappingTable,
+    ) -> Result<EnforcementResult> {
         std::fs::create_dir_all(RUN_DIR)
             .map_err(|e| BabbleonError::Enforcement(format!("create {RUN_DIR}: {e}")))?;
         std::fs::create_dir_all(&self.scrambled_root)
@@ -116,8 +124,9 @@ impl EnforcementDriver for LinuxNamespaceDriver {
             }
             let dst = self.scrambled_root.join(scrambled);
             // Create a plain file as the bind-mount target.
-            std::fs::write(&dst, b"")
-                .map_err(|e| BabbleonError::Enforcement(format!("create stub {}: {e}", dst.display())))?;
+            std::fs::write(&dst, b"").map_err(|e| {
+                BabbleonError::Enforcement(format!("create stub {}: {e}", dst.display()))
+            })?;
             syscalls::bind_mount(&src, &dst)?;
             self.mounts.push(dst.clone());
             visible.insert(scrambled.clone(), dst);
@@ -158,9 +167,13 @@ impl EnforcementDriver for LinuxNamespaceDriver {
 /// Returns true if the calling process is in the trusted mount namespace.
 /// Used by wrapper scripts (via the file) and by the driver itself.
 pub fn in_trusted_ns() -> bool {
-    let Ok(inode) = ns_mnt_inode() else { return false };
-    let Ok(content) = std::fs::read_to_string(TRUSTED_NS_FILE) else { return false };
-    content.trim().parse::<u64>().map_or(false, |stored| stored == inode)
+    let Ok(inode) = ns_mnt_inode() else {
+        return false;
+    };
+    let Ok(content) = std::fs::read_to_string(TRUSTED_NS_FILE) else {
+        return false;
+    };
+    content.trim().parse::<u64>() == Ok(inode)
 }
 
 fn ns_mnt_inode() -> Result<u64> {
