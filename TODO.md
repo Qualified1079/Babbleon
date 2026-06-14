@@ -29,15 +29,16 @@ Legend: `[ ]` open · `[x]` done · `[~]` in-progress · `(M?)` target milestone
 
 ## M3 — Linux namespace enforcement (the load-bearing piece)
 
-- [ ] `babbleon-ns-helper` setuid binary: `unshare(NEWNS|NEWPID)`, drop caps, `execve` driver
-- [ ] `LinuxNamespaceDriver`: bind-mount trusted/untrusted views into `/run/babbleon/<tier>`
-- [ ] `/proc` remount with `hidepid=2,gid=proc` inside untrusted PID NS
-- [ ] `pam_babbleon.so` (C shim — PAM ABI requires C) calling helper at session open
-- [ ] seccomp-bpf filter (deny `ptrace`, `process_vm_readv/writev`, `kcmp`, `pidfd_*`)
-- [ ] Landlock self-sandbox for untrusted tier (kernel 5.13+)
-- [ ] Wrapper trust-tier detection via `/proc/self/ns/mnt` inode comparison
-- [ ] Rotation cadence: systemd service + timer unit, installed by `babbleon install`
-- [ ] tini-as-PID-1 pattern (avoid zombie-reaping issues with Rust at PID 1)
+- [x] `babbleon-ns-helper` setuid binary: `unshare(NEWNS|NEWPID)`, drop caps, `execve` driver
+- [x] `LinuxNamespaceDriver`: bind-mount trusted/untrusted views into `/run/babbleon/scrambled`
+- [x] `/proc` remount with `hidepid=2` inside untrusted PID NS
+- [x] `pam_babbleon.so` (C shim — PAM ABI requires C) calling helper at session open
+- [x] seccomp-bpf filter (deny `ptrace`, `process_vm_readv/writev`, `kcmp`, `pidfd_*`)
+- [x] Landlock self-sandbox for untrusted tier (kernel 5.13+)
+- [x] Wrapper trust-tier detection via `/proc/self/ns/mnt` inode comparison
+- [x] Rotation cadence: systemd service + timer unit, installed by `babbleon install`
+- [~] tini-as-PID-1 pattern — current ns-helper does its own reaper loop;
+      good enough for M3, revisit if zombie reaping proves fiddly
 
 ## M3.5 — Deception layer
 
@@ -47,18 +48,23 @@ Legend: `[ ]` open · `[x]` done · `[~]` in-progress · `(M?)` target milestone
 
 ## M4 — Credential vault
 
-- [ ] Path-gated credential dirs: `~/.aws`, `~/.ssh`, `~/.config/gh`, `~/.kube`, browser cookies
-- [ ] IPC socket isolation: `SSH_AUTH_SOCK`, gpg-agent, `DBUS_SESSION_BUS_ADDRESS`, `XDG_RUNTIME_DIR`
-- [ ] OverlayFS or per-app-bind credential layers (architecture decision needed)
-- [ ] Env-var scrubber: deny-list from RESEARCH T8
+- [x] Path-gated credential dirs (`credentials::discover` + `apply_untrusted_gate`)
+- [x] IPC socket env-var deny-list (`SSH_AUTH_SOCK`, gpg-agent, DBUS, XDG_RUNTIME_DIR)
+- [x] Env-var scrubber: deny-list from RESEARCH T8 (`credentials::scrub_env`)
+- [ ] OverlayFS per-app writable upper layers (decision: tmpfs-over for M4 baseline,
+      overlayfs only if apps need to actually *write* cred-shaped files)
+- [ ] Wire credential gate into `LinuxNamespaceDriver::present_untrusted`
+- [ ] CLI `babbleon credentials --apply` to invoke the gate (currently dry-run only)
 
 ## M5 — Enterprise + escrow
 
-- [ ] Plugin registry: enterprise crate publishes `KekBackend` / `EnforcementDriver` / `EventSink` impls
-- [ ] Escrow backend (admin recovery) via separate KEK wrap
-- [ ] SIEM event sinks (Splunk HEC, syslog RFC5424, JSON-over-HTTPS)
+- [x] Plugin registry seam (`plugins::PluginRegistry`) — enterprise crate registers
+      `KekBackend` / `EnforcementDriver` / `EventSink` impls at startup
+- [x] `JsonlFileSink` baseline audit sink (community-side)
+- [ ] Escrow backend (admin recovery) via separate KEK wrap — enterprise crate
+- [ ] SIEM event sinks (Splunk HEC, syslog RFC5424, JSON-over-HTTPS) — enterprise crate
 - [ ] Enterprise console (separate private repo; depends on public `babbleon` crate)
-- [ ] Auditability: signed event log; tamper-evident hash chain
+- [ ] Auditability: signed event log; tamper-evident hash chain (community-side)
 
 ## Cross-cutting / hygiene
 

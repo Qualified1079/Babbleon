@@ -56,6 +56,40 @@ impl EventSink for StderrSink {
     }
 }
 
+/// Append-only JSONL sink for local audit logs.  Each emit takes the
+/// write lock briefly; suitable for low-frequency security events.
+pub struct JsonlFileSink {
+    path: std::path::PathBuf,
+    lock: std::sync::Mutex<()>,
+}
+
+impl JsonlFileSink {
+    pub fn new(path: impl Into<std::path::PathBuf>) -> Self {
+        Self {
+            path: path.into(),
+            lock: std::sync::Mutex::new(()),
+        }
+    }
+}
+
+impl EventSink for JsonlFileSink {
+    fn emit(&self, event: &Event) {
+        use std::io::Write;
+        let _g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let line = match serde_json::to_string(event) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+        {
+            let _ = writeln!(f, "{line}");
+        }
+    }
+}
+
 pub struct EventBus {
     sinks: Vec<Box<dyn EventSink>>,
 }
@@ -96,6 +130,20 @@ mod tests {
         fn emit(&self, e: &Event) {
             self.0.lock().unwrap().push(e.clone());
         }
+    }
+
+    #[test]
+    fn jsonl_sink_writes_lines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("audit.jsonl");
+        let sink = JsonlFileSink::new(&path);
+        sink.emit(&Event::RotationComplete { old_epoch: 1, new_epoch: 2 });
+        sink.emit(&Event::VaultSealed { epoch: 2, backend: "soft".into() });
+        let content = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), 2);
+        let first: Event = serde_json::from_str(lines[0]).unwrap();
+        assert!(matches!(first, Event::RotationComplete { old_epoch: 1, new_epoch: 2 }));
     }
 
     #[test]

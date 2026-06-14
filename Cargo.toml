@@ -4,6 +4,7 @@ members = [
     "crates/babbleon",
     "crates/babbleon-cli",
     "crates/babbleon-ns-helper",
+    "crates/babbleon-pam",
 ]
 
 [workspace.package]

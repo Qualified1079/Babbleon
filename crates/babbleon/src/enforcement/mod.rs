@@ -9,7 +9,7 @@ pub mod wrapper;
 #[cfg(target_os = "linux")]
 pub mod linux_ns;
 #[cfg(target_os = "linux")]
-mod syscalls;
+pub(crate) mod syscalls;
 #[cfg(target_os = "linux")]
 pub mod seccomp;
 #[cfg(target_os = "linux")]

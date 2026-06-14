@@ -48,6 +48,12 @@ enum Cmd {
         #[arg(long, default_value = "/usr/local/bin")]
         real_root: std::path::PathBuf,
     },
+    /// Show which credential directories would be gated in untrusted view.
+    Credentials {
+        /// Home directory to scan (default: $HOME).
+        #[arg(long)]
+        home: Option<std::path::PathBuf>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -69,7 +75,28 @@ fn main() -> Result<()> {
         Cmd::Demo => cmd_demo(),
         Cmd::Install { unit_dir, schedule } => cmd_install(&unit_dir, &schedule),
         Cmd::ApplyNs { real_root } => cmd_apply_ns(&real_root),
+        Cmd::Credentials { home } => cmd_credentials(home),
     }
+}
+
+fn cmd_credentials(home: Option<std::path::PathBuf>) -> Result<()> {
+    let home = home
+        .or_else(|| std::env::var_os("HOME").map(std::path::PathBuf::from))
+        .context("--home required when $HOME unset")?;
+    let found = babbleon::credentials::discover(&home);
+    if found.is_empty() {
+        println!("no credential directories present under {}", home.display());
+        return Ok(());
+    }
+    println!("would gate {} credential paths under {}:", found.len(), home.display());
+    for p in &found {
+        println!("  {}", p.display());
+    }
+    println!("\nenv-var scrub list ({} entries):", babbleon::credentials::SCRUB_ENV_VARS.len());
+    for v in babbleon::credentials::SCRUB_ENV_VARS {
+        println!("  {v}");
+    }
+    Ok(())
 }
 
 fn read_password(prompt: &str) -> Result<String> {
