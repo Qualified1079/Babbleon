@@ -17,7 +17,10 @@ Semantic AST-level rewrites (rename, control-flow restructure,
 struct-field reorder, equivalent stdlib swap) instead of just
 binary-layout randomization.  Forces the attacker to fingerprint each
 function independently, not just defeat ASLR.  Layers cleanly on top
-of Polyverse-style binary diversification.
+of Polyverse-style binary diversification. Note, it can't simply do 
+a dictionary swap for diversification. If the attacker has the
+original codebase it's trivial to correlate 1:1 new semantics to original.
+Structural changes needed.
 
 ## Shape (≤40B-param local model + tight harness)
 - AST chunker (tree-sitter, one function per chunk)
