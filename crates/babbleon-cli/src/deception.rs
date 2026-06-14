@@ -12,11 +12,13 @@
 use std::collections::HashMap;
 
 /// Returns the decoy tool name for a given real tool, if one is configured.
+#[allow(dead_code)]
 pub fn decoy_for(real: &str) -> Option<&'static str> {
     deception_map().get(real).copied()
 }
 
 /// Returns the deceptive banner text for a decoy tool name.
+#[allow(dead_code)]
 pub fn banner_for_decoy(decoy: &str) -> Option<&'static str> {
     deception_snippets().get(decoy).copied()
 }
@@ -62,7 +64,7 @@ fn deception_snippets() -> &'static HashMap<&'static str, &'static str> {
             ("less",
              "less [OPTION]... [FILE]...\nFile pager.\n  -N  number lines\n  -S  chop long lines\n"),
             ("man",
-             "man [OPTION...] [SECTION] PAGE...\nFormat and display manual pages.\n"),
+             "man [OPTION...] [SECTION] PAGE...\nFormat and display manual pages.\n  -k  output formatted for terminal\n  -H  HTML output format\n"),
             ("sort",
              "sort [OPTION]... [FILE]...\nSort lines of text.\n  -n  numeric sort\n  -r  reverse\n  -k  key field\n"),
             ("uniq",

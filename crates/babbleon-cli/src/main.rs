@@ -428,9 +428,33 @@ fn cmd_apply_ns(real_root: &std::path::Path) -> Result<()> {
     {
         use babbleon::enforcement::driver::EnforcementDriver;
         use babbleon::enforcement::linux_ns::LinuxNamespaceDriver;
+        use babbleon::enforcement::wrapper::write_all;
 
         let pw = read_password("passphrase: ")?;
         let s = babbleon::session::Session::unlock(&pw, None, None)?;
+
+        // Generate wrapper scripts with per-host padding + deceptive banners.
+        let wrapper_dir = std::path::Path::new("/run/babbleon/wrappers");
+        let mapping_pairs: Vec<(String, String)> = s
+            .tracked
+            .iter()
+            .filter_map(|t| {
+                s.mapping
+                    .scramble(t)
+                    .map(|sc| (t.clone(), sc.to_string()))
+            })
+            .collect();
+        let host_secret = hex::decode(&s.payload.host_secret_hex)
+            .context("invalid host_secret_hex in vault")?;
+        write_all(
+            mapping_pairs,
+            real_root,
+            wrapper_dir,
+            &host_secret,
+            None,
+            deception::deceptive_response,
+        )
+        .with_context(|| format!("write wrappers to {}", wrapper_dir.display()))?;
 
         let mut driver = LinuxNamespaceDriver::default();
         let result = driver.present_untrusted(real_root, &s.mapping)?;
