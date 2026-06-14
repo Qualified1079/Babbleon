@@ -77,6 +77,22 @@ Legend: `[ ]` open · `[x]` done · `[~]` in-progress · `(M?)` target milestone
 - [ ] SIEM event sinks (Splunk HEC, syslog RFC5424, JSON-over-HTTPS) — enterprise crate
 - [ ] Enterprise console (separate private repo; depends on public `babbleon` crate)
 
+## Auditability / readability
+
+- [ ] Rename pass: every public fn/type/module gets a name that says what it
+      does in plain English, not what it's named after.  The runtime
+      obfuscation is the product; the source code should be maximally
+      readable so security auditors can verify the implementation is honest.
+      Examples: `present_untrusted` → `mount_scrambled_view`,
+      `apply_untrusted_filter` → `block_process_inspection_syscalls`,
+      `write_honey_wrapper` → `write_tripwire_script`,
+      `decoy_for` → `fake_help_text_for`.  Target: any function name should
+      be guessable from its purpose without reading the code.
+- [ ] Module-level doc comment pass: every file's top-of-file doc says
+      WHY this module exists (what attack it defeats), not just WHAT it
+      contains.  Threat-model-first comments make forks and downstream
+      audits faster.
+
 ## Cross-cutting / hygiene
 
 - [x] CI: fmt + clippy + cargo-audit + cargo-deny (`.github/workflows/ci.yml`)
