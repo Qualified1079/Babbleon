@@ -20,13 +20,15 @@ literature, is:
 - It **reasons** about which exploit to deploy and **adapts** it to the target.
 - It can run shell commands, read permitted files, make raw syscalls, persist a
   process, and run patiently (e.g. while the machine is idle/asleep).
-- Reported capability in the literature: autonomous privilege escalation
-  succeeding **97.5%** of the time (Fang et al. 2024, one-day CVEs) on
-  undefended targets. Automated recon tools (RapidPen) price a full host
-  compromise at **~$0.30**. Average exfiltrated credential yield: **87
-  secrets/device** (SpyCloud 2024). Babbleon's naming obfuscation raises
-  the token cost of a directory-listing recon pass by **2–3×** (BPE
-  tokenizer hostility — see §5).
+- Reported capability in the literature (illustrative, not load-bearing):
+  Happe et al. 2023 report **33–83%** autonomous Linux priv-esc by
+  GPT-4-Turbo; Fang et al. 2024 report **87%** on one-day CVEs; 2026
+  RL-tuned local-LLM work reports up to **97.5%** on a 12-scenario
+  priv-esc benchmark. Recorded Future 2025 telemetry: average
+  compromised device yielded **~87** stolen credentials.
+  We have NOT independently measured any Babbleon-specific defender
+  metric (e.g. tokenization cost inflation); claims of that shape
+  belong in published benchmarks, not the design doc.
 
 It cannot (assumed): break crypto, sustain long novel reasoning without a
 harness, or ship bespoke kernel 0-days.
@@ -168,8 +170,11 @@ process trust tier (kernel-enforced). This single decision enables:
   (`antiquebifurcatedsableanionmountain`). Humans never read scrambled names
   (they're in the trusted view), so optimize the scrambled side purely to be
   hostile to tokenizers. Ambiguous segmentation (e.g. `cation` → "cat"+"ion"
-  vs "cation") is a **feature**: it adds parse-entropy. Measured 2–3× token
-  inflation on directory-listing recon (GPT-4o BPE).
+  vs "cation") is the intended property: BPE merges decided greedily
+  left-to-right with no whitespace cue means tokenization is brittle to
+  one-character perturbations. The actual token-cost effect on a real
+  tokenizer is an open empirical question — see `tools/tokenizer-benchmark`
+  for the harness; no production claim is made until that benchmark runs.
 - **v2 wordlist filter (post-construction):** reject candidates that score in the
   high-density tail of the BPE token distribution; prefer ambiguous mid-tail
   tokens. Do **not** curate semantically — filter only on tokenization density.
