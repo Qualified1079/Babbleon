@@ -476,7 +476,7 @@ fn cmd_apply_ns(real_root: &std::path::Path) -> Result<()> {
         use babbleon::enforcement::driver::EnforcementDriver;
         use babbleon::enforcement::linux_ns::LinuxNamespaceDriver;
         use babbleon::enforcement::wrapper::{
-            write_all, write_honey_list, write_honey_wrappers, HONEY_FIFO,
+            write_all, write_honey_list, write_tripwire_scripts, HONEY_FIFO,
         };
         use babbleon::events::{EventBus, HoneyFifoReader, StderrSink};
 
@@ -523,7 +523,7 @@ fn cmd_apply_ns(real_root: &std::path::Path) -> Result<()> {
 
         // Honey-name wrappers: every honey name gets a tripwire script that
         // writes to HONEY_FIFO on exec and exits 127.
-        write_honey_wrappers(
+        write_tripwire_scripts(
             s.payload.honey_names.iter().map(String::as_str),
             wrapper_dir,
             &host_secret,

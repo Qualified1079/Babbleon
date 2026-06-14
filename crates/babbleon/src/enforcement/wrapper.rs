@@ -134,12 +134,15 @@ pub fn write_wrapper(
     Ok(wp)
 }
 
-/// Write a honey-name wrapper using the unified template.
+/// Write a tripwire script using the unified template.
 ///
-/// The wrapper is byte-for-byte the same shape as a real-tool wrapper.
-/// The honey list (`/run/babbleon/honey.list`) is what makes execution
-/// different at runtime — not the wrapper's contents.
-pub fn write_honey_wrapper(
+/// "Tripwire" is the honey-name variant of the wrapper: it shares the same
+/// shell template as a real-tool wrapper (so `ls -la` cannot distinguish
+/// them by size) but its name is in `/run/babbleon/honey.list`, which the
+/// template's runtime branch handles by reporting to the honey FIFO and
+/// exiting 127.  Any process that executes one of these names is, by
+/// construction, using stale or guessed knowledge.
+pub fn write_tripwire_script(
     honey_name: &str,
     output_dir: &Path,
     host_secret: &[u8],
@@ -163,8 +166,8 @@ pub fn write_honey_wrapper(
     Ok(wp)
 }
 
-/// Write honey-name wrapper scripts for every name in `honey_names`.
-pub fn write_honey_wrappers<'a, I>(
+/// Write tripwire scripts for every name in `honey_names`.
+pub fn write_tripwire_scripts<'a, I>(
     honey_names: I,
     output_dir: &Path,
     host_secret: &[u8],
@@ -174,7 +177,7 @@ where
 {
     let mut out = Vec::new();
     for name in honey_names {
-        let p = write_honey_wrapper(name, output_dir, host_secret, None)?;
+        let p = write_tripwire_script(name, output_dir, host_secret, None)?;
         out.push(p);
     }
     Ok(out)
@@ -306,7 +309,7 @@ mod tests {
         std::fs::write(&real_bin, "#!/bin/sh\n").unwrap();
 
         let honey_wp =
-            write_honey_wrapper("honey-name", dir.path(), b"secret", None).unwrap();
+            write_tripwire_script("honey-name", dir.path(), b"secret", None).unwrap();
         let real_wp =
             write_wrapper("curl", "real-name", &real_bin, dir.path(), b"secret", None, None)
                 .unwrap();
