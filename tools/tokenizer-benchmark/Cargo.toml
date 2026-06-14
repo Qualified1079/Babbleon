@@ -1,0 +1,16 @@
+[package]
+name = "tokenizer-benchmark"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Measures BPE tokenizer cost for Babbleon scrambled compounds vs spaced English baseline."
+
+# Standalone — NOT part of the Babbleon workspace.  Keeps tiktoken-rs and
+# its embedded BPE tables out of the default workspace build.
+[workspace]
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+tiktoken-rs = "0.5"
+rand = "0.8"
+rand_chacha = "0.3"

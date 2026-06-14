@@ -168,13 +168,18 @@ process trust tier (kernel-enforced). This single decision enables:
   free rotation without re-seeding.
 - **All-lowercase, concatenated, no separators**
   (`antiquebifurcatedsableanionmountain`). Humans never read scrambled names
-  (they're in the trusted view), so optimize the scrambled side purely to be
-  hostile to tokenizers. Ambiguous segmentation (e.g. `cation` → "cat"+"ion"
-  vs "cation") is the intended property: BPE merges decided greedily
-  left-to-right with no whitespace cue means tokenization is brittle to
-  one-character perturbations. The actual token-cost effect on a real
-  tokenizer is an open empirical question — see `tools/tokenizer-benchmark`
-  for the harness; no production claim is made until that benchmark runs.
+  (they're in the trusted view), so the scrambled side is shaped purely
+  against BPE tokenizers. Ambiguous segmentation (e.g. `cation` →
+  "cat"+"ion" vs "cation") is the intended property: BPE merges decided
+  greedily left-to-right with no whitespace cue mean tokenization is
+  brittle to one-character perturbations. **Measured token-cost
+  inflation** (see `tools/tokenizer-benchmark/RESULTS.md`): ~1.07× on
+  `cl100k_base` and `o200k_base` across N=3,4,5 word compounds drawn
+  from the 370k-word wordlist. The hypothesized 2–3× tax does not
+  materialize on real English-word compounds; the token-cost lever is
+  **not load-bearing** for the threat model. The defense rests on
+  namespace rename + tier boundary + tripwires; tokenization friction
+  is a small marginal cost on the attacker's recon step.
 - **v2 wordlist filter (post-construction):** reject candidates that score in the
   high-density tail of the BPE token distribution; prefer ambiguous mid-tail
   tokens. Do **not** curate semantically — filter only on tokenization density.
