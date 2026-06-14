@@ -29,8 +29,9 @@ Legend: `[ ]` open · `[x]` done · `[~]` in-progress · `(M?)` target milestone
       m=8 MiB, t=12); selectable via `Tier::SoftHeadless`.
 - [x] Vault header schema version field (`VaultPayload.schema`); old vaults
       deserialize schema=0; migration path is re-seal.
-- [ ] USB-keyfile backend hardening tests (multi-authenticator matrix)
-- [ ] `babbleon tpm-reseal` subcommand for kernel-update re-seal
+- [x] USB-keyfile backend hardening tests: wrong-pw rejection, kek-uniqueness
+      per keyfile, keyfile-only vs 2fa KDF differentiation (7 tests total)
+- [x] `babbleon tpm-reseal` stub: exits 2, prints manual workaround + roadmap
 
 ## M3 — Linux namespace enforcement (the load-bearing piece)
 
@@ -48,7 +49,8 @@ Legend: `[ ]` open · `[x]` done · `[~]` in-progress · `(M?)` target milestone
 ## M3.5 — Deception layer
 
 - [ ] Banner deception table: scrambled `curl` returns plausible-wrong (`nano`-shaped) help
-- [ ] Per-host SHA-256 padding in wrapper output (already designed)
+- [x] Per-host SHA-256 padding in wrapper output — `enforcement/wrapper.rs`
+      embeds HMAC(host_secret, scrambled_name)[0..16] in every wrapper script.
 - [ ] Adversarial fingerprint test vs ObserverWard / WhatWeb before ship
 
 ## M4 — Credential vault
@@ -59,7 +61,8 @@ Legend: `[ ]` open · `[x]` done · `[~]` in-progress · `(M?)` target milestone
 - [x] Wire credential gate into `LinuxNamespaceDriver::present_untrusted`
       (reads `$HOME`; tmpfs-overlays each cred dir; count reported in EnforcementResult notes)
 - [ ] OverlayFS per-app writable upper layers — deferred; tmpfs-overlay is the M4 default
-- [ ] CLI `babbleon credentials --apply` live gate (currently dry-run/discovery only)
+- [x] CLI `babbleon credentials [--apply]` — dry-run lists + apply does live
+      tmpfs gate (`credentials::apply_untrusted_gate`); Linux-only guard on apply
 
 ## M5 — Enterprise + escrow
 
