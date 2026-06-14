@@ -475,7 +475,9 @@ fn cmd_apply_ns(real_root: &std::path::Path) -> Result<()> {
     {
         use babbleon::enforcement::driver::EnforcementDriver;
         use babbleon::enforcement::linux_ns::LinuxNamespaceDriver;
-        use babbleon::enforcement::wrapper::{write_all, write_honey_wrappers, HONEY_FIFO};
+        use babbleon::enforcement::wrapper::{
+            write_all, write_honey_list, write_honey_wrappers, HONEY_FIFO,
+        };
         use babbleon::events::{EventBus, HoneyFifoReader, StderrSink};
 
         let pw = read_password("passphrase: ")?;
@@ -527,6 +529,11 @@ fn cmd_apply_ns(real_root: &std::path::Path) -> Result<()> {
             &host_secret,
         )
         .with_context(|| format!("write honey wrappers to {}", wrapper_dir.display()))?;
+
+        // Write the honey list so the unified wrapper template can distinguish
+        // honey names from real-tool names at exec time without size differences.
+        write_honey_list(s.payload.honey_names.iter().map(String::as_str), None)
+            .with_context(|| "write honey.list")?;
 
         // Spawn the honey-FIFO reader so trigger events become Event::HoneyTriggered.
         let mut bus = EventBus::new();
