@@ -53,11 +53,18 @@ enum Cmd {
         real_root: std::path::PathBuf,
     },
     /// Show which credential directories would be gated in untrusted view.
+    /// Pass --apply to actually gate them (requires CAP_SYS_ADMIN or ns-helper).
     Credentials {
         /// Home directory to scan (default: $HOME).
         #[arg(long)]
         home: Option<std::path::PathBuf>,
+        /// Actually apply tmpfs overlays, not just list (requires mount privileges).
+        #[arg(long)]
+        apply: bool,
     },
+    /// Re-seal the TPM vault after a kernel update changes PCR values.
+    /// (DEFERRED M2.5 — currently prints instructions.)
+    TpmReseal,
 }
 
 fn main() -> Result<()> {
@@ -79,11 +86,25 @@ fn main() -> Result<()> {
         Cmd::Demo => cmd_demo(),
         Cmd::Install { unit_dir, schedule } => cmd_install(&unit_dir, &schedule),
         Cmd::ApplyNs { real_root } => cmd_apply_ns(&real_root),
-        Cmd::Credentials { home } => cmd_credentials(home),
+        Cmd::Credentials { home, apply } => cmd_credentials(home, apply),
+        Cmd::TpmReseal => cmd_tpm_reseal(),
     }
 }
 
-fn cmd_credentials(home: Option<std::path::PathBuf>) -> Result<()> {
+fn cmd_tpm_reseal() -> Result<()> {
+    eprintln!("babbleon tpm-reseal: DEFERRED (M2.5)");
+    eprintln!();
+    eprintln!("Until tss-esapi wiring lands, re-seal manually:");
+    eprintln!("  1. Boot the new kernel.");
+    eprintln!("  2. babbleon rotate          (rotates epoch; discards old sealed blob)");
+    eprintln!("  3. babbleon init --tier tpm (re-seals with new PCR values)");
+    eprintln!();
+    eprintln!("Longer term: tpm2_policyauthorize lets an admin sign new PCR policies");
+    eprintln!("without rotating the host secret. Tracked in DEFERRED.md.");
+    std::process::exit(2);
+}
+
+fn cmd_credentials(home: Option<std::path::PathBuf>, apply: bool) -> Result<()> {
     let home = home
         .or_else(|| std::env::var_os("HOME").map(std::path::PathBuf::from))
         .context("--home required when $HOME unset")?;
@@ -92,20 +113,40 @@ fn cmd_credentials(home: Option<std::path::PathBuf>) -> Result<()> {
         println!("no credential directories present under {}", home.display());
         return Ok(());
     }
-    println!(
-        "would gate {} credential paths under {}:",
-        found.len(),
-        home.display()
-    );
-    for p in &found {
-        println!("  {}", p.display());
-    }
-    println!(
-        "\nenv-var scrub list ({} entries):",
-        babbleon::credentials::SCRUB_ENV_VARS.len()
-    );
-    for v in babbleon::credentials::SCRUB_ENV_VARS {
-        println!("  {v}");
+
+    if apply {
+        #[cfg(target_os = "linux")]
+        {
+            let gated = babbleon::credentials::apply_untrusted_gate(&home)?;
+            println!(
+                "gated {} credential directories (tmpfs overlay applied):",
+                gated.len()
+            );
+            for p in &gated {
+                println!("  {}", p.display());
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            eprintln!("babbleon credentials --apply: Linux only");
+            std::process::exit(2);
+        }
+    } else {
+        println!(
+            "would gate {} credential paths under {} (--apply to activate):",
+            found.len(),
+            home.display()
+        );
+        for p in &found {
+            println!("  {}", p.display());
+        }
+        println!(
+            "\nenv-var scrub list ({} entries):",
+            babbleon::credentials::SCRUB_ENV_VARS.len()
+        );
+        for v in babbleon::credentials::SCRUB_ENV_VARS {
+            println!("  {v}");
+        }
     }
     Ok(())
 }

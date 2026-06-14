@@ -112,4 +112,39 @@ mod tests {
         let r = v.seal(&VaultPayload::new(0, vec![]), None);
         assert!(r.is_err());
     }
+
+    #[test]
+    fn wrong_password_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let kf = dir.path().join("key.bin");
+        UsbBackend::generate_keyfile(&kf).unwrap();
+        let v = Vault::new(UsbBackend::new(&kf));
+        let payload = VaultPayload::new(1, vec![]);
+        let sealed = v.seal(&payload, Some("correct-pw")).unwrap();
+        let r = v.unseal(&sealed, Some("wrong-pw"));
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn keyfile_without_password_differs_from_keyfile_with_password() {
+        let dir = tempfile::tempdir().unwrap();
+        let kf = dir.path().join("key.bin");
+        UsbBackend::generate_keyfile(&kf).unwrap();
+        let b = UsbBackend::new(&kf);
+        let kek_no_pw = b.derive_age_passphrase(None).unwrap();
+        let kek_with_pw = b.derive_age_passphrase(Some("extra")).unwrap();
+        assert_ne!(kek_no_pw, kek_with_pw);
+    }
+
+    #[test]
+    fn two_different_keyfiles_produce_different_keks() {
+        let dir = tempfile::tempdir().unwrap();
+        let kf1 = dir.path().join("key1.bin");
+        let kf2 = dir.path().join("key2.bin");
+        UsbBackend::generate_keyfile(&kf1).unwrap();
+        UsbBackend::generate_keyfile(&kf2).unwrap();
+        let kek1 = UsbBackend::new(&kf1).derive_age_passphrase(None).unwrap();
+        let kek2 = UsbBackend::new(&kf2).derive_age_passphrase(None).unwrap();
+        assert_ne!(kek1, kek2, "distinct keyfiles must produce distinct KEKs");
+    }
 }
