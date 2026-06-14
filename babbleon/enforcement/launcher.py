@@ -1,23 +1,19 @@
 """
-Launcher: set up an untrusted-tier subprocess.
+Untrusted-tier subprocess launcher (Linux).
 
-Handles the namespace dance:
-  1. Fork a child.
-  2. Child: unshare CLONE_NEWNS | CLONE_NEWPID.
-  3. Child: re-exec a small init (or self) that becomes PID 1.
-  4. Init: invoke driver.present_untrusted().
-  5. Init: exec target command with PATH adjusted to scrambled_root.
+Lifecycle:
+  1. Fork.
+  2. Child: unshare(CLONE_NEWNS | CLONE_NEWPID) via _syscalls.
+  3. Child: call driver.present_untrusted() to set up bind mounts.
+  4. Child: exec target command with PATH prepended with scrambled_root.
+  5. Parent: wait, return exit code.
 
-For M3 we ship a minimal init-as-self pattern; tini integration is M3.5.
+This module has NO ctypes imports; all kernel calls go through _syscalls.
 
-REVIEW(manual): the launcher currently calls os.fork()+os.execv() directly;
-production should use a small C helper to avoid Python interpreter overhead
-at the namespace boundary. Spawning Python under PID 1 also makes signal
-handling fiddly.
-
-REVIEW(manual): CAP_SYS_ADMIN requirement — this launcher only works as
-root or with a CAP_SYS_ADMIN-granting setuid helper. The PAM module
-(pam_babbleon.so, future) is the production lifecycle.
+Deferred (DEFERRED.md):
+  - setuid C helper to avoid Python holding CAP_SYS_ADMIN
+  - tini as PID-1 init for correct signal + zombie handling (M3.5)
+  - PAM module lifecycle (M3)
 """
 
 from __future__ import annotations
@@ -25,10 +21,11 @@ from __future__ import annotations
 import os
 import pathlib
 
+from .. import platform as plt
 from ..errors import EnforcementError
 from ..mapping import MappingTable
+from ._syscalls import CLONE_NEWNS, CLONE_NEWPID, unshare
 from .driver import EnforcementDriver
-from .linux_ns import CLONE_NEWNS, CLONE_NEWPID, LinuxNamespaceDriver
 
 
 def launch_untrusted(
@@ -39,39 +36,53 @@ def launch_untrusted(
     extra_env: dict[str, str] | None = None,
 ) -> int:
     """
-    Spawn `argv` in an untrusted-tier subprocess. Returns child exit code.
+    Run `argv` in an untrusted-tier subprocess. Returns child exit code.
 
-    Synchronous: blocks until child exits. The parent process retains
-    its trusted view; only the child sees the scrambled namespace.
+    Parent process retains its trusted view. Blocks until child exits.
+    Raises EnforcementError if not on Linux.
     """
-    if os.uname().sysname != "Linux":
-        raise EnforcementError("launch_untrusted requires Linux")
+    if not plt.is_linux():
+        raise EnforcementError("launch_untrusted is Linux-only")
 
     pid = os.fork()
     if pid == 0:
-        try:
-            if isinstance(driver, LinuxNamespaceDriver):
-                # need CAP_SYS_ADMIN to do this
-                import ctypes
-                libc = ctypes.CDLL("libc.so.6", use_errno=True)
-                if libc.unshare(CLONE_NEWNS | CLONE_NEWPID) != 0:
-                    err = ctypes.get_errno()
-                    os._exit(_fatal(f"unshare failed: {os.strerror(err)}"))
-
-            result = driver.present_untrusted(real_root, mapping)
-            env = os.environ.copy()
-            env["PATH"] = f"{result.visible and next(iter(result.visible.values())).parent}:{env.get('PATH', '')}"
-            if extra_env:
-                env.update(extra_env)
-            os.execvpe(argv[0], argv, env)
-        except Exception as exc:
-            os._exit(_fatal(str(exc)))
-        os._exit(127)
+        _child(driver, real_root, mapping, argv, extra_env or {})
+        os._exit(127)  # unreachable if exec succeeds
     else:
         _, status = os.waitpid(pid, 0)
         return os.WEXITSTATUS(status) if os.WIFEXITED(status) else 1
 
 
-def _fatal(msg: str) -> int:
-    os.write(2, f"[babbleon-launcher] fatal: {msg}\n".encode())
-    return 1
+def _child(driver: EnforcementDriver,
+           real_root: pathlib.Path,
+           mapping: MappingTable,
+           argv: list[str],
+           extra_env: dict[str, str]) -> None:
+    """Runs in the forked child; never returns normally."""
+    try:
+        unshare(CLONE_NEWNS | CLONE_NEWPID)
+    except EnforcementError as exc:
+        _fatal(f"unshare failed: {exc}")
+        return
+
+    try:
+        result = driver.present_untrusted(real_root, mapping)
+    except EnforcementError as exc:
+        _fatal(f"view setup failed: {exc}")
+        return
+
+    env = os.environ.copy()
+    if result.visible:
+        scrambled_bin = next(iter(result.visible.values())).parent
+        env["PATH"] = f"{scrambled_bin}:{env.get('PATH', '')}"
+    env.update(extra_env)
+
+    try:
+        os.execvpe(argv[0], argv, env)
+    except OSError as exc:
+        _fatal(f"exec {argv[0]!r} failed: {exc}")
+
+
+def _fatal(msg: str) -> None:
+    os.write(2, f"[babbleon-launcher] {msg}\n".encode())
+    os._exit(1)
