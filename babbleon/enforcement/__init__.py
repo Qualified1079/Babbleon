@@ -1,5 +1,7 @@
-"""Enforcement subsystem: view presentation and (M3+) namespace management."""
+"""Enforcement subsystem: view presentation, namespace management, drivers."""
 
+from .driver import EnforcementDriver, EnforcementResult
 from .views import View
+from .simulated import SimulatedDriver
 
-__all__ = ["View"]
+__all__ = ["View", "EnforcementDriver", "EnforcementResult", "SimulatedDriver"]
