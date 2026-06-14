@@ -173,6 +173,7 @@ dependencies = [
  "anyhow",
  "babbleon",
  "clap",
+ "hex",
  "rpassword",
  "tempfile",
  "tracing",
