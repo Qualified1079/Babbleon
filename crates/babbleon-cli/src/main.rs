@@ -1,5 +1,7 @@
 //! `babbleon` command-line interface.
 
+mod deception;
+
 use anyhow::{Context, Result};
 use babbleon::enforcement::{SimulatedDriver, View};
 use babbleon::events::Event;

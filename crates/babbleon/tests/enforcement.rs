@@ -88,8 +88,16 @@ fn wrapper_embeds_inode_and_padding() {
     let real = tmp.path().join("curl");
     std::fs::write(&real, b"#!/bin/sh\ncurl real\n").unwrap();
 
-    let wp =
-        wrapper::write_wrapper("scr-curl", &real, tmp.path(), b"host-secret", Some(99999)).unwrap();
+    let wp = wrapper::write_wrapper(
+        "curl",
+        "scr-curl",
+        &real,
+        tmp.path(),
+        b"host-secret",
+        Some(99999),
+        None,
+    )
+    .unwrap();
     let contents = std::fs::read_to_string(wp).unwrap();
 
     assert!(contents.contains("99999"), "inode not embedded");
