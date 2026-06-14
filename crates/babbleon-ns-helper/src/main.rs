@@ -1,27 +1,184 @@
-//! `babbleon-ns-helper`: tiny setuid helper that sets up an untrusted
-//! mount + PID namespace for a child process, drops capabilities, then
-//! exec's into the requested command.
+//! `babbleon-ns-helper`: setuid helper that establishes the untrusted-tier
+//! mount + PID namespace, drops all capabilities, then execs the child.
 //!
-//! DEFERRED(M3): full implementation. Skeleton only this session — the
-//! point is the build-system seam: when M3 lands, the helper is a single
-//! statically-linked binary, easy to audit, no Python interpreter on the
-//! privileged path.
+//! # Privilege model
+//!
+//! The binary is installed `root:root 4755`.  It:
+//!   1. Verifies it was invoked by a non-root real UID (real users only).
+//!   2. Calls `unshare(CLONE_NEWNS | CLONE_NEWPID)`.
+//!   3. Calls `make_root_private()` so host mounts don't propagate.
+//!   4. Drops the entire Linux capability bounding set (PR_CAPBSET_DROP).
+//!   5. Sets PR_SET_NO_NEW_PRIVS so the child can never re-escalate.
+//!   6. Applies a seccomp-bpf filter denying dangerous process-inspection
+//!      syscalls (ptrace, process_vm_*, kcmp, pidfd_*).
+//!   7. Forks: parent becomes the init-reaper for the new PID NS;
+//!      child drops back to real UID and execs the requested command.
 
-#![cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
 
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
 
 fn main() -> Result<()> {
-    #[cfg(target_os = "linux")]
-    {
-        eprintln!(
-            "babbleon-ns-helper: M3 skeleton; not yet implemented (see DEFERRED.md)"
-        );
-        std::process::exit(2);
-    }
     #[cfg(not(target_os = "linux"))]
     {
-        eprintln!("babbleon-ns-helper: Linux-only");
+        eprintln!("babbleon-ns-helper: Linux only");
         std::process::exit(2);
     }
+
+    #[cfg(target_os = "linux")]
+    run()
+}
+
+#[cfg(target_os = "linux")]
+fn run() -> Result<()> {
+    use nix::sched::{unshare, CloneFlags};
+    use nix::sys::prctl;
+    use nix::sys::wait::{waitpid, WaitStatus};
+    use nix::unistd::{fork, ForkResult, Pid};
+    use std::os::unix::process::CommandExt;
+
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() < 2 {
+        eprintln!("usage: babbleon-ns-helper <command> [args...]");
+        std::process::exit(2);
+    }
+    let cmd_args = &args[1..];
+
+    // Verify setuid is in effect and caller is a real user.
+    let euid = nix::unistd::geteuid();
+    if !euid.is_root() {
+        bail!("babbleon-ns-helper must be installed setuid root");
+    }
+    let real_uid = nix::unistd::getuid();
+    if real_uid.is_root() {
+        bail!("babbleon-ns-helper must be invoked by a non-root user");
+    }
+    let real_gid = nix::unistd::getgid();
+
+    // Establish mount + PID namespaces.
+    unshare(CloneFlags::CLONE_NEWNS | CloneFlags::CLONE_NEWPID)
+        .context("unshare(NEWNS|NEWPID) — requires CAP_SYS_ADMIN")?;
+
+    // Prevent our bind-mounts from propagating to the host.
+    make_root_private().context("make_root_private")?;
+
+    // Drop the entire capability bounding set via PR_CAPBSET_DROP.
+    drop_bounding_set().context("drop capability bounding set")?;
+
+    // No new privileges ever.
+    prctl::set_no_new_privs().context("PR_SET_NO_NEW_PRIVS")?;
+
+    // Seccomp deny-list: process-inspection syscalls.
+    apply_seccomp().context("seccomp")?;
+
+    // Fork: we (parent) become PID 1 init-reaper; child execs the command.
+    match unsafe { fork() }.context("fork")? {
+        ForkResult::Parent { child } => {
+            // Drop back to real UID in the parent reaper.
+            nix::unistd::setgroups(&[]).ok();
+            nix::unistd::setgid(real_gid).ok();
+            nix::unistd::setuid(real_uid).ok();
+            loop {
+                match waitpid(Pid::from_raw(-1), None) {
+                    Ok(WaitStatus::Exited(pid, code)) if pid == child => {
+                        std::process::exit(code);
+                    }
+                    Ok(WaitStatus::Signaled(pid, sig, _)) if pid == child => {
+                        std::process::exit(128 + sig as i32);
+                    }
+                    Ok(_) => continue,
+                    Err(nix::errno::Errno::ECHILD) => std::process::exit(0),
+                    Err(e) => {
+                        eprintln!("waitpid: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+        }
+        ForkResult::Child => {
+            // Drop back to real UID/GID before exec.
+            nix::unistd::setgroups(&[]).context("setgroups")?;
+            nix::unistd::setgid(real_gid).context("setgid")?;
+            nix::unistd::setuid(real_uid).context("setuid")?;
+
+            let err = std::process::Command::new(&cmd_args[0])
+                .args(&cmd_args[1..])
+                .exec();
+            Err(anyhow::anyhow!("exec {}: {err}", cmd_args[0]))
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn make_root_private() -> Result<()> {
+    use nix::mount::{mount, MsFlags};
+    use std::path::Path;
+    mount(
+        Some("none"),
+        "/",
+        None::<&Path>,
+        MsFlags::MS_PRIVATE | MsFlags::MS_REC,
+        None::<&Path>,
+    )
+    .map_err(|e| anyhow::anyhow!("MS_PRIVATE|MS_REC: {e}"))
+}
+
+#[cfg(target_os = "linux")]
+fn drop_bounding_set() -> Result<()> {
+    // Linux has 41 capability slots (0..=40).  We drop each from the bounding
+    // set via PR_CAPBSET_DROP; the child inherits an empty bounding set and
+    // can never gain new caps even via file capabilities.
+    for cap in 0i32..=40 {
+        let ret = unsafe { libc::prctl(libc::PR_CAPBSET_DROP, cap as libc::c_ulong, 0, 0, 0) };
+        if ret != 0 {
+            let err = std::io::Error::last_os_error();
+            // EINVAL means the cap doesn't exist; harmless.
+            if err.raw_os_error() != Some(libc::EINVAL) {
+                tracing::warn!("PR_CAPBSET_DROP {cap}: {err}");
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn apply_seccomp() -> Result<()> {
+    use seccompiler::{BpfProgram, SeccompAction, SeccompFilter, SeccompRule};
+    use std::collections::BTreeMap;
+
+    let denied: &[i64] = &[
+        libc::SYS_ptrace,
+        libc::SYS_process_vm_readv,
+        libc::SYS_process_vm_writev,
+        libc::SYS_kcmp,
+        libc::SYS_pidfd_open,
+        libc::SYS_pidfd_getfd,
+        libc::SYS_pidfd_send_signal,
+        libc::SYS_perf_event_open,
+        libc::SYS_bpf,
+        libc::SYS_userfaultfd,
+    ];
+
+    let mut rules: BTreeMap<i64, Vec<SeccompRule>> = BTreeMap::new();
+    for &nr in denied {
+        rules.insert(nr, vec![]);
+    }
+
+    let arch = std::env::consts::ARCH
+        .try_into()
+        .unwrap_or(seccompiler::TargetArch::x86_64);
+
+    let filter = SeccompFilter::new(
+        rules,
+        SeccompAction::Allow,
+        SeccompAction::KillProcess,
+        arch,
+    )
+    .map_err(|e| anyhow::anyhow!("seccomp build: {e}"))?;
+
+    let prog: BpfProgram = filter
+        .try_into()
+        .map_err(|e| anyhow::anyhow!("seccomp compile: {e}"))?;
+
+    seccompiler::apply_filter(&prog).map_err(|e| anyhow::anyhow!("seccomp apply: {e}"))
 }

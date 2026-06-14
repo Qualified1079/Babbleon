@@ -1,29 +1,60 @@
 //! Linux mount + PID namespace driver.
 //!
-//! All syscalls flow through `syscalls.rs`. This module has zero `nix`
-//! imports — keeps the namespace orchestration easy to read.
+//! All kernel calls flow through `syscalls.rs`.  This module has zero `nix`
+//! imports — keeps the namespace orchestration auditable without reading the
+//! nix API.
+//!
+//! # Trust-tier detection
+//!
+//! After setup, the driver records the *trusted* mount-namespace inode
+//! (`/proc/self/ns/mnt`).  Any process that presents the trusted namespace
+//! inode is treated as trusted; all others see the scrambled view.  This is
+//! more robust than an env-var cookie (defeated by env scrape) or a PID-tree
+//! walk (racy).  The inode is stored in `/run/babbleon/trusted-ns-inode`
+//! so wrapper scripts can read it without privilege.
 
 #![cfg(target_os = "linux")]
 
 use super::driver::{EnforcementDriver, EnforcementResult};
 use super::syscalls;
 use super::view::View;
-use crate::errors::Result;
+use crate::errors::{BabbleonError, Result};
 use crate::mapping::MappingTable;
 use std::collections::HashMap;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
+const RUN_DIR: &str = "/run/babbleon";
+const TRUSTED_NS_FILE: &str = "/run/babbleon/trusted-ns-inode";
+
 pub struct LinuxNamespaceDriver {
+    /// Root of the tmpfs that holds scrambled bind-mount stubs.
     pub scrambled_root: PathBuf,
+    /// Root where the trusted (real-name) view lives; usually the real $PATH dir.
+    pub trusted_root: PathBuf,
+    /// Active mounts we need to tear down in reverse order.
     mounts: Vec<PathBuf>,
+    /// Inode of /proc/self/ns/mnt at the time we set up the trusted namespace.
+    trusted_ns_inode: Option<u64>,
+}
+
+impl LinuxNamespaceDriver {
+    pub fn new(scrambled_root: PathBuf, trusted_root: PathBuf) -> Self {
+        Self {
+            scrambled_root,
+            trusted_root,
+            mounts: Vec::new(),
+            trusted_ns_inode: None,
+        }
+    }
 }
 
 impl Default for LinuxNamespaceDriver {
     fn default() -> Self {
-        Self {
-            scrambled_root: PathBuf::from("/var/lib/babbleon/scrambled"),
-            mounts: Vec::new(),
-        }
+        Self::new(
+            PathBuf::from("/run/babbleon/scrambled"),
+            PathBuf::from("/usr/local/bin"),
+        )
     }
 }
 
@@ -32,23 +63,51 @@ impl EnforcementDriver for LinuxNamespaceDriver {
         "linux-ns"
     }
 
+    /// Present the trusted view: real names, no scrambling, real binary paths.
+    /// Records the current mount-NS inode so wrapper scripts can detect tier.
     fn present_trusted(&mut self, real_root: &Path, tracked: &[String]) -> Result<EnforcementResult> {
+        // Snapshot the trusted NS inode.
+        let inode = ns_mnt_inode()?;
+        self.trusted_ns_inode = Some(inode);
+
+        // Write it to /run so wrappers can read it without privilege.
+        std::fs::create_dir_all(RUN_DIR)
+            .map_err(|e| BabbleonError::Enforcement(format!("create {RUN_DIR}: {e}")))?;
+        std::fs::write(TRUSTED_NS_FILE, inode.to_string())
+            .map_err(|e| BabbleonError::Enforcement(format!("write trusted-ns-inode: {e}")))?;
+
         let view = View::trusted(tracked, real_root);
         Ok(EnforcementResult {
             tier: "trusted".into(),
             visible: view.entries,
-            notes: vec![format!("trusted: pass-through {}", real_root.display())],
+            notes: vec![format!(
+                "trusted pass-through {}; ns-inode={}",
+                real_root.display(),
+                inode
+            )],
         })
     }
 
+    /// Present the untrusted (scrambled) view inside a fresh mount namespace.
+    ///
+    /// Expects to be called *after* the ns-helper has already called
+    /// `unshare(NEWNS|NEWPID)` and `make_root_private()`.  If those haven't
+    /// happened we still try — worst case the bind-mounts leak to the host,
+    /// which is caught by `make_root_private()` re-running here.
     fn present_untrusted(&mut self, real_root: &Path, mapping: &MappingTable) -> Result<EnforcementResult> {
-        std::fs::create_dir_all(&self.scrambled_root)?;
+        std::fs::create_dir_all(RUN_DIR)
+            .map_err(|e| BabbleonError::Enforcement(format!("create {RUN_DIR}: {e}")))?;
+        std::fs::create_dir_all(&self.scrambled_root)
+            .map_err(|e| BabbleonError::Enforcement(format!("mkdir scrambled root: {e}")))?;
 
-        // mark our NS private so mounts don't leak to host
+        // Belt-and-suspenders: mark root private so host doesn't see our mounts.
         syscalls::make_root_private()?;
-        syscalls::mount_tmpfs(&self.scrambled_root, "mode=0755")?;
+
+        // tmpfs on our scrambled root: contents exist only in this NS.
+        syscalls::mount_tmpfs(&self.scrambled_root, "mode=0555")?;
         self.mounts.push(self.scrambled_root.clone());
 
+        // Bind-mount each real binary under its scrambled name.
         let mut visible: HashMap<String, PathBuf> = HashMap::new();
         for (real, scrambled) in &mapping.real_to_scrambled {
             let src = real_root.join(real);
@@ -56,33 +115,56 @@ impl EnforcementDriver for LinuxNamespaceDriver {
                 continue;
             }
             let dst = self.scrambled_root.join(scrambled);
-            std::fs::File::create(&dst)?;
+            // Create a plain file as the bind-mount target.
+            std::fs::write(&dst, b"")
+                .map_err(|e| BabbleonError::Enforcement(format!("create stub {}: {e}", dst.display())))?;
             syscalls::bind_mount(&src, &dst)?;
             self.mounts.push(dst.clone());
             visible.insert(scrambled.clone(), dst);
         }
 
-        // hidepid only meaningful inside a fresh PID NS; tolerate failure here
-        // and rely on the helper binary to have set up the PID NS properly.
-        let _ = syscalls::mount_proc_hidepid(Path::new("/proc"));
+        // /proc with hidepid=2 — only meaningful inside a PID NS.
+        // We attempt it here; the ns-helper must have established the PID NS
+        // first.  Failure is logged but not fatal — the mount-NS boundary
+        // is the primary isolation mechanism.
+        match syscalls::mount_proc_hidepid(Path::new("/proc")) {
+            Ok(()) => tracing::debug!("/proc remounted hidepid=2"),
+            Err(e) => tracing::warn!("/proc hidepid remount failed (PID NS not set up?): {e}"),
+        }
 
         let count = visible.len();
         Ok(EnforcementResult {
             tier: "untrusted".into(),
             visible,
             notes: vec![format!(
-                "{} bind mounts at {}",
-                count,
+                "{count} bind-mounts at {}; scrambled view active",
                 self.scrambled_root.display()
             )],
         })
     }
 
     fn teardown(&mut self) -> Result<()> {
-        // best-effort; namespace exit handles real cleanup
         for path in self.mounts.drain(..).rev() {
-            let _ = syscalls::force_unmount(&path);
+            if let Err(e) = syscalls::force_unmount(&path) {
+                tracing::warn!("teardown umount {}: {e}", path.display());
+            }
         }
+        // Best-effort: remove the trusted-NS-inode file.
+        let _ = std::fs::remove_file(TRUSTED_NS_FILE);
         Ok(())
     }
+}
+
+/// Returns true if the calling process is in the trusted mount namespace.
+/// Used by wrapper scripts (via the file) and by the driver itself.
+pub fn in_trusted_ns() -> bool {
+    let Ok(inode) = ns_mnt_inode() else { return false };
+    let Ok(content) = std::fs::read_to_string(TRUSTED_NS_FILE) else { return false };
+    content.trim().parse::<u64>().map_or(false, |stored| stored == inode)
+}
+
+fn ns_mnt_inode() -> Result<u64> {
+    std::fs::metadata("/proc/self/ns/mnt")
+        .map(|m| m.ino())
+        .map_err(|e| BabbleonError::Enforcement(format!("stat /proc/self/ns/mnt: {e}")))
 }

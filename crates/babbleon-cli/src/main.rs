@@ -32,6 +32,22 @@ enum Cmd {
     Status,
     /// Run a self-contained sandbox demo (no system changes).
     Demo,
+    /// Install systemd service + timer for automatic epoch rotation.
+    Install {
+        /// Directory to write unit files into (default: /etc/systemd/system).
+        #[arg(long, default_value = "/etc/systemd/system")]
+        unit_dir: std::path::PathBuf,
+        /// How often to rotate (systemd OnCalendar format, default: weekly).
+        #[arg(long, default_value = "weekly")]
+        schedule: String,
+    },
+    /// Apply the untrusted (scrambled) view in the current mount namespace.
+    /// Requires CAP_SYS_ADMIN or the setuid ns-helper.
+    ApplyNs {
+        /// Directory containing the real binaries (real $PATH entry).
+        #[arg(long, default_value = "/usr/local/bin")]
+        real_root: std::path::PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -51,6 +67,8 @@ fn main() -> Result<()> {
         Cmd::Untrusted => cmd_untrusted(),
         Cmd::Status => cmd_status(),
         Cmd::Demo => cmd_demo(),
+        Cmd::Install { unit_dir, schedule } => cmd_install(&unit_dir, &schedule),
+        Cmd::ApplyNs { real_root } => cmd_apply_ns(&real_root),
     }
 }
 
@@ -265,4 +283,70 @@ fn print_report(r: &AttackerReport) {
         );
     }
     println!("===========================\n");
+}
+
+fn cmd_install(unit_dir: &std::path::Path, schedule: &str) -> Result<()> {
+    std::fs::create_dir_all(unit_dir)
+        .with_context(|| format!("create unit dir {}", unit_dir.display()))?;
+
+    let service = format!(
+        r#"[Unit]
+Description=Babbleon epoch rotation
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/babbleon rotate
+StandardInput=null
+Environment=BABBLEON_PASSPHRASE_FILE=/etc/babbleon/passphrase
+"#
+    );
+
+    let timer = format!(
+        r#"[Unit]
+Description=Babbleon epoch rotation timer
+
+[Timer]
+OnCalendar={schedule}
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+"#
+    );
+
+    let svc_path = unit_dir.join("babbleon-rotate.service");
+    let tmr_path = unit_dir.join("babbleon-rotate.timer");
+    std::fs::write(&svc_path, service)?;
+    std::fs::write(&tmr_path, timer)?;
+    println!("wrote {}", svc_path.display());
+    println!("wrote {}", tmr_path.display());
+    println!("\nEnable with:");
+    println!("  systemctl daemon-reload");
+    println!("  systemctl enable --now babbleon-rotate.timer");
+    Ok(())
+}
+
+fn cmd_apply_ns(real_root: &std::path::Path) -> Result<()> {
+    #[cfg(not(target_os = "linux"))]
+    {
+        anyhow::bail!("apply-ns is Linux-only");
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use babbleon::enforcement::driver::EnforcementDriver;
+        use babbleon::enforcement::linux_ns::LinuxNamespaceDriver;
+
+        let pw = read_password("passphrase: ")?;
+        let s = babbleon::session::Session::unlock(&pw, None, None)?;
+
+        let mut driver = LinuxNamespaceDriver::default();
+        let result = driver.present_untrusted(real_root, &s.mapping)?;
+        println!("tier: {}", result.tier);
+        for note in &result.notes {
+            println!("  {note}");
+        }
+        println!("{} binaries in untrusted view", result.visible.len());
+        Ok(())
+    }
 }

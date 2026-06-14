@@ -30,6 +30,9 @@ dirs = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 nix = { workspace = true }
+seccompiler = { workspace = true }
+landlock = { workspace = true }
+libc = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

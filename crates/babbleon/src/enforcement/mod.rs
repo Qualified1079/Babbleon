@@ -10,6 +10,10 @@ pub mod wrapper;
 pub mod linux_ns;
 #[cfg(target_os = "linux")]
 mod syscalls;
+#[cfg(target_os = "linux")]
+pub mod seccomp;
+#[cfg(target_os = "linux")]
+pub mod landlock;
 
 pub use driver::{EnforcementDriver, EnforcementResult};
 pub use simulated::SimulatedDriver;
