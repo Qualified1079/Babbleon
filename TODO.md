@@ -124,6 +124,17 @@ Out of scope for v1 Babbleon (M5+); track here as a research direction.
       contains.  Threat-model-first comments make forks and downstream
       audits faster.
 
+## Known leak: wrapper-size fingerprint
+
+- [ ] Honey wrappers (~350B) and real-tool wrappers (~510B+) are
+      distinguishable by `ls -la` alone — an attacker with read access to
+      the scrambled dir can partition the set into "tripwire" vs
+      "tracked tool" without executing anything.  Fix: pad every wrapper
+      to a uniform size (e.g. 1024B) with shell-comment whitespace whose
+      content is per-host HMAC bytes so the padding itself can't be
+      stripped via a deterministic test.  Caught during live VM test
+      2026-06-14.
+
 ## Cross-cutting / hygiene
 
 - [x] CI: fmt + clippy + cargo-audit + cargo-deny (`.github/workflows/ci.yml`)
