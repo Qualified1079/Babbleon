@@ -1,0 +1,35 @@
+[package]
+name = "babbleon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Per-host randomized namespace obfuscation to defeat automated LLM-driven attackers"
+
+[features]
+default = []
+# Hardware backends — opt in. Skeletons only this session.
+tpm = []
+fido2 = []
+
+[dependencies]
+age = { workspace = true }
+argon2 = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+once_cell = { workspace = true }
+dirs = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+nix = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

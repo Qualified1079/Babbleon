@@ -1,0 +1,16 @@
+[package]
+name = "babbleon-ns-helper"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "babbleon-ns-helper"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+nix = { workspace = true }
