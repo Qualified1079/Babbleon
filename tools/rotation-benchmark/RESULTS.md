@@ -10,7 +10,8 @@ permutation has been pre-built in background.
 - Iterations per config: 30 (after global warmup).
 - Wrappers regenerated each iteration (default).
 - Vault re-seal **excluded** (that path is Argon2id-bound at ~250 ms
-  and is the *cold* rotation, not what the Type 3 defense cares about).
+  and is the *cold* rotation, not what the connected-attacker
+  defense cares about).
 - Kernel-side bind-mount swap **excluded** (root-only; see RESEARCH T9
   for the ~50 ms / 200 mounts estimate).
 
@@ -58,19 +59,28 @@ render.
    the warm-path numbers above.  Millisecond-class rotation needs the
    wrapper-regen redesign called out above.
 
-## Implications for Type 3 defense
+## Implications for the connected-attacker defense
 
-The hybrid local-agent + external-model attacker (docs/threat-model.md)
-is closed when rotation period < local→external→local round-trip.
-Typical LLM API RTT for a meaningful exfil + response is 1–5 s.
+Threat B (docs/threat-model.md) — covering E3 hybrid and E4 swarm —
+is closed when the rotation period drops below the relay
+round-trip the attacker uses to refresh its per-host vocabulary.
+Typical RTTs:
 
-- A 250 ms rotation period defeats this RTT with a healthy margin even
-  on a slow link.
+- E3 LLM-API exfil + response: 1–5 s on a good link.
+- E4 peer-to-peer swarm propagation: dominated by hop count and
+  link latency; sub-second is plausible on a fast LAN/Tor circuit,
+  multi-second is typical on the open internet.
+
+Against those numbers:
+
+- A 250 ms rotation period defeats E3 with a healthy margin even on a
+  slow link, and beats most realistic E4 propagation windows.
 - We can sustain 250 ms rotations at N≤100 today on this hardware
-  without engineering work (warm path, ~24 ms per rotation, 10 %
-  duty cycle).
+  without further engineering (warm path, ~24 ms per rotation,
+  ~10 % duty cycle).
 - 25 ms rotations (40 Hz) are achievable for N≤10 today; this would
-  defeat even an unrealistically fast 50 ms RTT.
+  defeat sub-100 ms swarm propagation in the unlikely case anyone
+  builds one.
 
 These conclusions are **for this hardware, this wordlist, this
 implementation.**  No PLAN- or README-level claim about supported

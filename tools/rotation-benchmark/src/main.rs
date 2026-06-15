@@ -2,11 +2,13 @@
 //!
 //! # Why this exists
 //!
-//! The Type 3 hybrid threat (small local agent + large external model,
-//! see `docs/threat-model.md`) is defeated by rotating the mapping faster
-//! than the local→external→local round-trip the attacker uses to refresh
-//! its vocabulary.  That makes the *maximum supportable rotation rate*
-//! a first-class number, not an implementation detail.
+//! Threat B (connected attacker — see `docs/threat-model.md`) is
+//! defeated by rotating the mapping faster than the relay round-trip
+//! the attacker uses to refresh its per-host vocabulary.  This covers
+//! expression E3 (hybrid small-local + large-external) and E4
+//! (peer-to-peer swarm).  In both cases, the maximum supportable
+//! rotation rate is a first-class threat-model number, not an
+//! implementation detail.
 //!
 //! This binary measures the wall-clock cost of the rotation steps that
 //! Babbleon controls in software.  The kernel-side bind-mount swap is

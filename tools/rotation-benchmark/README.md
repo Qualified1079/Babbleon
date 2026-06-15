@@ -5,13 +5,15 @@ the maximum supportable rotation rate.
 
 ## Why this exists
 
-`docs/threat-model.md` describes a Type 3 hybrid attacker: a small
-on-device agent communicating with a large external model.  The local
-agent doesn't need to crack the scramble — it just exfiltrates the
-current vocabulary and infiltrates instructions.  The defense against
-this attacker is **rotating the mapping faster than the local↔external
-round-trip**.  That makes the maximum rotation rate a first-class
-threat-model number.
+`docs/threat-model.md` describes a *connected* attacker (Threat B —
+expressions E3 hybrid and E4 swarm).  Either a single small on-host
+agent with a live link to a large external model, or a peer-to-peer
+network of small models sharing exploits at network-propagation
+speed.  Neither needs to crack the scramble on-host — they relay
+the current vocabulary out, receive translated instructions, and
+execute within the rotation window.  The defense against both is
+**rotating the mapping faster than the relay round-trip**.  That
+makes the maximum rotation rate a first-class threat-model number.
 
 This benchmark measures the components Babbleon controls in software:
 the mapping rebuild, and (optionally) wrapper-script regeneration.

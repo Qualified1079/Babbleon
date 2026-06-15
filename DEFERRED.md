@@ -95,8 +95,40 @@ Each fresh epoch costs a ~18 ms Fisher-Yates over the 370k-word
 permutation (measured in `tools/rotation-benchmark/RESULTS.md`).
 Spawning a thread on epoch advance to build epoch+1's permutation
 turns the next rotation tick into a cache hit (~0.2 ms).  Required
-for the high-frequency rotation that defeats the Type 3 hybrid
-attacker (docs/threat-model.md).
+for the high-frequency rotation that defeats the connected-attacker
+threat (docs/threat-model.md Threat B, expressions E3 and E4).
+
+**Leakiness considerations — read before implementing.**  The
+pre-built permutation IS the next-epoch mapping in memory.  Naive
+implementations leak in three ways an attacker can use to predict
+the next rotation:
+
+1. **Process memory.**  An untrusted process that achieves a memory
+   read on the daemon (Spectre-class or ptrace before seccomp lands)
+   recovers the pre-computed table.  Mitigation: keep the
+   pre-computed permutation in a worker process under a separate
+   user with its own seccomp profile; transfer the activated table
+   over a one-shot pipe at rotation tick; never share the address
+   space of the active daemon.
+
+2. **Cache + branch-predictor side channels.**  Building a 370k-element
+   Fisher-Yates touches a predictable memory pattern; a co-tenant
+   adversary (cloud-VM neighbour, or a Type 1 in-process worm in a
+   sibling) can extract bits of the permutation via prime-and-probe
+   or branch-history.  Mitigation: build the permutation under a
+   constant-time ChaCha20 stream applied to a single bulk allocation
+   that is touched in fixed order (e.g. an algorithmic-shuffle
+   variant whose memory access pattern is data-independent), or
+   accept the leak and shorten the lifetime of pre-built tables.
+
+3. **Disk / swap.**  If the daemon ever pages out, the pre-built
+   table hits the page file.  Mitigation: `mlock` the working
+   region; refuse to pre-build if `RLIMIT_MEMLOCK` is too small.
+
+The simplest safe-but-slower design: pre-build runs in a separate
+process, communicates only the activated table (not the entire
+worker memory) at rotation tick via a one-shot pipe, locks its
+working set, and exits after each tick.
 
 **DEFERRED(M3.5+) Unified runtime-table wrapper**
 File: `crates/babbleon/src/enforcement/wrapper.rs`
