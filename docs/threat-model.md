@@ -3,6 +3,55 @@
 Drawn from RESEARCH T1–T16.  This doc names the adversary and the
 specific capabilities Babbleon does and doesn't blunt.
 
+## Three classes of AI-driven attacker
+
+We currently see three operational shapes for an AI-driven attacker.
+Babbleon does not address all three equally and the doc is honest
+about that.
+
+**Type 1 — small-model internal worm.**  A compromised dependency,
+post-install script, or browser-RCE payload that runs a small
+on-device model (or a hardcoded decision tree shaped like one) to
+exfil data, drop further malware, join a botnet, or sit dormant
+waiting for a buyer.  Its reasoning budget is tiny; it operates by
+running canonical tools (`curl`, `aws`, `kubectl`) by their canonical
+names against canonical paths.  **Babbleon's primary target.**  The
+rename + tier boundary + tripwires directly break this attacker's
+playbook because the playbook is encoded in canonical names that no
+longer resolve.
+
+**Type 2 — large-model external attacker.**  Threat actor with GPU
+budget running a malware-trained or reasoning-tuned frontier model
+that probes the host over the network and reasons about exploit
+chains from outside.  Could be a profit-motivated red team or a
+nation-state stockpiling 0-days against infrastructure.  **Babbleon
+does NOT primarily address this.**  An external attacker never sees
+the local namespace at all — they're attacking exposed network
+services, not enumerating `$PATH`.  The defense against Type 2 is
+network segmentation, service hardening, and your own red-teaming;
+Babbleon is host-side naming and helps only after the external
+attacker has *already* dropped a payload into an untrusted process.
+
+**Type 3 — hybrid: small local + large external, channel between.**
+The interesting case and the one Babbleon must be explicit about.
+A small on-device agent (Type 1's body) holds an outbound channel to
+a large external model (Type 2's brain).  The local agent doesn't
+need to crack the scramble itself — it just **exfiltrates the current
+scrambled vocabulary to the external model and infiltrates the
+external model's adapted commands back into the local namespace.**
+As long as both sides agree on what "the current `curl` is named"
+within one rotation window, Babbleon's rename is bypassed for the
+duration of that window.
+
+**Type 3 defense ⟶ rotation rate is load-bearing.**  The only thing
+that closes the Type 3 channel is rotating the mapping faster than
+the round-trip-time of the exfil/infil cycle.  If a typical small
+model needs N seconds to ask the big model "what should I do next?"
+and N exceeds the rotation period, the next instruction comes back
+keyed to a vocabulary that no longer exists.  This makes
+**maximum-supportable rotation rate** a first-class design question;
+see `tools/rotation-benchmark/` for the measurement.
+
 ## Primary adversary
 
 **Automated LLM-driven attacker** running a generic playbook inside a

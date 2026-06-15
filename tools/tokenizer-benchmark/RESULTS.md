@@ -31,24 +31,44 @@ prior literature on adversarial / randomized strings; English-word
 compounds drawn from a 370k-word list are recognizable enough to the
 BPE tokenizers that the no-separator penalty is small.
 
-**Implications:**
+Two important caveats on what this number even *means*:
 
-1. The token-cost lever is **not load-bearing** for the threat model.
-   Babbleon's defense rests on namespace rename + tier boundary +
-   tripwires.  Tokenization friction is, at most, a marginal cost
-   multiplier on the attacker's recon step.
-2. No PLAN-level or README-level claim about token-cost should be
-   restored without re-running this benchmark with the exact wordlist,
-   seed, and tokenizer versions the claim cites.
-3. The 7 % delta is real and consistent across N=3,4,5 and across both
-   tokenizers, but it is too small to advertise as a defense.
+1. **Recon token cost ≠ exploit-execution capability.** The tokenizer
+   penalty taxes the attacker's input-encoding step; it does not
+   change whether the attacker can compile a working payload once it
+   has the names.  Quoting a "Babbleon makes attacks 7 % more
+   expensive" line would conflate input-encoding cost with end-to-end
+   attack cost, which it is not.  No such line should appear in
+   user-facing copy.
+2. **Tokenizer behavior is measured on `cl100k_base` / `o200k_base`
+   (OpenAI families).**  These are near-frontier tokenizers.  Smaller
+   open-weights models often use smaller, less-saturated tokenizers
+   (Llama-3 SentencePiece, Mistral, Phi) where the no-whitespace
+   penalty is plausibly larger; the inflation may scale superlinearly
+   as model size shrinks.  This is a *hypothesis*, not a measurement;
+   see the SentencePiece follow-up below.
+
+## Implications for the design
+
+The token-cost lever is **not load-bearing** for the threat model.
+Babbleon's defense rests on namespace rename + tier boundary +
+tripwires.  Tokenization friction is, at most, a marginal cost
+multiplier on the attacker's recon step — keep around as data, do not
+advertise.
+
+No PLAN-level or README-level claim about token-cost should be
+restored without re-running this benchmark with the exact wordlist,
+seed, tokenizer, and model-family the claim cites.
 
 ## Future work
 
-- Re-measure after the wordlist gets the RESEARCH T6 v2 post-filter
-  (tokenization-density bias toward mid-tail tokens).  That is the only
-  configuration that could move the ratio meaningfully.
+- Try SentencePiece (Llama 3, Mistral) and the smaller open-weights
+  tokenizers — the smaller-model superlinear-scaling hypothesis can
+  only be checked there.  Different algorithm (Unigram LM), possibly
+  meaningfully different result.
 - Try Claude's tokenizer via the count-tokens API; tiktoken is
   OpenAI-specific.
-- Try SentencePiece (Llama 3) — different algorithm, possibly
-  different result.
+- Re-measure after the wordlist gets the RESEARCH T6 v2 post-filter
+  (tokenization-density bias toward mid-tail tokens).  That is the
+  only wordlist-side configuration that could move the ratio
+  meaningfully on cl100k/o200k.

@@ -89,6 +89,24 @@ No active response. Planned: a `ResponsePolicy` enum selectable per host:
 Permissions: same-uid kills are free; cross-uid needs CAP_KILL via the
 ns-helper privilege gate.
 
+**DEFERRED(M3.5+) Background wordlist-permutation pre-build**
+File: `crates/babbleon/src/mapping/fpe.rs`
+Each fresh epoch costs a ~18 ms Fisher-Yates over the 370k-word
+permutation (measured in `tools/rotation-benchmark/RESULTS.md`).
+Spawning a thread on epoch advance to build epoch+1's permutation
+turns the next rotation tick into a cache hit (~0.2 ms).  Required
+for the high-frequency rotation that defeats the Type 3 hybrid
+attacker (docs/threat-model.md).
+
+**DEFERRED(M3.5+) Unified runtime-table wrapper**
+File: `crates/babbleon/src/enforcement/wrapper.rs`
+Today each rotation re-renders one shell script per tracked tool
+(~0.4 ms each, dominating rotation cost above N≈100).  A single
+wrapper binary that reads its scrambled name from a runtime table
+file would collapse rotation to one atomic table write.  Combined
+with the perm pre-build above, this enables millisecond-class
+rotation.
+
 **DEFERRED(M3.5+) Stale-mapping tripwire**
 File: `crates/babbleon/src/mapping/mapper.rs`
 The current honey-name set is random compounds derived from
