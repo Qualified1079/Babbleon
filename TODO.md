@@ -475,11 +475,12 @@ Full audit lives in `docs/cwe-top25-audit.md`.  Per-item status:
       chain.  `docs/cwe-top25-audit.md` §CWE-269 walks cap-drop /
       NNP / seccomp / fork / setuid in order with the failure-mode
       analysis.
-- [ ] **CWE-770 FPE cache eviction policy.** New finding from the
-      audit: `mapping/fpe.rs::CACHE` grows one entry per (secret,
-      epoch, n) tuple with no eviction.  Daemons running across many
-      rotations accumulate ~3 MiB per stale epoch.  Pick a policy
-      (LRU at N entries, or time-bounded) and implement.
+- [x] **CWE-770 FPE cache eviction policy.**  `mapping/fpe.rs::Cache`
+      now bounds the cache to `CACHE_MAX_ENTRIES = 32` entries with a
+      FIFO eviction order (equivalent to LRU for our access pattern:
+      each table is used heavily during its rotation, never again).
+      Three new tests: per-cache eviction at limit, global cache stays
+      within bound across 2× insertions, idempotent re-insert.
 
 ---
 
