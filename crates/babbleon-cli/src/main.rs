@@ -67,6 +67,27 @@ enum Cmd {
     /// Re-seal the TPM vault after a kernel update changes PCR values.
     /// (DEFERRED M2.5 — currently prints instructions.)
     TpmReseal,
+    /// Emit a mapping-aware backup bundle (JSON).  Includes the
+    /// host_secret, the manifest at backup time, the wordlist hash,
+    /// and the current epoch.  Pair this with the host filesystem
+    /// snapshot you actually back up.
+    Backup {
+        /// Output path; `-` for stdout.
+        #[arg(long, default_value = "-")]
+        out: String,
+    },
+    /// Plan a restore of a bundle against the current vault under a
+    /// named policy.  Prints the rename plan; does NOT yet execute
+    /// the renames (filesystem-side restore wiring is filed in TODO).
+    Restore {
+        /// Bundle file to restore from; `-` for stdin.
+        #[arg(long, default_value = "-")]
+        input: String,
+        /// What to do when bundle and vault disagree on epoch.
+        /// `reject` (default), `rewrap`, or `honor-snapshot`.
+        #[arg(long, default_value = "reject")]
+        policy: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -102,6 +123,8 @@ fn main() -> Result<()> {
         Cmd::ApplyNs { real_root } => cmd_apply_ns(&real_root),
         Cmd::Credentials { home, apply } => cmd_credentials(home, apply),
         Cmd::TpmReseal => cmd_tpm_reseal(),
+        Cmd::Backup { out } => cmd_backup(&out),
+        Cmd::Restore { input, policy } => cmd_restore(&input, &policy),
     }
 }
 
@@ -585,4 +608,62 @@ fn cmd_apply_ns(real_root: &std::path::Path) -> Result<()> {
         println!("{} binaries in untrusted view", result.visible.len());
         Ok(())
     }
+}
+
+fn cmd_backup(out: &str) -> Result<()> {
+    let pw = read_password("vault passphrase: ")?;
+    let s = Session::unlock(&pw, None, None)?;
+    let wordlist: &[u8] = include_bytes!("../../babbleon/wordlist/words.txt");
+    let bundle = babbleon::backup::BackupBundle::from_session(&s, wordlist);
+    let json = serde_json::to_string_pretty(&bundle).context("serialize bundle")?;
+    if out == "-" {
+        println!("{json}");
+    } else {
+        std::fs::write(out, json).with_context(|| format!("write {out}"))?;
+        eprintln!("wrote bundle to {out}");
+    }
+    Ok(())
+}
+
+fn cmd_restore(input: &str, policy: &str) -> Result<()> {
+    use babbleon::backup::RestorePolicy;
+    let policy = match policy {
+        "reject" | "reject-mismatch" => RestorePolicy::RejectMismatch,
+        "rewrap" | "rewrap-to-current" => RestorePolicy::RewrapToCurrent,
+        "honor" | "honor-snapshot" | "honor-snapshot-until-next-rotation" => {
+            RestorePolicy::HonorSnapshotUntilNextRotation
+        }
+        other => anyhow::bail!(
+            "unknown restore policy {other:?}; expected reject|rewrap|honor-snapshot"
+        ),
+    };
+
+    let json = if input == "-" {
+        use std::io::Read;
+        let mut buf = String::new();
+        std::io::stdin()
+            .read_to_string(&mut buf)
+            .context("read bundle from stdin")?;
+        buf
+    } else {
+        std::fs::read_to_string(input).with_context(|| format!("read {input}"))?
+    };
+    let bundle: babbleon::backup::BackupBundle =
+        serde_json::from_str(&json).context("parse bundle json")?;
+
+    let pw = read_password("vault passphrase: ")?;
+    let s = Session::unlock(&pw, None, None)?;
+    let wordlist: &[u8] = include_bytes!("../../babbleon/wordlist/words.txt");
+    let resolved = bundle.resolve_against(&s, wordlist, policy)?;
+    println!("policy: {:?}", resolved.policy);
+    println!("rename plan ({} entries):", resolved.renames.len());
+    for (from, to) in &resolved.renames {
+        println!("  {from}  →  {to}");
+    }
+    eprintln!();
+    eprintln!(
+        "(plan only; filesystem-side restore execution lands in a follow-up; \
+         see TODO.md)"
+    );
+    Ok(())
 }

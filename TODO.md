@@ -533,9 +533,11 @@ Full audit lives in `docs/cwe-top25-audit.md`.  Per-item status:
       plan.  Rewrap mode computes the O(N) `(from, to)` rename list;
       honor mode returns an empty plan (daemon activates the
       bundle's mapping for one cycle).  Cross-host restore is refused
-      even in rewrap mode.  Wiring through to the CLI's `restore`
-      command is filed as a follow-up (the bundle structure is
-      ready; no CLI subcommand exists yet).  4 new tests.
+      even in rewrap mode.  CLI commands `babbleon backup --out
+      <file>` and `babbleon restore --in <file> --policy
+      <reject|rewrap|honor-snapshot>` are wired through.  Filesystem-
+      side rename execution is a separate follow-up.  4 new tests
+      cover the policy logic.
 
 ## Documented limitations (composed defenses, NOT future TODOs)
 

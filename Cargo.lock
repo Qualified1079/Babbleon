@@ -185,6 +185,7 @@ dependencies = [
  "clap",
  "hex",
  "rpassword",
+ "serde_json",
  "tempfile",
  "tracing",
  "tracing-subscriber",
