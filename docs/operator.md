@@ -70,7 +70,49 @@ Without the passphrase the vault is unrecoverable — that's the point.
 Wipe and re-init:
 
     rm ~/.local/share/babbleon/vault.age
+    rm -f ~/.local/share/babbleon/vault.age.attempts  # rate-limit sidecar
     babbleon init
+
+### Locked out by failed unlock attempts
+
+The vault enforces an exponential backoff after 3 failed attempts
+and a hard lockout at 10 (see
+`crates/babbleon/src/vault/attempts.rs`).  Locked-out vault rejects
+even the correct passphrase until the sidecar is cleared:
+
+    rm ~/.local/share/babbleon/vault.age.attempts
+
+Use this only when you're confident the failures were typos, not an
+attacker — clearing the sidecar after a real brute-force attempt
+hides the evidence.
+
+### Backup the mapping (against snapshot restore)
+
+A filesystem snapshot captures the *current* epoch's scrambled
+binary names.  Pair it with a mapping bundle so a future restore can
+re-render the wrapper scripts under whatever epoch the restored
+vault is at:
+
+    babbleon backup --out mapping-backup.json
+
+The bundle carries the host_secret, manifest, wordlist hash, and
+current epoch.  Store it next to your filesystem snapshot.
+
+### Restore from a backup
+
+Plan first (no filesystem changes yet — currently prints the rename
+list only):
+
+    babbleon restore --in mapping-backup.json --policy reject
+
+Policy choices:
+
+  - `reject` (default) — refuse unless epoch + host_secret +
+    wordlist match exactly
+  - `rewrap` — translate every name through the old mapping back to
+    real, then forward through the current mapping (O(N) renames)
+  - `honor-snapshot` — keep the bundle's names in place for one
+    rotation cycle
 
 ### Lost FIDO2 token
 
