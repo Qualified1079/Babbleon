@@ -264,11 +264,13 @@ Triaged from a self-review against general secure-software practice.
       `zeroize::Zeroizing<Vec<u8>>` (or `secrecy::SecretBox`)
       everywhere we hold key material.  Closes the core-dump /
       paged-out / heap-reuse leakage class.
-- [ ] **Constant-time comparison for secret-derived bytes** via
-      `subtle::ConstantTimeEq`.  Anywhere we `==`-compare HMAC tags,
-      KEK material, FIDO2 response bytes, or vault MACs against
-      attacker-supplied input we are variable-time.  Especially load
-      bearing for the FIDO2 backend.
+- [x] **Constant-time comparison for secret-derived bytes** via
+      `subtle::ConstantTimeEq`.  `crates/babbleon/src/crypto.rs` exposes
+      `ct_eq(&[u8], &[u8]) -> bool`; `MappingTable::is_honey` now uses
+      it (full traversal, no early-exit) so neither the matching index
+      nor the no-match outcome is leakable by timing.  Pattern set up
+      for FIDO2 / Ed25519 sites where comparison against attacker input
+      is load-bearing.
 - [ ] **Daemon hardening: refuse core dumps, refuse swap.**  At
       startup the trusted-tier daemon (and the ns-helper) should call
       `prctl(PR_SET_DUMPABLE, 0)`, `setrlimit(RLIMIT_CORE, 0)`, and

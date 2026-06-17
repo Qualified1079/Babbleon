@@ -43,8 +43,24 @@ impl MappingTable {
         self.scrambled_to_real.get(scrambled).map(|s| s.as_str())
     }
 
+    /// Test whether `name` matches any of this table's honey entries.
+    ///
+    /// Uses a constant-time per-entry comparison so *which* honey name
+    /// matched (or whether none did) cannot be distinguished by call
+    /// timing.  Each call still traverses the whole list — early-exit
+    /// would re-introduce the same leak.  Honey names are HKDF-derived
+    /// from the host secret, so leaking the matching index back to the
+    /// caller would partially leak the seed.
     pub fn is_honey(&self, name: &str) -> bool {
-        self.honey_names.iter().any(|h| h == name)
+        let needle = name.as_bytes();
+        let mut hit = false;
+        for h in &self.honey_names {
+            // bitwise-or the result into `hit` instead of short-circuiting
+            // so loop time is independent of where (or whether) the match
+            // is.
+            hit |= crate::crypto::ct_eq(h.as_bytes(), needle);
+        }
+        hit
     }
 }
 

@@ -19,6 +19,7 @@
 pub mod audit;
 pub mod backup;
 pub mod credentials;
+pub mod crypto;
 pub mod enforcement;
 pub mod errors;
 pub mod events;
