@@ -116,6 +116,37 @@ jobs:
           path: lcov.info
           retention-days: 30
 
+  vet:
+    name: cargo vet
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # Bootstrap status: imports are wired (supply-chain/config.toml);
+    # the audits.toml / exemptions.toml are empty and need a backfill
+    # pass.  Run as `continue-on-error` so PRs don't block on the
+    # bootstrap gap, but the report is visible and uploaded as an
+    # artifact.  Once the exemption set is settled, flip
+    # continue-on-error off.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: install cargo-vet
+        run: cargo install --locked cargo-vet
+      - name: cargo vet check
+        run: cargo vet --locked
+      - name: dump unaudited-deps list
+        if: failure()
+        run: cargo vet suggest > vet-suggest.txt || true
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-vet-report
+          path: vet-suggest.txt
+          retention-days: 30
+          if-no-files-found: ignore
+
   reproducible:
     name: reproducible release build
     runs-on: ubuntu-latest

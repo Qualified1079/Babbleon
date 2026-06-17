@@ -326,9 +326,11 @@ Triaged from a self-review against general secure-software practice.
       embark-studios, google, mozilla, and zcash audit collections;
       first-party workspace crates marked `audit-as-crates-io = false`
       so they're reviewed via CODEOWNERS instead.  Empty `audits.toml`
-      + `exemptions.toml`.  The first-pass backfill (run `cargo vet
-      regenerate exemptions` after a `cargo vet` failure) and a CI job
-      gating PRs on `cargo vet check` remain to land — filed.
+      + `exemptions.toml`.  `.github/workflows/ci.yml` `vet` job runs
+      `cargo vet --locked` in `continue-on-error` mode and uploads a
+      `cargo-vet-report` artifact on failure.  Flip continue-on-error
+      off once an operator runs `cargo vet regenerate exemptions` to
+      backfill the initial exemption set.
 - [x] **Reproducible-build verification CI job.**
       `.github/workflows/ci.yml` `reproducible` job builds the
       release binaries twice from the same checkout on the same
