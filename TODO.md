@@ -292,11 +292,17 @@ Triaged from a self-review against general secure-software practice.
       transitively by `hkdf`).  Same security properties as before for a
       32-byte uniformly random `ikm`; the win is auditor-recognizable
       shape (explicit `salt` / `info` / `len`).
-- [ ] **Rate-limiting on vault unlock attempts.**  Vault header
-      carries an attempt counter; increments before each KDF, clears
-      on success; exponential backoff after 3 failures; lock-out at
-      10 attempts requiring recovery key.  RESEARCH T5 flagged this;
-      not yet shipped.
+- [x] **Rate-limiting on vault unlock attempts.**
+      `crates/babbleon/src/vault/attempts.rs` exposes `AttemptTracker`
+      backed by a sidecar file at `<vault>.attempts` (JSON, 0o600).
+      First `INSTA_RETRIES = 3` failures are immediate (typo budget);
+      then exponential backoff `2^(n-3)` seconds capped at 60 s; at
+      `LOCKOUT_AT = 10` consecutive failures further attempts are
+      refused with `BabbleonError::UnlockLockedOut`.  Check runs *before*
+      the Argon2id KDF so a brute-force attacker can't burn CPU on
+      refused attempts.  Wired into `Session::unlock` and cleared on
+      `Session::initialize`.  Sidecar parse errors default to "fresh
+      state" — defence-in-depth, not a hard correctness boundary.
 
 ### Supply-chain + build integrity
 

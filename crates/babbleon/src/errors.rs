@@ -36,4 +36,14 @@ pub enum BabbleonError {
 
     #[error("age decryption error: {0}")]
     AgeDecrypt(String),
+
+    /// The vault is in an exponential-backoff window after recent failed
+    /// unlock attempts.  Retry after `remaining_secs`.
+    #[error("vault unlock in backoff: retry in {remaining_secs}s")]
+    UnlockBackoff { remaining_secs: u64 },
+
+    /// The vault has reached the per-vault lockout threshold and refuses
+    /// further attempts without operator recovery.
+    #[error("vault locked out after {attempts} failed attempts; recovery required")]
+    UnlockLockedOut { attempts: u32 },
 }

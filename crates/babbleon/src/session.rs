@@ -5,6 +5,7 @@ use crate::events::{Event, EventBus};
 use crate::manifest::DEFAULT_TRACKED;
 use crate::mapping::{Mapper, MappingTable};
 use crate::storage::{ensure_dirs, vault_path};
+use crate::vault::attempts::{now_secs, AttemptTracker};
 use crate::vault::{SoftBackend, Vault, VaultPayload};
 use std::path::{Path, PathBuf};
 
@@ -46,6 +47,10 @@ impl Session {
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
         }
 
+        // Fresh vault — drop any leftover attempt counter from a prior
+        // vault at the same path.  (Cheap; no-op when none exists.)
+        let _ = AttemptTracker::for_vault(&path).record_success();
+
         let bus = EventBus::new();
         bus.emit(Event::VaultSealed {
             epoch: 0,
@@ -73,6 +78,13 @@ impl Session {
         }
 
         let bus = EventBus::new();
+
+        // Rate-limit check happens *before* the (expensive, Argon2id)
+        // KDF call — a brute-force attacker shouldn't get to burn CPU
+        // on attempts the policy already refused.
+        let mut tracker = AttemptTracker::for_vault(&path);
+        tracker.check_allowed(now_secs())?;
+
         let vault = Vault::new(SoftBackend::default());
         let data = std::fs::read(&path)?;
         let payload = match vault.unseal(&data, Some(password)) {
@@ -82,9 +94,13 @@ impl Session {
                     epoch: 0,
                     backend: "soft".into(),
                 });
+                let _ = tracker.record_failure(now_secs());
                 return Err(e);
             }
         };
+        // Success — reset the counter so a legitimate-typo'd run doesn't
+        // accumulate failures forever.
+        let _ = tracker.record_success();
         let secret = payload.host_secret()?;
         let table = Mapper::new(&secret).build_table(&tracked, payload.epoch);
 
@@ -144,6 +160,70 @@ mod tests {
         assert_eq!(s1.mapping.scramble("curl"), s2.mapping.scramble("curl"));
         assert_eq!(s1.payload.epoch, 0);
         assert_eq!(s2.payload.epoch, 0);
+    }
+
+    #[test]
+    fn locked_out_vault_refuses_correct_password() {
+        // The full "burn through the backoff schedule with wrong
+        // passwords" path needs the wall clock to advance through each
+        // window, which a unit test should not depend on.  Instead,
+        // seed the tracker directly at the lockout threshold and verify
+        // Session::unlock refuses even the right password.
+        use crate::vault::attempts::{AttemptTracker, LOCKOUT_AT};
+        let dir = tempfile::tempdir().unwrap();
+        let vault = dir.path().join("vault.age");
+        let tracked: Vec<String> = vec!["curl".into()];
+        Session::initialize("right-pw", Some(tracked.clone()), Some(vault.clone())).unwrap();
+
+        // Push the tracker to LOCKOUT_AT failures.
+        let mut tracker = AttemptTracker::for_vault(&vault);
+        for i in 0..LOCKOUT_AT {
+            tracker.record_failure(i as u64).unwrap();
+        }
+        assert_eq!(tracker.failed_attempts(), LOCKOUT_AT);
+
+        match Session::unlock("right-pw", Some(tracked.clone()), Some(vault.clone())) {
+            Err(BabbleonError::UnlockLockedOut { attempts }) => {
+                assert!(attempts >= LOCKOUT_AT);
+            }
+            Err(other) => panic!("expected UnlockLockedOut, got {other:?}"),
+            Ok(_) => panic!("locked-out vault accepted a password"),
+        }
+    }
+
+    #[test]
+    fn wrong_password_increments_attempt_counter() {
+        use crate::vault::attempts::AttemptTracker;
+        let dir = tempfile::tempdir().unwrap();
+        let vault = dir.path().join("vault.age");
+        let tracked: Vec<String> = vec!["curl".into()];
+        Session::initialize("right-pw", Some(tracked.clone()), Some(vault.clone())).unwrap();
+
+        // One wrong-password unlock bumps the counter from 0 to 1.
+        let r = Session::unlock("WRONG", Some(tracked.clone()), Some(vault.clone()));
+        assert!(matches!(r, Err(BabbleonError::WrongPassphrase)));
+        assert_eq!(AttemptTracker::for_vault(&vault).failed_attempts(), 1);
+    }
+
+    #[test]
+    fn successful_unlock_clears_failure_count() {
+        use crate::vault::attempts::AttemptTracker;
+        let dir = tempfile::tempdir().unwrap();
+        let vault = dir.path().join("vault.age");
+        let tracked: Vec<String> = vec!["curl".into()];
+        Session::initialize("right-pw", Some(tracked.clone()), Some(vault.clone())).unwrap();
+
+        // Seed the tracker at 2 failures with old timestamps so the
+        // backoff window has fully elapsed and the next attempt can
+        // actually call the KDF.
+        let mut tracker = AttemptTracker::for_vault(&vault);
+        tracker.record_failure(1).unwrap();
+        tracker.record_failure(2).unwrap();
+        assert_eq!(tracker.failed_attempts(), 2);
+
+        Session::unlock("right-pw", Some(tracked.clone()), Some(vault.clone()))
+            .expect("right password must succeed");
+        assert_eq!(AttemptTracker::for_vault(&vault).failed_attempts(), 0);
     }
 
     #[test]
