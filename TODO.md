@@ -518,11 +518,17 @@ Full audit lives in `docs/cwe-top25-audit.md`.  Per-item status:
 - [x] Operator docs (`docs/operator.md`)
 - [x] Threat-model doc (`docs/threat-model.md`)
 - [x] Backup/restore: `backup::BackupBundle`
-- [ ] **Backup/restore policy for stale mapping archives.**
-      `crates/babbleon/src/backup.rs`.  Restoring an old snapshot
-      needs an explicit policy: re-seal under the current mapping, or
-      honour the snapshot's mapping until next rotation?  No policy
-      yet; current behaviour is implicit re-seal on restore.
+- [x] **Backup/restore policy for stale mapping archives.**
+      `crates/babbleon/src/backup.rs` now exposes `RestorePolicy`
+      (RejectMismatch · RewrapToCurrent · HonorSnapshotUntilNextRotation)
+      and `BackupBundle::resolve_against(&current_session, wordlist,
+      policy)` which returns a `ResolvedRestore { policy, renames }`
+      plan.  Rewrap mode computes the O(N) `(from, to)` rename list;
+      honor mode returns an empty plan (daemon activates the
+      bundle's mapping for one cycle).  Cross-host restore is refused
+      even in rewrap mode.  Wiring through to the CLI's `restore`
+      command is filed as a follow-up (the bundle structure is
+      ready; no CLI subcommand exists yet).  4 new tests.
 
 ## Documented limitations (composed defenses, NOT future TODOs)
 
