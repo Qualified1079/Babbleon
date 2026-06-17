@@ -8,159 +8,137 @@ Last commit before this session: `a8351bd` — process_hardening: PR_SET_DUMPABL
 
 ## Where the project sits
 
-M3 (Linux namespace enforcement) and M3.5 (deception layer) are
-shipped. The two M3.5+ items that were filed against the original
-"connected attacker" / Threat-B framing are in. The full overnight
-security-practice cluster has now landed in this branch.
+M3 (Linux namespace enforcement) and M3.5 (deception layer) shipped
+before this session.  This overnight session worked top-to-bottom
+through the 12-item security-practice priority cluster, plus the
+follow-ups it surfaced (CWE Top 25 documentary audit, SSDF policy
+doc, MAC profile templates, supply-chain hardening).
 
-Total tests: **123 across the workspace, all green.** (was 81 at
-the start of this session's predecessor.)
+**Total tests: 128 across the workspace, all green.** (Was 81 at
+the start of the predecessor session.)
 
-The session before this one had restructured the threat model into
-**two underlying threats** (A disconnected / B connected) with **four
-expressions** (E1 solo internal, E2 solo external, E3 hybrid, E4
-adversarial network of LLMs). See `docs/threat-model.md`.
-
----
-
-## What this overnight session shipped
-
-The 12-item priority cluster called out by the prior handoff was
-worked top-to-bottom, plus follow-ups and CWE Top 25 audit items.
-
-Code-bearing commits in this session, in order:
-
-1. `kdf: migrate to HKDF-SHA-256 (RFC 5869)` — new
-   `crates/babbleon/src/mapping/kdf.rs`; `Mapper::purpose_seed` and
-   `fpe::derive_chacha_seed` both call through it.
-2. `fmt: cargo fmt sweep of latent drift` — restored
-   `cargo fmt --check` to green across the workspace.
-3. `crypto: constant-time comparison helper + is_honey adoption` —
-   new `crates/babbleon/src/crypto.rs::ct_eq`; `MappingTable::is_honey`
-   uses it with no short-circuit.
-4. `audit: Ed25519-sign each entry` —
-   `ChainedAuditLog::open_signed` / `verify_signed`; new
-   `SigningPayload` so signing bytes match the verifier's
-   reconstruction.
-5. `events: length-bound the honey-FIFO line reader (CWE-400)` —
-   `read_bounded_line` + `discard_to_newline`,
-   `MAX_HONEY_LINE_BYTES = 16 KiB`.
-6. `tests: proptest properties for the mapping layer` — 6 properties
-   at 16 cases each (~56 s suite).
-7. `vault: per-vault unlock rate-limit with exponential backoff` —
-   new `crates/babbleon/src/vault/attempts.rs`; `AttemptTracker`
-   sidecar (`<vault>.attempts`); wired into `Session::unlock`.
-8. `policies: AppArmor + SELinux confinement templates` — new
-   `policies/{apparmor,selinux}/` with install README.
-9. `ci: SBOM job, dependabot, workflow permissions, CODEOWNERS,
-   deny sweep` — `.github/workflows/ci.yml` SBOM job, new
-   `.github/dependabot.yml`, `CODEOWNERS`, tightened `deny.toml`.
-10. `release: sigstore signing + SLSA L3 provenance + scorecard CI` —
-    `.github/workflows/release.yml`, `scorecard.yml`,
-    `docs/verify-release.md`.
-11. `docs: CWE Top 25 (2024) documentary audit` —
-    `docs/cwe-top25-audit.md` (one new finding: CWE-770).
-12. `fpe: bound the permutation cache at CACHE_MAX_ENTRIES (CWE-770)` —
-    closes the cache-eviction finding.
-13. `docs+ci: secure-development-policy + cargo-llvm-cov coverage job` —
-    `docs/secure-development-policy.md` + `coverage` CI job.
-14. `fuzz+miri: cargo-fuzz scaffolding + miri CI job` — `fuzz/`
-    crate with three targets, new `miri` CI job.
-15. `ci: CodeQL SAST` — `.github/workflows/codeql.yml`.
+The threat model from the session before this is unchanged: two
+underlying threats (A disconnected / B connected) with four
+expressions (E1–E4).  See `docs/threat-model.md`.
 
 ---
 
-## The original 12-item priority list (status)
+## What this overnight session shipped (in commit order)
 
-1. `SECURITY.md` / RFC 9116 ✅ pre-session
-2. Memory zeroization (`zeroize`) ✅ pre-session
-3. Constant-time comparison (`subtle`) ✅ this session
-4. Daemon hardening (`PR_SET_DUMPABLE`, `RLIMIT_CORE`, `mlockall`) ✅ pre-session
-5. `SAFETY:` comments ✅ pre-session
-6. HKDF (RFC 5869) ✅ this session
-7. Vault unlock rate-limiting ✅ this session
-8. Property tests + fuzz harness scaffolding ✅ this session (both)
-9. SBOM generation in CI ✅ this session
-10. Sigstore / cosign release-signing ✅ this session (with SLSA L3)
-11. AppArmor / SELinux profile templates ✅ this session (both)
-12. Ed25519 audit-log signing ✅ this session
+| # | Commit | Subject |
+|---|---|---|
+| 1 | `72efe9f` | kdf: migrate to HKDF-SHA-256 (RFC 5869) |
+| 2 | `8b29498` | fmt: cargo fmt sweep of latent drift |
+| 3 | `66a2daa` | crypto: constant-time comparison helper + is_honey adoption |
+| 4 | `4847e62` | audit: Ed25519-sign each entry |
+| 5 | `7ac15e8` | events: length-bound the honey-FIFO line reader (CWE-400) |
+| 6 | `1b93a75` | tests: proptest properties for the mapping layer |
+| 7 | `d847283` | vault: per-vault unlock rate-limit with exponential backoff |
+| 8 | `61b0ad6` | policies: AppArmor + SELinux confinement templates |
+| 9 | `227a6d7` | ci: SBOM, dependabot, workflow permissions, CODEOWNERS, deny sweep |
+| 10 | `8e9da3f` | release: sigstore signing + SLSA L3 provenance + scorecard CI |
+| 11 | `6d842bd` | docs: CWE Top 25 (2024) documentary audit |
+| 12 | `dd10e91` | fpe: bound the permutation cache at CACHE_MAX_ENTRIES (CWE-770) |
+| 13 | `58caedc` | docs+ci: secure-development-policy + cargo-llvm-cov coverage |
+| 14 | `8bc8f07` | fuzz+miri: cargo-fuzz scaffolding + miri CI job |
+| 15 | `45705d0` | ci+docs: CodeQL SAST workflow + session handoff refresh |
+| 16 | `6b35b49` | docs+ci: STRIDE threat model + weekly fuzz CI |
+| 17 | `c1ccfe7` | ci: reproducible release-build verification job |
+| 18 | `6932da5` | backup: explicit RestorePolicy for stale mapping archives |
+| 19 | `39bec49` | wordlist: README + regression tests for invariants |
+| 20 | `406f753` | readme: CI badges + security artifact index |
+| 21 | `9b584ef` | supply-chain: cargo-vet bootstrap (config + imports) |
+| 22 | `512f372` | fmt: rustfmt sweep over audit.rs + backup.rs |
+
+22 commits.  All push targeted `claude/magical-turing-mele8c`.
+
+---
+
+## The original 12-item priority list
 
 All 12 closed.
 
+1. `SECURITY.md` / RFC 9116 — ✅ pre-session
+2. Memory zeroization (`zeroize`) — ✅ pre-session
+3. Constant-time comparison (`subtle`) — ✅ this session (`66a2daa`)
+4. Daemon hardening — ✅ pre-session
+5. `SAFETY:` comments — ✅ pre-session
+6. HKDF (RFC 5869) — ✅ this session (`72efe9f`)
+7. Vault unlock rate-limiting — ✅ this session (`d847283`)
+8. Property tests + fuzz harness scaffolding — ✅ this session (`1b93a75`, `8bc8f07`)
+9. SBOM generation in CI — ✅ this session (`227a6d7`)
+10. Sigstore / cosign release-signing — ✅ this session (`8e9da3f`, with SLSA L3)
+11. AppArmor / SELinux profile templates — ✅ this session (`61b0ad6`)
+12. Ed25519 audit-log signing — ✅ this session (`4847e62`)
+
 ---
 
-## What's NOT being done this session
+## Open follow-ups (next-session pickup queue)
 
-- Anything that needs hardware (FIDO2, TPM, bare-metal NS validation).
-- The `tools/scrambler/example-puzzles/` deliverable (needs human
-  curation).
-- The structure-scrambling research line — needs research write-up
-  first.
-- Branch protection on `main` — this is a remote-side GitHub setting,
-  not code; documented in `docs/secure-development-policy.md`.
+### Code work (small / medium)
+- Wire the new `RestorePolicy` through the CLI's `restore` subcommand
+  (the bundle structure is ready in `backup.rs`; CLI subcommand
+  doesn't exist yet)
+- `cargo-vet` first-pass exemption backfill (`cargo vet regenerate
+  exemptions`) plus a CI gate
+- ns-helper privilege-chain ordering test (the CWE-269 audit walks
+  the order; no programmatic test confirms refactors don't break it)
+- Tokenizer benchmark — Claude tokenizer via count-tokens API; smaller
+  open-weights tokenizers (Llama-3 SentencePiece, Mistral, Phi)
+- Wordlist post-filter by tokenization density (v2 mapping change)
 
----
-
-## Open follow-ups (the next session's pickup queue)
-
-Drawn from the unchecked items in TODO.md after this session:
-
-**Background work for M3.5+++:**
+### Code work (larger)
 - Background wordlist-permutation pre-build (needed for the rotation
-  rate that defeats Threat B).
+  rate that defeats Threat B)
 - Unified runtime-table wrapper (collapses rotation to one atomic
-  table write).
+  table write)
+- OverlayFS per-app writable upper layers
+- O(N) bind cost at large manifest size
 
-**Manifest scale:**
-- OverlayFS per-app writable upper layers.
-- O(N) bind cost at large manifest size.
+### Hardware-blocked
+- FIDO2 wire-up
+- TPM2 PCR-sealed backend
+- TPM authorized policy
+- tpm2-abrmd vs `/dev/tpm0` matrix
+- Bare-metal NS validation pass
 
-**M5 enterprise (private crate):**
-- Escrow backend, SIEM event sinks, console.
+### Enterprise (separate private repo)
+- Escrow backend, SIEM event sinks, console
 
-**Hardware-blocked:**
-- FIDO2 wire-up, TPM2 PCR-sealed backend, TPM authorized policy,
-  tpm2-abrmd matrix.
+### Process / GitHub-side
+- Branch protection on `main` (cannot be set from this repo's source)
+- OpenSSF Best Practices badge
+- Expand CodeQL `language` matrix to include `rust` + `cpp` when
+  upstream support stabilises
 
-**CI follow-ups:**
-- Weekly cargo-fuzz smoke runs on a scheduled workflow.
-- Reproducible-build verification CI job (musl-static claim).
-- `cargo-vet` for transitive-dep audits.
-
-**Process items (need operator action, not code):**
-- Branch protection on `main`.
-- OpenSSF Best Practices badge.
-- Move CodeQL `language` matrix to include rust + cpp when upstream
-  support stabilises.
-
-**Standards:**
-- STRIDE-formatted threat model (have a threat model; needs the
-  STRIDE table-of-tables shape for procurement reviewers).
-
-**Research:**
-- Operator scrambling, whitespace-as-words, code-order scrambling,
-  junk-line decoys, multi-language wordlists (v2/v3).
+### Research (v2 / v3)
+- Operator scrambling
+- Whitespace-as-words
+- Code-order scrambling with execution markers
+- Junk-line / decoy-token injection
+- Multi-language wordlists
 
 ---
 
-## Key file map (refreshed)
+## Key file map
 
 ```
 crates/babbleon/src/
-  audit.rs            — ChainedAuditLog::open_signed + verify_signed
+  audit.rs            — open_signed + verify_signed (Ed25519)
+  backup.rs           — RestorePolicy + ResolvedRestore + resolve_against
   crypto.rs           — ct_eq() constant-time helper (NEW)
   enforcement/
     linux_ns.rs       — mount-namespace driver
-    wrapper.rs        — unified shell template with honey + stale branches
+    wrapper.rs        — unified shell template (CWE-78 audit clean)
     seccomp.rs        — block_process_inspection_syscalls()
     landlock.rs       — Landlock LSM sandbox
     response.rs       — ResponsePolicy + HoneyResponder
-    ebpf.rs           — eBPF-LSM scaffold; kernel-gated at 6.1
+    ebpf.rs           — eBPF-LSM scaffold
     syscalls.rs       — ALL nix/libc kernel calls
   events.rs           — HoneyFifoReader with bounded read (CWE-400)
   mapping/
     kdf.rs            — HKDF-SHA-256 subkey derivation (NEW)
-    mapper.rs         — uses kdf::derive_subkey_32; is_honey -> ct_eq
+    mapper.rs         — uses kdf; is_honey → ct_eq; wordlist invariant tests
     fpe.rs            — uses kdf; Cache with FIFO eviction (CWE-770)
   vault/
     attempts.rs       — AttemptTracker, sidecar file, backoff (NEW)
@@ -171,6 +149,10 @@ crates/babbleon/src/
   process_hardening.rs — PR_SET_DUMPABLE / RLIMIT_CORE / mlockall
   session.rs          — unlock now rate-limit-gated
 
+crates/babbleon/wordlist/
+  words.txt           — 369652-word [a-z]+ wordlist
+  README.md           — invariants (NEW)
+
 crates/babbleon/tests/
   corpus_fingerprint.rs
   enforcement.rs
@@ -179,32 +161,43 @@ crates/babbleon/tests/
 
 docs/
   threat-model.md
+  threat-model-stride.md          (NEW — STRIDE table)
   standards-survey.md
   operator.md
-  cwe-top25-audit.md            (NEW)
-  secure-development-policy.md  (NEW)
-  verify-release.md             (NEW)
+  cwe-top25-audit.md              (NEW)
+  secure-development-policy.md    (NEW — SSDF mapping)
+  verify-release.md               (NEW)
 
-policies/                       (NEW directory)
+policies/                         (NEW)
   apparmor/usr.local.bin.babbleon
   selinux/{babbleon.te,.fc,.if}
   README.md
 
-fuzz/                           (NEW directory)
+fuzz/                             (NEW)
   Cargo.toml
   README.md
-  fuzz_targets/{honey_fifo_line,fpe_roundtrip,wrapper_render}.rs
+  fuzz_targets/
+    honey_fifo_line.rs
+    fpe_roundtrip.rs
+    wrapper_render.rs
+
+supply-chain/                     (NEW — cargo-vet bootstrap)
+  config.toml
+  audits.toml
+  exemptions.toml
 
 .github/
-  dependabot.yml                (NEW)
+  dependabot.yml                  (NEW)
   workflows/
-    ci.yml                      (perms blocks + SBOM + coverage + miri)
-    scorecard.yml               (NEW)
-    release.yml                 (NEW)
-    codeql.yml                  (NEW)
+    ci.yml                  (perms + SBOM + coverage + miri + reproducible)
+    scorecard.yml                 (NEW)
+    release.yml                   (NEW)
+    codeql.yml                    (NEW)
+    fuzz.yml                      (NEW)
 
-CODEOWNERS                      (NEW)
-deny.toml                       (tightened: unknown-git deny, RUSTSEC ignore)
+CODEOWNERS                        (NEW)
+deny.toml                         (tightened: unknown-git deny, RUSTSEC ignore)
+README.md                         (badges + security artifact index)
 ```
 
 ---
@@ -213,9 +206,10 @@ deny.toml                       (tightened: unknown-git deny, RUSTSEC ignore)
 
 Push target this session: `claude/magical-turing-mele8c` only.
 
-The repo stop-hook insists on `noreply@anthropic.com` as committer.
-This session used `-c user.name=Claude -c user.email=noreply@anthropic.com`
-per commit to satisfy that.
+Repo stop-hook insists on `noreply@anthropic.com` as committer.
+Every commit this session used
+`-c user.name=Claude -c user.email=noreply@anthropic.com` to satisfy
+that.
 
 After each commit:
 `git push origin HEAD:claude/magical-turing-mele8c`
@@ -224,16 +218,23 @@ After each commit:
 
 ## Live test status
 
-122 tests across the workspace (was 81), all green.
+128 tests across the workspace, all green.
 
-- 101 lib unit tests (was 69)
-- 3 corpus-fingerprint tests
-- 5 enforcement tests
-- 4 fingerprint tests
-- 6 mapping property tests (NEW)
+- 107 lib unit tests
+- 3 corpus-fingerprint integration tests
+- 5 enforcement integration tests
+- 4 fingerprint integration tests
+- 6 mapping property tests
 - 3 CLI unit tests
 
-Coverage CI job (cargo-llvm-cov) added; numbers tracked in the
-`coverage` artifact per run.
+`cargo fmt --all --check`: clean.
+`cargo clippy --workspace --all-targets -- -D warnings`: clean.
+`cargo deny check`: `advisories ok, bans ok, licenses ok, sources ok`.
+
+Coverage CI job (cargo-llvm-cov) lands the lcov on every push.
+Miri CI job covers mapping / crypto / audit / vault::attempts.
+CodeQL runs against the GH Actions workflows.
+Reproducible-build job confirms `babbleon` + `babbleon-ns-helper`
+byte-for-byte equal across two builds on the same runner.
 
 Bare-metal validation still deferred until hardware arrives.
