@@ -280,8 +280,7 @@ mod tests {
     fn rewrap_policy_produces_renames_for_drifted_epoch() {
         let tmp = tempfile::tempdir().unwrap();
         let mut session = make_session(tmp.path());
-        let wordlist =
-            include_bytes!("../wordlist/words.txt").as_slice();
+        let wordlist = include_bytes!("../wordlist/words.txt").as_slice();
         let bundle = BackupBundle::from_session(&session, wordlist);
         session.rotate("pw").unwrap();
         let r = bundle

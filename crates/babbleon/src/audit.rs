@@ -203,7 +203,10 @@ impl ChainedAuditLog {
                 ))
             })?;
             let sig_bytes = hex::decode(sig_hex).map_err(|e| {
-                BabbleonError::Enforcement(format!("signed-verify: hex decode at seq {}: {e}", entry.seq))
+                BabbleonError::Enforcement(format!(
+                    "signed-verify: hex decode at seq {}: {e}",
+                    entry.seq
+                ))
             })?;
             if sig_bytes.len() != SIGNATURE_LENGTH {
                 return Err(BabbleonError::Enforcement(format!(
@@ -212,9 +215,8 @@ impl ChainedAuditLog {
                     sig_bytes.len()
                 )));
             }
-            let sig_array: [u8; SIGNATURE_LENGTH] = sig_bytes
-                .try_into()
-                .expect("length checked above");
+            let sig_array: [u8; SIGNATURE_LENGTH] =
+                sig_bytes.try_into().expect("length checked above");
             let sig = Signature::from_bytes(&sig_array);
 
             let signed_bytes = SigningPayload::for_entry(&entry).to_bytes();
