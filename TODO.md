@@ -399,8 +399,13 @@ Triaged from a self-review against general secure-software practice.
       signal.  Cheap to claim once the items above land.
 - [ ] **OpenSSF Scorecard** running in CI; expose the score in
       README.
-- [ ] **CodeQL or Semgrep SAST** in CI.  Catches the classes of bug
-      that clippy + cargo-audit don't.
+- [x] **CodeQL or Semgrep SAST** in CI.  `.github/workflows/codeql.yml`
+      runs CodeQL with the `security-extended` query suite over GH
+      Actions workflows (on push/PR to main + weekly Wed cron).
+      CodeQL Rust support is marked beta upstream — revisit adding
+      the `rust` matrix entry when it ships to stable.  C support
+      (the PAM shim) is filed for once libpam-dev is in the runner
+      image consistently.
 - [ ] **STRIDE-formatted threat model.**  We have a threat-model doc;
       it's not formatted as STRIDE / data-flow diagrams.  Industry
       procurement expects STRIDE for any security-claiming product.
