@@ -191,6 +191,194 @@ messages.
       empty; user wants to run an adversarial-LLM simulation against
       scrambled Python puzzles.  Pick / write the puzzle set.
 
+## Structure-level scrambling — research (v2 / v3 ideas)
+
+The current scramble is *identifier-only*: tool names and credential
+paths are renamed, but the *shape* of the host's code, configs, and
+scripts is unchanged.  A model that knows it's looking at an Ubuntu
+host (or any specific distro / framework) can fingerprint by code
+*structure* — line shape, indentation, token-position patterns — and
+then mechanically swap in the right exploit without ever having to
+reason about the renamed identifiers.  Testing showed near-frontier
+models cannot crack the scramble blind, but DO trivially defeat it
+when given the original alongside.  Ideas to research and prototype:
+
+- [ ] **Operator scrambling.**  Currently only identifiers are
+      scrambled; keywords (`if`, `return`, `import`, `def`, etc.) are
+      not.  Substituting them with wordlist tokens would lift the
+      attacker's recognition layer from "I see Python control flow"
+      to "I see a soup of unfamiliar tokens, some of which act like
+      control flow."  Open question: which tokens are safe to remap
+      (lexer-level vs parser-level), what the run-time un-substitute
+      cost is, how this composes with the existing `--help`
+      deception.
+- [ ] **Whitespace-as-words.**  Replace literal whitespace (spaces,
+      newlines, indentation) with wordlist tokens that the trusted-tier
+      parser interprets as whitespace.  Source code becomes one
+      continuous wall of words — no line boundaries, no indent
+      structure — defeating the "shape-of-the-program" fingerprint
+      entirely.  Cost: needs a thin runtime preprocessor for any
+      script the user runs.  Useful only for scripts under Babbleon's
+      control (cron, systemd, user-installed); not for binaries.
+- [ ] **Code-order scrambling with execution markers.**  Permute the
+      source order of code blocks; add markers the trusted-tier runner
+      uses to reorder back at execution.  Defeats the "line N usually
+      contains X" fingerprint that follows from idiomatic file
+      ordering (imports first, helpers next, main last).  Composes
+      with whitespace-as-words: the attacker sees neither shape nor
+      sequence.
+- [ ] **Junk-line / decoy-token injection.**  Sprinkle wordlist tokens
+      that the trusted-tier runner strips before execution.  An
+      attacker trying to insert a working exploit inside the
+      ~250 ms rotation window must first locate the live code among
+      the decoy noise.  Cost: increases parse time on the runner
+      side; need to measure.
+- [ ] **Multi-language wordlists.**  Cycle through wordlists from
+      multiple natural languages (EN, ES, FR, DE, JA, ZH, AR, ...) per
+      rotation, or mixed within a single rotation.  Hypothesis: LLM
+      attention over a one-language scramble has a single attention
+      head pattern; multi-language scramble fragments that pattern.
+      Likely small effect because models reason in semantic space, not
+      surface tokens — but cheap and the gain is non-zero.
+
+These four are not for v1.  They reshape the threat model
+substantially and deserve a research write-up of their own
+(adversarial test against frontier models before committing).
+Filed here so the line of thinking is recorded.
+
+## Security practices to land (industry-standard, currently missing)
+
+Triaged from a self-review against general secure-software practice.
+"High leverage" = low effort, big credibility / safety win; "should-have"
+= worth doing before any public release.
+
+### High leverage — land first
+
+- [ ] **`SECURITY.md` / RFC 9116 `security.txt`** at repo root.
+      Declares the disclosure channel, supported versions, response
+      SLA, and PGP key.  Standard for any security tool; its absence
+      is a credibility smell on day one.
+- [ ] **Memory zeroization of secrets via `zeroize`.**  `host_secret`,
+      `KEK`, vault payload bytes, passphrase buffer all currently
+      sit in `Vec<u8>` / `String` and are never wiped on drop.  Fix:
+      `zeroize::Zeroizing<Vec<u8>>` (or `secrecy::SecretBox`)
+      everywhere we hold key material.  Closes the core-dump /
+      paged-out / heap-reuse leakage class.
+- [ ] **Constant-time comparison for secret-derived bytes** via
+      `subtle::ConstantTimeEq`.  Anywhere we `==`-compare HMAC tags,
+      KEK material, FIDO2 response bytes, or vault MACs against
+      attacker-supplied input we are variable-time.  Especially load
+      bearing for the FIDO2 backend.
+- [ ] **Daemon hardening: refuse core dumps, refuse swap.**  At
+      startup the trusted-tier daemon (and the ns-helper) should call
+      `prctl(PR_SET_DUMPABLE, 0)`, `setrlimit(RLIMIT_CORE, 0)`, and
+      `mlockall(MCL_CURRENT | MCL_FUTURE)` (gated on
+      `RLIMIT_MEMLOCK`).  Closes the swap- and core-dump-leak class.
+- [ ] **`SAFETY:` comments on every `unsafe` block.**  We have
+      several (`libc::kill`, `libc::mkfifo`, the BPF probe).  Each
+      needs a one-line comment naming the invariants the caller
+      relies on.  Trivial; matters at audit time.
+
+### Crypto hygiene
+
+- [ ] **HKDF-SHA-256 (RFC 5869) for domain separation** instead of
+      hand-rolled HMAC-of-purpose-string.  Replace `Mapper::purpose_seed`
+      (`SHA256(host_secret || label)`) and the per-purpose HMAC paths
+      with `hkdf::Hkdf<Sha256>` using explicit `salt` / `info` /
+      `length`.  Same security properties; auditor-recognizable.
+- [ ] **Rate-limiting on vault unlock attempts.**  Vault header
+      carries an attempt counter; increments before each KDF, clears
+      on success; exponential backoff after 3 failures; lock-out at
+      10 attempts requiring recovery key.  RESEARCH T5 flagged this;
+      not yet shipped.
+
+### Supply-chain + build integrity
+
+- [ ] **SLSA provenance + sigstore/cosign signing of release
+      artifacts.**  `cosign sign-blob` over each release tarball;
+      attestation logged to Rekor; verification documented for users.
+      Currently a release is just an unsigned tarball.
+- [ ] **SBOM generation in CycloneDX or SPDX**, generated by
+      `cargo cyclonedx` (or similar) and shipped with releases.
+      Required by federal / enterprise procurement post-2024.
+- [ ] **`cargo-vet` for transitive-dep audits** alongside the existing
+      `cargo-deny` / `cargo-audit`.  Addresses xz-class supply-chain
+      attacks that vulnerability databases miss because the attack is
+      in not-yet-disclosed code.
+- [ ] **Reproducible-build verification CI job.**  Build twice on
+      different runners and `cmp` the artifacts.  Operator docs claim
+      musl-static reproducibility; nothing currently confirms the
+      bytes are deterministic.
+
+### Testing
+
+- [ ] **`cargo-fuzz` on three surfaces:**
+      - Honey-FIFO JSON parser — defence-in-depth even though we own
+        the wrapper that writes the JSON.
+      - FPE permutation roundtrip — property: encrypt-then-decrypt
+        is identity for any valid input.
+      - Wrapper-template renderer — property: no field substitution
+        can produce shell-injectable output.
+- [ ] **`proptest` / `quickcheck` on mapping bijection.**  Property:
+      `build_table` over any tracked list of N tools produces N
+      unique scrambled names (collision-freeness as a property, not
+      a single example).
+- [ ] **`miri` runs in CI** to catch UB in unsafe-libc blocks.
+
+### Audit-log integrity
+
+- [ ] **Ed25519-sign each `ChainedAuditLog` entry** in addition to
+      the SHA-256 hash chain.  Today an attacker who roots the box
+      can rewrite the entire chain; with a signing key held off-host
+      (or in a TPM), tampering is detect-but-not-tamper-without-
+      being-noticed.  Standard pattern for tamper-evident logs.
+
+### OS-level profile templates
+
+- [ ] **AppArmor profile** template for `babbleon` and
+      `babbleon-ns-helper`.  Even a permissive template that
+      operators can tighten is better than nothing.
+- [ ] **SELinux policy module** template covering the setuid helper
+      and the credential-gate mount syscalls.
+
+### Compliance / publication signals
+
+- [ ] **OpenSSF Best Practices badge** (Linux Foundation).  Checklist
+      exercise; gives the project a visible "we follow basic practice"
+      signal.  Cheap to claim once the items above land.
+- [ ] **OpenSSF Scorecard** running in CI; expose the score in
+      README.
+- [ ] **CodeQL or Semgrep SAST** in CI.  Catches the classes of bug
+      that clippy + cargo-audit don't.
+- [ ] **STRIDE-formatted threat model.**  We have a threat-model doc;
+      it's not formatted as STRIDE / data-flow diagrams.  Industry
+      procurement expects STRIDE for any security-claiming product.
+- [ ] **`CODEOWNERS`** at repo root.  Defines who must review which
+      paths; required by branch protection for any meaningful "two
+      reviewers required" policy.
+
+### Standards survey to complete
+
+- [ ] **Confirm against OWASP ASVS 5.0** (released May 2025) — the
+      350-requirement, 17-category standard for application security
+      verification.  ASVS 5.0 modernizes for cloud-native
+      architectures and adds clearer crypto / supply-chain controls.
+      Map Babbleon's design + tests onto ASVS controls; identify
+      gaps.  See `https://github.com/OWASP/ASVS`.
+- [ ] **Confirm against NIST SP 800-218 (SSDF v1.1)** secure software
+      development practices, especially the PO/PS/PW/RV practice
+      families and the supply-chain integrity profile.  Required
+      reading for any federal procurement path.
+- [ ] **Confirm against CWE Top 25** — make sure none of the Top 25
+      weakness classes have an obvious presence in the current code.
+- [ ] **Confirm against the SLSA v1.0 build levels** — current build
+      sits at SLSA L0; target L2 (hosted CI with provenance) for v1
+      release and L3 (hardened builder) for v2.
+
+These four standards-survey items were going to be covered by a web
+search in this session; session limit was hit before the survey
+completed.  Resume against the live documents.
+
 ## Cross-cutting / hygiene
 
 - [x] CI: fmt + clippy + cargo-audit + cargo-deny
