@@ -1,0 +1,36 @@
+# CODEOWNERS — required reviewers per path.
+#
+# The repo-wide owner reviews every PR by default; per-path entries
+# layer extra owners on top.  See the GitHub docs:
+# https://docs.github.com/en/repositories/managing-your-repositories-settings-and-features/customizing-your-repository/about-code-owners
+#
+# Repo-wide default — review every change.
+*                                       @qualified1079
+
+# Crypto + key material code paths.  Changes here demand careful review.
+/crates/babbleon/src/mapping/           @qualified1079
+/crates/babbleon/src/vault/             @qualified1079
+/crates/babbleon/src/crypto.rs          @qualified1079
+/crates/babbleon/src/audit.rs           @qualified1079
+/crates/babbleon/src/process_hardening.rs @qualified1079
+
+# Setuid binary — every line in here is privilege-bearing.
+/crates/babbleon-ns-helper/             @qualified1079
+
+# PAM module — C shim into the OS auth stack.
+/crates/babbleon-pam/                   @qualified1079
+
+# CI workflows and supply-chain configuration.
+/.github/                               @qualified1079
+/deny.toml                              @qualified1079
+/Cargo.toml                             @qualified1079
+/Cargo.lock                             @qualified1079
+
+# Threat model / standards docs — keep them in sync with the code.
+/docs/threat-model.md                   @qualified1079
+/docs/standards-survey.md               @qualified1079
+/SECURITY.md                            @qualified1079
+/.well-known/security.txt               @qualified1079
+
+# OS-level MAC profiles.
+/policies/                              @qualified1079

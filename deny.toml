@@ -1,11 +1,27 @@
-# cargo-deny config
+# cargo-deny configuration
 # https://embarkstudios.github.io/cargo-deny/
+#
+# Policy intent:
+#   * Yanked deps fail the build (a yank is the registry's way of
+#     saying "don't use this, even patches"; treat it as a hard error).
+#   * Licenses are an explicit allow-list; copyleft and unknown
+#     licenses fail the build.
+#   * No git sources in release: all deps come from crates.io so the
+#     bytes a verifier downloads match exactly what the registry serves.
+#
+# Pre-existing exception: `proc-macro-error` is unmaintained (via age
+# 0.10 → i18n-embed-fl).  Tracked as a roadmap item to migrate off the
+# affected upstream; ignored here so CI surfaces real new advisories.
 
 [advisories]
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "deny"
-ignore = []
+ignore = [
+    # Pulled in transitively via age 0.10 -> i18n-embed-fl.
+    # Migration off age 0.10 is filed in TODO.md.
+    "RUSTSEC-2024-0370",
+]
 
 [licenses]
 allow = [
@@ -46,5 +62,8 @@ wildcards = "warn"
 
 [sources]
 unknown-registry = "deny"
+# Refuse git-source deps in release; production builds must come from
+# the registry so what a verifier downloads matches what we shipped.
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

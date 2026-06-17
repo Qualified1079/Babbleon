@@ -6,6 +6,14 @@ on:
   pull_request:
     branches: [main]
 
+# Minimum-permission default for every job in this workflow.
+# Individual jobs can opt in to more (none currently need it).
+# Scorecard Token-Permissions check expects this block — without it
+# the runner picks the repo default which is often `permissions:
+# write-all` for the GITHUB_TOKEN.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
@@ -14,6 +22,8 @@ jobs:
   test:
     name: test (linux)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - name: install libpam-dev
@@ -34,6 +44,8 @@ jobs:
   audit:
     name: cargo audit
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -45,9 +57,32 @@ jobs:
   deny:
     name: cargo deny
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
           arguments: --all-features
+
+  sbom:
+    name: SBOM (CycloneDX)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: install cargo-cyclonedx
+        run: cargo install --locked cargo-cyclonedx
+      - name: generate SBOM
+        run: cargo cyclonedx --format json --output-cdx --override-filename babbleon-sbom
+      - name: upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: babbleon-sbom
+          path: "**/babbleon-sbom*.cdx.json"
+          if-no-files-found: error
+          retention-days: 90
