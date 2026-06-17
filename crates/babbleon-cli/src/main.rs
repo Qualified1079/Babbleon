@@ -633,9 +633,9 @@ fn cmd_restore(input: &str, policy: &str) -> Result<()> {
         "honor" | "honor-snapshot" | "honor-snapshot-until-next-rotation" => {
             RestorePolicy::HonorSnapshotUntilNextRotation
         }
-        other => anyhow::bail!(
-            "unknown restore policy {other:?}; expected reject|rewrap|honor-snapshot"
-        ),
+        other => {
+            anyhow::bail!("unknown restore policy {other:?}; expected reject|rewrap|honor-snapshot")
+        }
     };
 
     let json = if input == "-" {
