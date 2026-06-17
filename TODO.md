@@ -41,16 +41,58 @@ code items are phases 1-6.
 - [ ] `docs/v2/attack-mapping.md` — full ATT&CK + D3FEND
       traceability matrix referenced from standards-alignment
 
-### Phase 0 — operator decisions pending
+### Phase 0 — operator decisions CONFIRMED 2026-06-15
 
-- [ ] Branch vs subtree for v2 source (recommend: subtree
-      `crates/v2-*` for incremental migration testability)
-- [ ] File extension for scrambled source (recommend: keep `.py`
-      + scramble the shebang line)
-- [ ] Preprocessor: standalone binary or library (recommend:
-      standalone for v2.0, library option for v2.1)
-- [ ] Branch for continuing v1 hardening (recommend: stays on
-      `magical-turing`)
+- [x] Branch vs subtree for v2 source — **subtree at `crates/v2-*`**
+- [x] File extension for scrambled source — **keep `.py`**
+      (shebang + importlib finder handle routing)
+- [x] Preprocessor topology — **standalone binary**
+      (security boundary > performance)
+- [x] v1 hardening branch — **rename to `v1-maintenance`**
+      (mechanical rename out-of-band)
+- [x] TEE direction — **v2.0 = developer + small-business; TEE in v3**
+      (consumer hardware has no TDX/SEV-SNP)
+
+### Phase 0 — additional operator decisions confirmed
+
+- [x] Shipping plan: **GitHub releases with checkable checksums**
+      (default), **+ project website mirror** (redundancy), **+
+      expected downstream sec-vendor packaging** under PolyForm
+      Commercial licenses.
+
+### Phase 0 — open research (not blocking phase 1)
+
+- [ ] **Dynamic / language-agnostic keyword extraction** for v2
+      layer 2 (operator scramble).  Goal: Babbleon should be
+      agnostic to Python, Go, C, TypeScript, Rust, shell,
+      etc. — same preprocessor handles every language by
+      consulting a per-language keyword definition fetched at
+      build (or runtime) time.  Candidate sources:
+      Tree-sitter grammars (cover ~100 languages with parser
+      definitions; MIT-licensed), Language Server Protocol
+      introspection (`textDocument/semanticTokens` returns
+      token types but not keyword sets directly), per-language
+      stdlib metadata (Python `keyword` module, Go `go/token`,
+      etc.).  Recommended phase-3 prototype: vendor Tree-sitter
+      query files for the top 6 languages (Python, Go, C,
+      TypeScript, Rust, sh/bash) and extract keyword sets at
+      preprocessor build time.
+- [ ] **Algorithmic derivation of per-role wordlist pool
+      sizes.**  Current provisional sizes (identifier ~370k,
+      decoy ~100k, direction marker ~20k, whitespace ~10k,
+      keyword ~5k per language, prompt-injection ~0.5k) are
+      back-of-envelope numbers from
+      `docs/v2/phase0-research-notes.md` §11.  Real sizing
+      comes from an information-theoretic analysis
+      parameterised by:
+        - target rotation rate (defeats Threat B at sub-second)
+        - desired attacker work-factor per rotation window
+        - cross-role disjointness budget
+        - per-role compound-N (1-4 words per compound)
+      Output: a formula `N_role = f(rotation_hz, work_factor,
+      compound_n)` instead of a hand-tuned number.  Useful for
+      v2.1+ where operators tune rotation rate to deployment;
+      not required for v2.0 ship.
 
 ### Phase 1 — v2 core crate (code; awaiting phase-0 decisions)
 

@@ -1,106 +1,203 @@
 # Babbleon — Session Handoff
 
-Branch (push target): `claude/magical-turing-mele8c`
-Date: 2026-06-15 (afternoon — v2 transition session, follows the
-overnight v1-hardening session below)
-Last commit before this session: `aedadda` — docs: update HANDOFF test counts to 132 (lib 111)
+Branch (push target): `claude/magical-turing-mele8c` → soon
+`v1-maintenance` per operator decision
+Date: 2026-06-15 (evening — phase-1 build start)
+Last commit before this session: `2b44f48` — v2 phase-0:
+research-notes + decision recommendations
 
 ---
-
-## Most important update: v2 transition declared
-
-Operator has declared **Babbleon v1 inferior and not for public
-release.**  Reasoning:
-
-1. **Identifier-only scramble is shape-defeated.**  Operator tested
-   several models; none cracked the scramble blind, all cracked it
-   instantly when shown the original.  Structural fingerprinting
-   (file-shape recognition) defeats identifier-only scrambling once
-   Babbleon is publicly known.
-2. **Security conventions were bolted on rather than designed in.**
-   The overnight session below closed every item on the security-
-   practice priority list and v1 is now correct against the
-   surveyed standards — but the integration is patchwork, not
-   architectural.
-3. **The privilege model is over-broad.**  `babbleon-ns-helper` is
-   setuid-root for a setup that needs only four capabilities.
-
-**Phase 0 (now): v2 design docs.**  No source-code changes this
-session.  v1 work continues on `magical-turing` because that work
-informs v2 even if v1 itself won't ship publicly.
-
-### This session shipped (phase 0)
-
-All doc-only:
-
-- `V2_PLAN.md` (repo root) — v2 vision, why v1 is inferior, crate
-  rename table, phase plan (0 docs → 1 core → 2 launcher → 3
-  structure-scrambling → 4 multi-lang → 5 hardware → 6 release).
-- `docs/v2/structure-scrambling.md` — technical heart of v2.  Five
-  composable layers: identifier scramble (v1) + operator scramble
-  + whitespace-as-words + code-order reorder + junk decoys.  Plus
-  multi-language wordlists.  Runtime preprocessor as the new
-  load-bearing component.  Open questions + recommended phase-3
-  prototype.
-- `docs/v2/naming-conventions.md` — rename discipline locked in
-  for v2 day-one.  Binary, crate, module, function, type, test,
-  operator-facing names + the v1-name rename table.
-- `docs/v2/least-privilege.md` — per-syscall capability audit
-  of v1.  `babbleon-ns-helper` found to be 37 capabilities
-  over-broad.  v2 install-mode is file capabilities
-  (`cap_sys_admin`, `cap_setuid`, `cap_setgid`, `cap_ipc_lock`),
-  NOT setuid-root.  Step-by-step lifecycle ordering for NNP +
-  caps + seccomp.
-- `docs/v2/standards-alignment.md` — v1 standards-survey gaps
-  acknowledged honestly.  Most-important miss: **MITRE ATT&CK +
-  D3FEND mapping** (essential for any defensive tool).  Other
-  misses now filed: NIST 800-190 (container security — direct
-  overlap), NIST 800-207 (zero trust), in-toto + TUF, CycloneDX
-  vs SPDX (v2 picks **CycloneDX 1.6**), GUAC, CSAF 2.0, SARIF,
-  FIPS 140-3 deferral, CIS / DISA STIGs, OWASP SAMM, OWASP
-  Top 10.
-
-### Open architectural questions
-
-Decide before phase 1 lands:
-
-1. **Branch vs subtree for v2 source.**  Separate `v2-main`
-   branch, or `crates/v2-*` subtree of `main`?
-2. **File extension for scrambled source.**  Keep `.py` or
-   introduce `.babbleon`?
-3. **Preprocessor: standalone binary or library?**  Standalone is
-   easier to seccomp-profile; library is faster.  Probably
-   standalone for v2.0.
-4. **Branch for continuing v1 hardening.**  Stays on
-   `magical-turing`?  Or move to `v1-maintenance`?
-
-### What the next session should do
-
-Phase 0 docs to add:
-
-- `docs/v2/threat-model.md` — STRIDE-formatted threat model,
-  ATT&CK + D3FEND traceability, NIST 800-190 section mapping,
-  NIST 800-207 zero-trust mapping.  Consolidates the references
-  from `docs/v2/standards-alignment.md`.
-- `docs/v2/security-baseline.md` — the "designed-in from day one"
-  checklist every v2 crate must pass before merge.
-
-Or start phase 1 (code):
-
-- Pick branch vs subtree with operator.
-- Create `crates/babbleon-core` skeleton.
-- Port identifier scramble + tripwires + response policy from v1,
-  applying the v2 security baseline and naming conventions.
-
----
-
-## v1 status (below) — preserved from overnight v1-hardening session
-
-The v1 codebase is at a known-correct-against-standards state.
-The phase-0 doc work above does NOT change v1.  Everything below
-remains accurate for v1 work.
 
 ## Where the project sits
+
+**v1 declared not-for-public-ship.**  Reasoning + design documented
+across `V2_PLAN.md` and `docs/v2/*.md`.  v2 phase 0 (design docs)
+is complete.
+
+**Operator confirmed all five phase-0 decisions** (2026-06-15
+afternoon, after research-backed recommendations landed in
+`docs/v2/phase0-decisions.md`):
+
+| # | Decision | Confirmed |
+|---|---|---|
+| 1 | Branch vs subtree | **Subtree** at `crates/v2-*` |
+| 2 | File extension | **Keep `.py`** |
+| 3 | Preprocessor topology | **Standalone binary** |
+| 4 | v1 hardening branch | **Rename to `v1-maintenance`** |
+| 5 | TEE direction | **v2.0 = developer + small-business; TEE in v3** |
+
+**Also confirmed:**
+
+- **Shipping plan:** GitHub releases with checkable checksums
+  (already standard); plus a project website as a redundant
+  distribution channel; plus expected downstream packaging by
+  security vendors who license Babbleon under PolyForm
+  Commercial terms (already-anticipated revenue path).
+- **Open research filed but not blocking phase 1:**
+  - Dynamic keyword extraction across languages (Python, Go, C,
+    TypeScript, Rust, shell).  v2 layer 2 (operator scramble)
+    wants language-agnostic operator detection — possibly via
+    Tree-sitter grammars or LSP introspection.
+  - Algorithmic derivation of per-role wordlist pool sizes.
+    20k for direction markers was a back-of-envelope number;
+    real sizing comes from an information-theoretic analysis
+    parameterised by rotation rate and attacker work-factor
+    target.  Provisional sizes in `docs/v2/phase0-research-notes.md`
+    §11 are adequate; algorithmic derivation is a v2.0+ refinement.
+
+---
+
+## What this session is building
+
+**Phase 1: v2 core crate skeleton.**  Per the recommendations:
+
+- `crates/v2-babbleon-core/` library crate.
+- `#[forbid(unsafe_code)]` at crate root.
+- `secrecy::SecretBox` / `zeroize::Zeroizing` everywhere a secret
+  byte lives.
+- HKDF-SHA-256 (RFC 5869) for domain separation — replaces v1's
+  hand-rolled `SHA256(host_secret || label)` and
+  `HMAC(seed, purpose)`.
+- `subtle::ConstantTimeEq` for any secret-derived compare.
+- Plain-English naming throughout (`PerHostSecret`,
+  `MappingBuilder`, `EpochMapping`, `Tripwire`, ...).
+- Threat-model-first module docs.
+- Differential tests that assert v2's identifier scramble matches
+  v1's output for the same `(host_secret, epoch, tool)` triple —
+  validates the port without regressing the threat model.
+
+**Phase 1 deliverables (commit-by-commit):**
+
+1. Workspace member + Cargo.toml + skeleton `lib.rs` with module map
+2. `PerHostSecret` — secrecy-wrapped 32-byte secret with explicit
+   construction / zeroize semantics
+3. `key_derivation` — HKDF-SHA-256 sub-key derivation per
+   (epoch, purpose) tuple
+4. `permutation` — Fisher-Yates over wordlist seeded by HKDF;
+   caching disabled in v2 (was a leak vector in v1 — see v1
+   `mapping/fpe.rs` cache footnote)
+5. `EpochMapping` (renamed from v1's `MappingTable`) + the
+   `MappingBuilder` (renamed from `Mapper`)
+6. Differential test against v1: same input → same scrambled output
+
+After phase 1 mapping primitive lands, phase 1 continues with:
+
+7. Wrapper template port (with v2 conventions applied)
+8. Tripwire types + responder ported
+9. Event bus + sinks ported (HoneyTriggered → `Tripwire` event)
+
+Then phase 2 (launcher) and phase 3 (structural scrambling) per
+`V2_PLAN.md`.
+
+---
+
+## What's NOT being done this session
+
+- Any v1 source-code changes (v1 frozen at the current
+  magical-turing tip; only doc / migration commits go to v1).
+- The v1 → v1-maintenance branch rename (Anthropic-side
+  session-naming question; operator confirmed the rename
+  intent, but the mechanical rename happens out-of-band).
+- Phase 3+ structural scrambling (need phase 1 + 2 first).
+- Hardware backends (FIDO2, TPM) — still blocked.
+- Dynamic keyword extraction research (filed; not blocking).
+- Algorithmic pool-sizing analysis (filed; not blocking).
+- Shipping infrastructure (website mirror, sec-vendor packaging
+  templates) — phase 6.
+
+---
+
+## Key file map (v1 + v2 in transition)
+
+```
+V2_PLAN.md                          — vision + phase plan
+HANDOFF.md                          — THIS doc
+TODO.md                             — v1 + v2 work items
+
+docs/                               — v1 docs (frozen)
+  threat-model.md                   — v1 threat model
+  standards-survey.md               — v1 standards gap analysis
+  threat-model-stride.md
+  cwe-top25-audit.md
+  ...
+
+docs/v2/                            — v2 design (phase 0 complete)
+  structure-scrambling.md           — five-layer mechanism
+  naming-conventions.md             — discipline
+  least-privilege.md                — privilege audit
+  standards-alignment.md            — missed-standards inventory
+  obfuscation-landscape.md          — 7 additional layers + research
+  phase0-research-notes.md          — 11 research threads
+  phase0-decisions.md               — recommendations on 5 decisions
+
+docs/v2/ (TBD next phase 0)
+  threat-model.md                   — STRIDE + ATT&CK + D3FEND +
+                                      800-190 + 800-207 maps
+  security-baseline.md              — designed-in-day-one checklist
+  attack-mapping.md                 — full traceability matrix
+
+crates/                             — v1 source (frozen)
+  babbleon/                         — v1 library
+  babbleon-cli/                     — v1 CLI
+  babbleon-ns-helper/               — v1 setuid helper
+                                       (target rename:
+                                        babbleon-launch-untrusted)
+  babbleon-pam/                     — v1 PAM module
+
+crates/v2-*                         — v2 source (this session)
+  v2-babbleon-core/                 — phase 1 (in flight)
+  v2-babbleon/                      — phase 1 CLI
+  v2-babbleon-launch-untrusted/     — phase 2 (NOT setuid)
+  v2-babbleon-pam/                  — phase 2
+  v2-babbleon-preprocessor/         — phase 3 standalone binary
+  v2-babbleon-mapping-worker/       — phase 3 separate-uid worker
+```
+
+---
+
+## Git / branch hygiene
+
+Push target this session: `claude/magical-turing-mele8c` only.
+Operator confirmed the eventual rename to `v1-maintenance`; the
+mechanical rename is out-of-band.
+
+Repo stop-hook insists on `noreply@anthropic.com` as committer.
+Use `-c user.name=Claude -c user.email=noreply@anthropic.com` on
+every commit.
+
+After each commit:
+`git push origin HEAD:claude/magical-turing-mele8c`
+
+---
+
+## Live test status
+
+Inherited: 128 tests across the v1 workspace, all green.
+v2 phase 1 adds tests in `crates/v2-babbleon-core/`; running
+`cargo test --workspace` covers both.
+
+---
+
+## Note for the parallel-session instance
+
+If you pick this up after the current session ends:
+
+- **Don't push to `magical-turing` with rebased / amended SHAs
+  if other commits have landed in the meantime.**  Use
+  `git fetch + git log HEAD..origin/...` to check before any
+  force-push.
+- **The HANDOFF + TODO updates in this commit are authoritative
+  on operator decisions.**  Operator confirmed all five phase-0
+  decisions; treat them as committed.
+- **The dynamic-keyword + algorithmic-pool-sizing items are
+  filed in TODO** but explicitly NOT blocking phase 1.  If you
+  have spare cycles after the phase-1 mapping work lands, those
+  are good next-up research items.
+- **Phase 1's first deliverable is the mapping primitive
+  (commits 1-6 listed in "What this session is building"
+  above).**  Differential test against v1's output is the
+  go/no-go for shipping phase 1.
+
 
 M3 (Linux namespace enforcement) and M3.5 (deception layer) shipped
 before this session.  This overnight session worked top-to-bottom
