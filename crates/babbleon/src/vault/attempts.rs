@@ -299,6 +299,26 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn sidecar_file_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = vault_in(dir.path());
+        let mut t = AttemptTracker::for_vault(&path);
+        t.record_failure(0).unwrap();
+
+        let sidecar = sidecar_path(&path);
+        let perms = std::fs::metadata(&sidecar).unwrap().permissions();
+        // 0o600 — owner read+write only.
+        assert_eq!(
+            perms.mode() & 0o777,
+            0o600,
+            "sidecar permissions should be 0o600, got {:o}",
+            perms.mode() & 0o777
+        );
+    }
+
     #[test]
     fn corrupted_sidecar_defaults_to_zero() {
         let dir = tempfile::tempdir().unwrap();

@@ -192,6 +192,31 @@ mod tests {
     }
 
     #[test]
+    fn backoff_window_refuses_unlock_even_with_right_password() {
+        // After INSTA_RETRIES + 1 failures the tracker enforces a
+        // backoff window; the unlock path must refuse with
+        // `UnlockBackoff` before invoking the (expensive) Argon2id KDF.
+        use crate::vault::attempts::{now_secs, AttemptTracker, INSTA_RETRIES};
+        let dir = tempfile::tempdir().unwrap();
+        let vault = dir.path().join("vault.age");
+        let tracked: Vec<String> = vec!["curl".into()];
+        Session::initialize("right-pw", Some(tracked.clone()), Some(vault.clone())).unwrap();
+
+        let mut tracker = AttemptTracker::for_vault(&vault);
+        for _ in 0..=INSTA_RETRIES {
+            tracker.record_failure(now_secs()).unwrap();
+        }
+
+        match Session::unlock("right-pw", Some(tracked), Some(vault)) {
+            Err(BabbleonError::UnlockBackoff { remaining_secs }) => {
+                assert!(remaining_secs > 0);
+            }
+            Err(other) => panic!("expected UnlockBackoff, got {other:?}"),
+            Ok(_) => panic!("backoff window let an unlock through"),
+        }
+    }
+
+    #[test]
     fn wrong_password_increments_attempt_counter() {
         use crate::vault::attempts::AttemptTracker;
         let dir = tempfile::tempdir().unwrap();
