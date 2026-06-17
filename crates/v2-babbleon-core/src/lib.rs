@@ -65,6 +65,7 @@ pub mod per_host_secret;
 pub mod permutation;
 pub mod tripwire;
 pub mod wordlist;
+pub mod wrapper;
 
 pub use errors::{Error, Result};
 pub use events::{
@@ -76,3 +77,8 @@ pub use per_host_secret::{PerHostSecret, PER_HOST_SECRET_LEN};
 pub use permutation::Permutation;
 pub use tripwire::{TripwireResponder, TripwireResponsePolicy};
 pub use wordlist::Wordlist;
+pub use wrapper::{
+    write_all_tripwire_wrappers, write_all_wrappers, write_honey_list,
+    write_stale_list, write_tripwire_wrapper, write_wrapper,
+    TRIPWIRE_EVENTS_FIFO, TRIPWIRE_HONEY_LIST, TRIPWIRE_STALE_LIST,
+};
