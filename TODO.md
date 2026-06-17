@@ -187,9 +187,15 @@ messages.
 ## HTML scrambler
 
 - [x] `tools/scrambler/index.html` — standalone harness (417 lines, complete)
-- [ ] **`tools/scrambler/example-puzzles/`** — directory exists but is
-      empty; user wants to run an adversarial-LLM simulation against
-      scrambled Python puzzles.  Pick / write the puzzle set.
+- [x] **`tools/scrambler/example-puzzles/`** — five Python puzzles
+      (difficulty 1–4) covering FizzBuzz, running max, anagram
+      grouping, balanced-parens stack, and merge-intervals.  Each
+      file has a single `# {{INSERT}}` marker and a built-in
+      `assert ... print("ok")` test.  `solutions.txt` carries the
+      reference completions (do NOT show to the LLM under test).
+      Each puzzle verified solvable against its reference solution.
+      Filed follow-ups: C + Rust variants, type-juggling /
+      async / exception puzzles, automated scoring harness.
 
 ## Structure-level scrambling — research (v2 / v3 ideas)
 
