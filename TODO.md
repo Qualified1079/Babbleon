@@ -1,16 +1,140 @@
 # TODO — Ship Checklist
 
 Concrete work items grouped by milestone.  PLAN.md describes the
-*architecture*; docs/threat-model.md names what we defend against;
+v1 *architecture*; `V2_PLAN.md` describes the v2 *redesign*;
+`docs/threat-model.md` names what we defend against;
 this file is the **shippable list with rationale inline**.
 
 Legend: `[ ]` open · `[x]` done · `[~]` in-progress · `(blocked)` —
-blocked on something external
+blocked on something external · `(v2)` — explicitly tagged as v2
+work, not for v1 backport.
 
 When an item is non-trivial, the explanation lives directly under
 the checkbox.  Once-deferred items that have landed are marked `[x]`
 and kept for audit history; truly historical ones move to commit
 messages.
+
+---
+
+## v2 — ground-up redesign
+
+The v1-is-not-the-public-product decision and the phase plan are
+in `V2_PLAN.md`.  Doc-only items below are phase 0 (in flight);
+code items are phases 1-6.
+
+### Phase 0 — design docs (in flight)
+
+- [x] `V2_PLAN.md` — vision + phase plan
+- [x] `docs/v2/structure-scrambling.md` — five-layer mechanism +
+      preprocessor design
+- [x] `docs/v2/naming-conventions.md` — rename discipline
+- [x] `docs/v2/least-privilege.md` — per-syscall capability audit
+- [x] `docs/v2/standards-alignment.md` — v1-survey gaps +
+      missed-standards inventory (ATT&CK, D3FEND, 800-190,
+      800-207, in-toto, TUF, CycloneDX, GUAC, CSAF, SARIF, FIPS,
+      CIS, STIG, SAMM, Top 10)
+- [ ] `docs/v2/threat-model.md` — STRIDE matrix + ATT&CK/D3FEND
+      traceability + 800-190 section map + 800-207 zero-trust
+      tenet map
+- [ ] `docs/v2/security-baseline.md` — "designed-in from day one"
+      checklist every v2 crate must pass before merge
+- [ ] `docs/v2/attack-mapping.md` — full ATT&CK + D3FEND
+      traceability matrix referenced from standards-alignment
+
+### Phase 0 — operator decisions pending
+
+- [ ] Branch vs subtree for v2 source (recommend: subtree
+      `crates/v2-*` for incremental migration testability)
+- [ ] File extension for scrambled source (recommend: keep `.py`
+      + scramble the shebang line)
+- [ ] Preprocessor: standalone binary or library (recommend:
+      standalone for v2.0, library option for v2.1)
+- [ ] Branch for continuing v1 hardening (recommend: stays on
+      `magical-turing`)
+
+### Phase 1 — v2 core crate (code; awaiting phase-0 decisions)
+
+- [ ] `crates/babbleon-core/` skeleton with v2 naming + security
+      baseline applied
+- [ ] HKDF (RFC 5869) for domain separation (v1 has this; carry
+      forward)
+- [ ] `secrecy::SecretBox` for every secret-holding type
+- [ ] `#[forbid(unsafe_code)]` at every crate root with `unsafe`
+      quarantined to one syscall module per crate
+- [ ] Per-syscall `CAPABILITY:` comments per `docs/v2/least-privilege.md`
+- [ ] Identifier scramble + tripwires + response policy ported
+      from v1 (the v1 implementation is reference; rewrite under
+      v2 conventions)
+
+### Phase 2 — v2 launcher + PAM
+
+- [ ] `crates/babbleon-launch-untrusted/` (NOT setuid; file caps:
+      cap_sys_admin, cap_setuid, cap_setgid, cap_ipc_lock)
+- [ ] PAM module wires through the new launcher
+- [ ] Capability-set test that asserts CapEff at each lifecycle
+      stage matches the documented `CAPABILITY:` comments
+
+### Phase 3 — structural scrambling
+
+- [ ] `crates/babbleon-preprocessor/` — runtime unscrambler
+- [ ] Layer 2: operator scramble (Python keywords first)
+- [ ] Layer 3: whitespace-as-words (the big one)
+- [ ] Layer 4: code-order reorder with execution markers
+- [ ] Layer 5: junk decoy injection
+- [ ] Preprocessor seccomp profile (deny socket / mount / ptrace
+      family)
+- [ ] Adversarial-LLM re-test: did this fix the v1
+      shape-fingerprint problem?
+
+### Phase 4 — multi-language wordlists
+
+- [ ] Add ES, FR, DE wordlists (cheap; permissive licenses)
+- [ ] Add JA, ZH, AR, RU wordlists (more curation)
+- [ ] Per-epoch language cycling logic in `babbleon-core`
+- [ ] Re-run `tools/tokenizer-benchmark/` on multilingual
+      compounds vs spaced English; smaller-model superlinear
+      hypothesis
+
+### Phase 5 — hardware backends
+
+- [ ] FIDO2 hmac-secret (blocked on YubiKey delivery)
+- [ ] TPM2 PCR-sealed (blocked on TPM hardware)
+- [ ] TPM authorized-policy for post-kernel-update re-seal
+
+### Phase 6 — release engineering
+
+- [ ] SLSA L3 reusable workflow
+- [ ] CycloneDX 1.6 SBOM
+- [ ] cosign signing (sigstore) + in-toto attestations
+- [ ] AppArmor + SELinux profile templates (v1 has these; carry
+      forward)
+- [ ] CIS + STIG deployment docs
+- [ ] CSAF 2.0 advisory pipeline
+- [ ] SARIF emission from CodeQL/Semgrep (v1 has CodeQL; verify
+      SARIF upload)
+- [ ] Adopt CycloneDX as the only SBOM format (v1 left this
+      undecided)
+
+### Missed-standards remediation (v2-tagged)
+
+- [ ] ATT&CK technique mapping in threat model (T1059, T1057,
+      T1083, T1552.*, T1574, T1518, T1003, ...)
+- [ ] D3FEND technique mapping (D3-HCH, D3-MA, D3-PSEP, D3-FAPA,
+      D3-DSE, ...)
+- [ ] NIST SP 800-190 §4.4 section-by-section threat-model map
+- [ ] NIST SP 800-207 zero-trust tenet map
+- [ ] in-toto + TUF substrate adopted (already implied by sigstore
+      toolchain)
+- [ ] CycloneDX 1.6 chosen as the SBOM format (decision recorded
+      in `docs/v2/standards-alignment.md`)
+- [ ] GUAC-ingestible SBOM publication
+- [ ] CSAF 2.0 JSON output for advisories
+- [ ] SARIF upload from SAST jobs
+- [ ] FIPS 140-3 deferred to v3 (decision recorded)
+- [ ] CIS deployment doc
+- [ ] DISA STIG deployment doc (lower priority than CIS)
+- [ ] OWASP Top 10 (2021) documentary audit (most items n/a; sweep
+      anyway)
 
 ---
 
