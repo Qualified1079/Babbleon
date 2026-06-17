@@ -451,16 +451,15 @@ Triaged from a self-review against general secure-software practice.
 
 ### From the standards survey — CWE Top 25 audit
 
-- [ ] **CWE-22 documentary audit** on wrapper-path construction.
-      Scrambled name is an HMAC-output compound (can never contain
-      `/` or `..`).  Audit is documentary, but record it.
-- [ ] **CWE-78 / 77 / 94 wrapper-renderer audit.**  `render()` in
-      `enforcement/wrapper.rs` uses `String::replace` over
-      placeholders — NOT shell-safe escaping.  Decoy banner is
-      single-quote-escaped; verify the other substitution fields
-      (scrambled name, real path, ns_inode) cannot be
-      attacker-controlled.  Trace the chain of trust to vault
-      material.  Fuzz target on the renderer is filed.
+Full audit lives in `docs/cwe-top25-audit.md`.  Per-item status:
+
+- [x] **CWE-22 documentary audit** on wrapper-path construction.
+      Scrambled names are HMAC-output compounds drawn from a static
+      `[a-z]`-filtered wordlist; no path-separator byte can appear.
+- [x] **CWE-78 / 77 / 94 wrapper-renderer audit.**  Decoy banner uses
+      single-quote escape; real_path lands behind shell double-quote;
+      remaining fields are alphanumeric or numeric.  Fuzz target on
+      the renderer is filed below.
 - [x] **CWE-400 length-bounded honey-FIFO reader.**
       `crates/babbleon/src/events.rs`.  `HoneyFifoReader::run` now reads
       lines through a `Take` adapter capped at `MAX_HONEY_LINE_BYTES`
@@ -469,14 +468,18 @@ Triaged from a self-review against general secure-software practice.
       ~150-byte lines; 16 KiB gives 100× headroom and stays well below
       page-allocation cliffs.  4 new tests cover normal/EOF/over-
       limit-resync/at-the-boundary.
-- [ ] **CWE-798 documentary note for SALT constants** in `soft.rs`
+- [x] **CWE-798 documentary note for SALT constants** in `soft.rs`
       and `usb.rs` — explain that SALT is a public domain-separation
-      tag, not a secret.  HKDF migration will make this obvious by
-      type; until then, the comment closes the audit finding.
-- [ ] **CWE-269 documentary audit** on the ns-helper privilege
-      chain.  Walk cap-drop / NNP / seccomp sequence and document
-      why no step can retain residual privilege if the next step
-      fails.
+      tag, not a secret.  Recorded in `docs/cwe-top25-audit.md` §CWE-798.
+- [x] **CWE-269 documentary audit** on the ns-helper privilege
+      chain.  `docs/cwe-top25-audit.md` §CWE-269 walks cap-drop /
+      NNP / seccomp / fork / setuid in order with the failure-mode
+      analysis.
+- [ ] **CWE-770 FPE cache eviction policy.** New finding from the
+      audit: `mapping/fpe.rs::CACHE` grows one entry per (secret,
+      epoch, n) tuple with no eviction.  Daemons running across many
+      rotations accumulate ~3 MiB per stale epoch.  Pick a policy
+      (LRU at N entries, or time-bounded) and implement.
 
 ---
 
