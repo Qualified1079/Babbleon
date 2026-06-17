@@ -42,9 +42,51 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::errors::Result;
+use crate::errors::{Error, Result};
 use crate::key_derivation::derive_subkey;
 use crate::per_host_secret::PerHostSecret;
+
+// ---------------------------------------------------------------------------
+// Input validation
+// ---------------------------------------------------------------------------
+
+/// Validate that a wrapper name is safe to embed in the shell template.
+///
+/// Allows `[a-z0-9-]` only; rejects anything that could break shell
+/// variable assignment, `grep -xF` comparison, or filename semantics.
+fn validate_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        return Err(Error::Internal(
+            "wrapper name must not be empty".into(),
+        ));
+    }
+    if !name
+        .bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    {
+        return Err(Error::Internal(format!(
+            "wrapper name {name:?} contains characters outside [a-z0-9-]"
+        )));
+    }
+    Ok(())
+}
+
+/// Validate that a filesystem path is safe to embed in the shell template.
+///
+/// Rejects bytes that would break the surrounding double-quoted shell
+/// assignment: `"`, `$`, backtick, `\`, and newline / NUL.
+fn validate_path(path: &str) -> Result<()> {
+    const UNSAFE: &[u8] = b"\"$`\\\n\r\0";
+    if path
+        .bytes()
+        .any(|b| UNSAFE.contains(&b))
+    {
+        return Err(Error::Internal(format!(
+            "path contains character(s) unsafe for shell embedding: {path:?}"
+        )));
+    }
+    Ok(())
+}
 
 // ---------------------------------------------------------------------------
 // Runtime paths
@@ -186,7 +228,7 @@ fn render(
 
 fn write_executable(path: &Path, contents: &str) -> Result<()> {
     std::fs::write(path, contents)
-        .map_err(|e| crate::errors::Error::Internal(e.to_string()))?;
+        .map_err(|e| crate::errors::Error::Internal(format!("I/O failed: {}", e.kind())))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -194,7 +236,7 @@ fn write_executable(path: &Path, contents: &str) -> Result<()> {
             path,
             std::fs::Permissions::from_mode(0o755),
         )
-        .map_err(|e| crate::errors::Error::Internal(e.to_string()))?;
+        .map_err(|e| crate::errors::Error::Internal(format!("I/O failed: {}", e.kind())))?;
     }
     Ok(())
 }
@@ -205,6 +247,16 @@ fn write_executable(path: &Path, contents: &str) -> Result<()> {
 
 /// Write a real-tool wrapper for `scrambled_name` that execs `real_path`
 /// in the trusted tier and exits 127 silently in the untrusted tier.
+///
+/// # Errors
+///
+/// - `Error::Internal` if `scrambled_name` contains characters outside
+///   `[a-z0-9-]`, or if `real_path` contains characters unsafe for
+///   shell embedding (`"`, `$`, backtick, `\`, newline, NUL).
+/// - `Error::Internal` if the output directory cannot be created or the
+///   wrapper file cannot be written.
+/// - `Error::Crypto` if HKDF subkey derivation fails (not reachable
+///   in practice for our 32-byte keys).
 pub fn write_wrapper(
     scrambled_name: &str,
     real_path: &Path,
@@ -213,8 +265,11 @@ pub fn write_wrapper(
     epoch: u64,
     trusted_ns_inode: Option<u64>,
 ) -> Result<PathBuf> {
+    validate_name(scrambled_name)?;
+    let real_path_str = real_path.to_string_lossy();
+    validate_path(&real_path_str)?;
     std::fs::create_dir_all(output_dir)
-        .map_err(|e| crate::errors::Error::Internal(e.to_string()))?;
+        .map_err(|e| crate::errors::Error::Internal(format!("I/O failed: {}", e.kind())))?;
     let padding = wrapper_padding_hex(secret, epoch, scrambled_name)?;
     let inode = trusted_ns_inode
         .map(|i| i.to_string())
@@ -237,6 +292,14 @@ pub fn write_wrapper(
 /// template as a real-tool wrapper; the runtime dispatches on the list files.
 ///
 /// `events_fifo` overrides the default FIFO path (useful in tests).
+///
+/// # Errors
+///
+/// - `Error::Internal` if `honey_name` contains characters outside
+///   `[a-z0-9-]`, or if `events_fifo` contains shell-unsafe characters.
+/// - `Error::Internal` if the output directory cannot be created or the
+///   wrapper file cannot be written.
+/// - `Error::Crypto` if HKDF subkey derivation fails.
 pub fn write_tripwire_wrapper(
     honey_name: &str,
     output_dir: &Path,
@@ -244,8 +307,12 @@ pub fn write_tripwire_wrapper(
     epoch: u64,
     events_fifo: Option<&str>,
 ) -> Result<PathBuf> {
+    validate_name(honey_name)?;
+    if let Some(fifo) = events_fifo {
+        validate_path(fifo)?;
+    }
     std::fs::create_dir_all(output_dir)
-        .map_err(|e| crate::errors::Error::Internal(e.to_string()))?;
+        .map_err(|e| crate::errors::Error::Internal(format!("I/O failed: {}", e.kind())))?;
     let padding = wrapper_padding_hex(secret, epoch, honey_name)?;
     let fifo = events_fifo.unwrap_or(TRIPWIRE_EVENTS_FIFO);
     let contents = render(
@@ -263,6 +330,11 @@ pub fn write_tripwire_wrapper(
 }
 
 /// Write tripwire wrappers for all names in `honey_names`.
+///
+/// # Errors
+///
+/// Propagates errors from [`write_tripwire_wrapper`]; the first failure
+/// stops iteration and returns the error.
 pub fn write_all_tripwire_wrappers<'a>(
     honey_names: impl IntoIterator<Item = &'a str>,
     output_dir: &Path,
@@ -279,6 +351,11 @@ pub fn write_all_tripwire_wrappers<'a>(
 ///
 /// Entries where `real_path` does not exist on disk are silently skipped
 /// so the caller can pass the full mapping without pre-filtering.
+///
+/// # Errors
+///
+/// Propagates errors from [`write_wrapper`]; the first failure stops
+/// iteration and returns the error.
 pub fn write_all_wrappers<'a, 'b>(
     mapping: impl IntoIterator<Item = (&'a str, &'b Path)>,
     output_dir: &Path,
@@ -309,6 +386,11 @@ pub fn write_all_wrappers<'a, 'b>(
 }
 
 /// Write the honey-name list to `path` (or default FIFO path).
+///
+/// # Errors
+///
+/// - `Error::Internal` if the parent directory cannot be created or the
+///   file cannot be written.
 pub fn write_honey_list<'a>(
     names: impl IntoIterator<Item = &'a str>,
     path: Option<&Path>,
@@ -320,6 +402,11 @@ pub fn write_honey_list<'a>(
 }
 
 /// Write the stale-mapping list to `path`.
+///
+/// # Errors
+///
+/// - `Error::Internal` if the parent directory cannot be created or the
+///   file cannot be written.
 pub fn write_stale_list<'a>(
     names: impl IntoIterator<Item = &'a str>,
     path: Option<&Path>,
@@ -336,11 +423,11 @@ fn write_name_list<'a>(
 ) -> Result<()> {
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)
-            .map_err(|e| crate::errors::Error::Internal(e.to_string()))?;
+            .map_err(|e| crate::errors::Error::Internal(format!("I/O failed: {}", e.kind())))?;
     }
     let content: String = names.into_iter().flat_map(|n| [n, "\n"]).collect();
     std::fs::write(dest, content)
-        .map_err(|e| crate::errors::Error::Internal(e.to_string()))?;
+        .map_err(|e| crate::errors::Error::Internal(format!("I/O failed: {}", e.kind())))?;
     Ok(())
 }
 

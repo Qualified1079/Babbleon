@@ -42,11 +42,12 @@ use crate::events::Event;
 /// Names mirror the v1 enum but with one rename: v1's `KillTrigger`
 /// becomes `KillTriggeringProcess` to make the target unambiguous in
 /// audit logs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TripwireResponsePolicy {
     /// Emit the event; take no further action.  Default for new
     /// deployments — operators opt in to active response.
+    #[default]
     NotifyOnly,
     /// Send SIGKILL to the triggering process.  PID-reuse re-check
     /// is mandatory in the responder.
@@ -62,12 +63,6 @@ pub enum TripwireResponsePolicy {
     /// quarantine; pairs with one of the above on a multi-policy
     /// deployment.
     SystemAlert,
-}
-
-impl Default for TripwireResponsePolicy {
-    fn default() -> Self {
-        Self::NotifyOnly
-    }
 }
 
 /// A responder consumes a single [`Event::Tripwire`] and applies the

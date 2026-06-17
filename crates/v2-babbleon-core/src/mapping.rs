@@ -225,7 +225,7 @@ impl<'a> MappingBuilder<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{EpochMapping, MappingBuilder, COMPOUND_N, HONEY_COUNT};
+    use super::{MappingBuilder, COMPOUND_N, HONEY_COUNT};
     use crate::per_host_secret::PerHostSecret;
     use crate::wordlist::Wordlist;
 
@@ -384,6 +384,3 @@ mod tests {
     }
 }
 
-// Suppress unused import warning when used only in tests.
-#[allow(dead_code)]
-fn _ensure_epoch_mapping_is_documented(_: EpochMapping) {}

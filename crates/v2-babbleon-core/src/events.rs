@@ -328,9 +328,13 @@ impl AuditChainSink {
 impl EventSink for AuditChainSink {
     fn emit(&self, event: &Event) {
         // Serialize the payload first; the chain hash covers this
-        // canonical form.  We accept serde_json's output as
-        // canonical for our schema (all fields are owned types with
-        // deterministic key order from the derive).
+        // canonical form.  We accept serde_json's output as canonical
+        // because all Event fields are owned String / integer types
+        // whose serde_json serialization is deterministic and
+        // byte-stable.  INVARIANT: do NOT add HashMap or f64 fields
+        // to Event — both produce non-deterministic byte sequences
+        // (map key order; float formatting) that would silently break
+        // chain replay verification.
         let Ok(event_bytes) = serde_json::to_vec(event) else {
             return;
         };

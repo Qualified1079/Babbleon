@@ -1,5 +1,13 @@
 //! Wordlist loader.
 //!
+//! # Infrastructure module
+//!
+//! This module is foundational support: it loads and validates the
+//! word corpus used by `mapping` and `permutation`.  No specific
+//! attack is defeated here directly; the security properties arise
+//! from the bijective permutation applied to the wordlist, not from
+//! the wordlist itself.
+//!
 //! # What this is
 //!
 //! A typed wrapper around a list of words used to construct

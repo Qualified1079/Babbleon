@@ -1,5 +1,12 @@
 //! Error type for the v2 core library.
 //!
+//! # Infrastructure module
+//!
+//! This module is foundational support: it defines the shared error
+//! type used by every other v2 module.  No specific attack is defeated
+//! here directly; the modules that USE this type (`permutation`,
+//! `mapping`, `wrapper`, etc.) are where the security invariants live.
+//!
 //! Errors are flat and human-readable.  Internal failures wrap the
 //! upstream error message; we do NOT preserve `std::io::Error`
 //! kinds across the boundary because doing so leaks structural
