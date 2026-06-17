@@ -1,5 +1,9 @@
 # Babbleon
 
+[![ci](https://github.com/qualified1079/babbleon/actions/workflows/ci.yml/badge.svg)](https://github.com/qualified1079/babbleon/actions/workflows/ci.yml)
+[![scorecard](https://github.com/qualified1079/babbleon/actions/workflows/scorecard.yml/badge.svg)](https://github.com/qualified1079/babbleon/actions/workflows/scorecard.yml)
+[![codeql](https://github.com/qualified1079/babbleon/actions/workflows/codeql.yml/badge.svg)](https://github.com/qualified1079/babbleon/actions/workflows/codeql.yml)
+
 Per-host randomized namespace obfuscation that breaks LLM-driven
 automated attackers. The same machine presents two filesystem views:
 a **trusted** view (humans, real names) and an **untrusted** view
@@ -41,7 +45,24 @@ For the adversarial naming-layer harness against a frontier LLM, open
     crates/babbleon/           library — mapping, vault, enforcement
     crates/babbleon-cli/       `babbleon` binary
     crates/babbleon-ns-helper/ setuid helper (M3)
+    crates/babbleon-pam/       PAM module (M3)
     tools/scrambler/           browser-based LLM test harness
+    tools/rotation-benchmark/  rotation cost measurement
+    tools/tokenizer-benchmark/ BPE token cost measurement
+    fuzz/                      cargo-fuzz harnesses (3 targets)
+    policies/                  AppArmor + SELinux confinement templates
+    docs/                      threat model, CWE audit, SSDF policy, ...
+
+## Security
+
+- Vulnerability disclosure: see [`SECURITY.md`](SECURITY.md)
+- Release verification: see [`docs/verify-release.md`](docs/verify-release.md)
+  — cosign keyless signatures + SLSA L3 provenance + signed SBOM
+- Threat model: [`docs/threat-model.md`](docs/threat-model.md) (AI-attacker
+  classification) and [`docs/threat-model-stride.md`](docs/threat-model-stride.md)
+  (STRIDE-formatted)
+- CWE Top 25 audit: [`docs/cwe-top25-audit.md`](docs/cwe-top25-audit.md)
+- SSDF mapping: [`docs/secure-development-policy.md`](docs/secure-development-policy.md)
 
 ## License
 
