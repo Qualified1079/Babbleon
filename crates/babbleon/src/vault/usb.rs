@@ -6,6 +6,7 @@ use argon2::{Algorithm, Argon2, Params, Version};
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
+use zeroize::Zeroizing;
 
 const SALT: &[u8] = b"babbleon-usb-v1";
 const KEYFILE_SIZE: usize = 32;
@@ -46,28 +47,36 @@ impl KekBackend for UsbBackend {
                 self.keyfile_path.display()
             )));
         }
-        let keyfile_bytes = std::fs::read(&self.keyfile_path)?;
+        // Keyfile bytes are KEK material — wipe on drop.  Also wipe the
+        // password-stretched bytes and the concatenated material buffer
+        // we feed into the final SHA-256.
+        let keyfile_bytes = Zeroizing::new(std::fs::read(&self.keyfile_path)?);
         if keyfile_bytes.len() < KEYFILE_SIZE {
             return Err(BabbleonError::Vault(
                 "keyfile too short; may be corrupt".into(),
             ));
         }
 
-        let material = if let Some(password) = credential {
+        let material: Zeroizing<Vec<u8>> = if let Some(password) = credential {
             let params = Params::new(M_KIB, T_COST, P_COST, Some(HASH_LEN))
                 .map_err(|e| BabbleonError::Vault(format!("argon2 params: {e}")))?;
             let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
-            let mut pw_raw = [0u8; HASH_LEN];
+            let mut pw_raw: Zeroizing<[u8; HASH_LEN]> = Zeroizing::new([0u8; HASH_LEN]);
             argon
-                .hash_password_into(password.as_bytes(), SALT, &mut pw_raw)
+                .hash_password_into(password.as_bytes(), SALT, pw_raw.as_mut_slice())
                 .map_err(|e| BabbleonError::Vault(format!("argon2: {e}")))?;
-            [keyfile_bytes, pw_raw.to_vec()].concat()
+            let mut combined = Vec::with_capacity(keyfile_bytes.len() + HASH_LEN);
+            combined.extend_from_slice(&keyfile_bytes);
+            combined.extend_from_slice(pw_raw.as_slice());
+            Zeroizing::new(combined)
         } else {
-            keyfile_bytes
+            // Already in a Zeroizing; clone the bytes into a fresh one
+            // so the surrounding code shape stays the same.
+            Zeroizing::new(keyfile_bytes.to_vec())
         };
 
         let mut h = Sha256::new();
-        h.update(&material);
+        h.update(material.as_slice());
         h.update(b"babbleon-usb-kek-v1");
         Ok(hex::encode(h.finalize()))
     }

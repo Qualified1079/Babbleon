@@ -6,6 +6,7 @@ use age::secrecy::Secret;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
+use zeroize::Zeroizing;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VaultPayload {
@@ -40,9 +41,16 @@ impl VaultPayload {
         }
     }
 
-    pub fn host_secret(&self) -> Result<Vec<u8>> {
-        hex::decode(&self.host_secret_hex)
-            .map_err(|e| BabbleonError::Vault(format!("invalid host_secret hex: {e}")))
+    /// Decode the hex-encoded host secret into a zeroizing byte buffer.
+    ///
+    /// The returned `Zeroizing<Vec<u8>>` wipes its contents on drop so
+    /// callers can pass it to `Mapper::new` (which itself stores its
+    /// own zeroizing copy) without leaving a lingering plaintext copy
+    /// in this function's stack/heap.
+    pub fn host_secret(&self) -> Result<Zeroizing<Vec<u8>>> {
+        let bytes = hex::decode(&self.host_secret_hex)
+            .map_err(|e| BabbleonError::Vault(format!("invalid host_secret hex: {e}")))?;
+        Ok(Zeroizing::new(bytes))
     }
 
     pub fn with_epoch(mut self, epoch: u64) -> Self {

@@ -149,6 +149,7 @@ dependencies = [
  "argon2",
  "dirs",
  "hex",
+ "hkdf",
  "hmac",
  "landlock",
  "libc",
@@ -160,10 +161,12 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "subtle",
  "tempfile",
  "thiserror",
  "toml 0.8.23",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]

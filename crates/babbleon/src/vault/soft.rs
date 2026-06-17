@@ -14,6 +14,7 @@ use crate::errors::{BabbleonError, Result};
 use crate::vault::backend::KekBackend;
 use argon2::{Algorithm, Argon2, Params, Version};
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 const SALT: &[u8] = b"babbleon-soft-v1";
 const HASH_LEN: usize = 32;
@@ -55,11 +56,15 @@ impl KekBackend for SoftBackend {
         let params = Params::new(m_kib, t_cost, p_cost, Some(HASH_LEN))
             .map_err(|e| BabbleonError::Vault(format!("argon2 params: {e}")))?;
         let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
-        let mut out = [0u8; HASH_LEN];
+        // The 32-byte Argon2 output IS the KEK material.  Wrap it in
+        // `Zeroizing` so the buffer is wiped on drop; we only need its
+        // hex encoding to survive (and that string is what `age` then
+        // ingests as a passphrase — it gets dropped quickly after).
+        let mut out: Zeroizing<[u8; HASH_LEN]> = Zeroizing::new([0u8; HASH_LEN]);
         argon
-            .hash_password_into(password.as_bytes(), SALT, &mut out)
+            .hash_password_into(password.as_bytes(), SALT, out.as_mut_slice())
             .map_err(|e| BabbleonError::Vault(format!("argon2: {e}")))?;
-        Ok(hex::encode(out))
+        Ok(hex::encode(out.as_slice()))
     }
 
     fn name(&self) -> &'static str {

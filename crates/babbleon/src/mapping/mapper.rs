@@ -3,6 +3,7 @@
 use super::fpe;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use zeroize::Zeroizing;
 
 pub const COMPOUND_N: usize = 4;
 pub const HONEY_COUNT: usize = 50;
@@ -47,20 +48,27 @@ impl MappingTable {
     }
 }
 
+/// Holder for the per-host secret.
+///
+/// The secret is the *only* thing standing between a public-knowledge
+/// attacker and the mapping; we therefore hold it in `Zeroizing<Vec<u8>>`
+/// so it is wiped on drop instead of lingering in heap pages until the
+/// allocator hands them back out.  Closes the "core-dump / paged-out /
+/// heap-reuse" leakage class for the `Mapper`'s copy of the secret.
 pub struct Mapper {
-    host_secret: Vec<u8>,
+    host_secret: Zeroizing<Vec<u8>>,
 }
 
 impl Mapper {
     pub fn new(host_secret: &[u8]) -> Self {
         Self {
-            host_secret: host_secret.to_vec(),
+            host_secret: Zeroizing::new(host_secret.to_vec()),
         }
     }
 
     fn purpose_seed(&self, purpose: &[u8]) -> [u8; 32] {
         let mut h = Sha256::new();
-        h.update(&self.host_secret);
+        h.update(self.host_secret.as_slice());
         h.update(purpose);
         let bytes = h.finalize();
         let mut out = [0u8; 32];
