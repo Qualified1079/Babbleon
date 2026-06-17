@@ -1,0 +1,19 @@
+[package]
+name = "v2-babbleon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Babbleon v2 user-facing CLI (init / unlock / rotate / status / mount-scrambled-view)."
+publish = false
+
+[[bin]]
+name = "babbleon-v2"
+path = "src/main.rs"
+
+[dependencies]
+v2-babbleon-core = { path = "../v2-babbleon-core" }
+clap = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
