@@ -26,6 +26,7 @@ rand_chacha = "0.3"
 hkdf = "0.12"
 subtle = { version = "2.6", default-features = false }
 zeroize = { version = "1.8", features = ["zeroize_derive"] }
+ed25519-dalek = { version = "2", features = ["rand_core", "zeroize"] }
 # serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

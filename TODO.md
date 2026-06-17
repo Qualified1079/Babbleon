@@ -333,11 +333,17 @@ Triaged from a self-review against general secure-software practice.
 
 ### Audit-log integrity
 
-- [ ] **Ed25519-sign each `ChainedAuditLog` entry** in addition to
-      the SHA-256 hash chain.  Today an attacker who roots the box
-      can rewrite the entire chain; with a signing key held off-host
-      (or in a TPM), tampering is detect-but-not-tamper-without-
-      being-noticed.  Standard pattern for tamper-evident logs.
+- [x] **Ed25519-sign each `ChainedAuditLog` entry** in addition to
+      the SHA-256 hash chain.  `ChainedAuditLog::open_signed(path,
+      signing_key)` + `verify_signed(path, &verifying_key)`; signature
+      covers the JSON form of `{prev, seq, ts, event}` (a separate
+      `SigningPayload` type so the signing bytes are exactly what the
+      verifier reconstructs).  Signed mode rejects unsigned entries —
+      a post-compromise attacker who appends with the chain-only path
+      gets caught.  Backward-compatible: chain-only `verify` still works
+      against signed logs (SIEM forwarders don't need the public key).
+      Operator UX (where to put the signing key — TPM, escrow host,
+      sidecar file) is filed as a follow-up.
 
 ### OS-level profile templates
 
