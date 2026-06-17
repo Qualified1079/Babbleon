@@ -26,6 +26,8 @@ pub mod manifest;
 pub mod mapping;
 pub mod platform;
 pub mod plugins;
+#[cfg(target_os = "linux")]
+pub mod process_hardening;
 pub mod session;
 pub mod storage;
 pub mod vault;

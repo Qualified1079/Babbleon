@@ -77,6 +77,18 @@ fn main() -> Result<()> {
         )
         .init();
 
+    // Apply secret-process hardening BEFORE we touch the vault or
+    // derive the KEK.  PR_SET_DUMPABLE refuses core dumps,
+    // RLIMIT_CORE caps any that slip through, mlockall pins pages so
+    // secret bytes are never paged to swap.  Best-effort: any step
+    // that fails emits a tracing::warn! and the CLI continues with
+    // degraded posture (better than refusing to run for an operator
+    // whose container doesn't grant CAP_IPC_LOCK).
+    #[cfg(target_os = "linux")]
+    {
+        let _ = babbleon::process_hardening::harden_for_secrets();
+    }
+
     let cli = Cli::parse();
     match cli.cmd {
         Cmd::Init => cmd_init(),

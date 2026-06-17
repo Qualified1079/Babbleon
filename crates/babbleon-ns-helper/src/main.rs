@@ -55,6 +55,15 @@ fn run() -> Result<()> {
     }
     let real_gid = nix::unistd::getgid();
 
+    // Apply secret-process hardening early.  The ns-helper does NOT
+    // hold the host_secret in memory (the CLI does, and the helper is
+    // a fork/exec staging post), but defence-in-depth wants
+    // PR_SET_DUMPABLE off for the helper too — if the helper crashes
+    // mid-setup the core file should not capture the parent's address
+    // space metadata.  As root (euid=0) the helper can also actually
+    // succeed at mlockall, which the unprivileged CLI often cannot.
+    let _ = babbleon::process_hardening::harden_for_secrets();
+
     // Establish mount + PID namespaces.
     unshare(CloneFlags::CLONE_NEWNS | CloneFlags::CLONE_NEWPID)
         .context("unshare(NEWNS|NEWPID) — requires CAP_SYS_ADMIN")?;
