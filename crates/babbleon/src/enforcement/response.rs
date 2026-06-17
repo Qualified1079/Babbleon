@@ -40,9 +40,10 @@ use crate::events::{Event, EventSink};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// What a `HoneyResponder` does with each `HoneyTriggered` event.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ResponsePolicy {
     /// Log only.  Default — does not kill anything.
+    #[default]
     NotifyOnly,
     /// SIGKILL the wrapper's triggering process (PPID).  PID-reuse safe
     /// via start-time check.
@@ -55,6 +56,11 @@ pub enum ResponsePolicy {
 impl ResponsePolicy {
     /// Parse from operator-facing string ("notify-only", "kill-trigger",
     /// "kill-trigger-tree").  Returns None for unknown.
+    //
+    // Intentionally not `impl FromStr`: callers want `Option` (a stray
+    // env-var value is an operator-side typo, not a parse-error worth
+    // promoting to a typed error), and the std trait forces `Result`.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "notify-only" | "notify" | "log" => Some(Self::NotifyOnly),
@@ -62,12 +68,6 @@ impl ResponsePolicy {
             "kill-trigger-tree" | "kill-tree" | "kill-pgrp" => Some(Self::KillTriggerTree),
             _ => None,
         }
-    }
-}
-
-impl Default for ResponsePolicy {
-    fn default() -> Self {
-        Self::NotifyOnly
     }
 }
 

@@ -1,23 +1,20 @@
 //! Seeded permutation of `[0, N)`.
 //!
 //! Implementation: Fisher-Yates shuffle driven by ChaCha20 seeded with
-//! HKDF-style HMAC(host_secret || epoch). This replaces the broken Feistel
-//! prototype; same security properties (per-host secret, bijective,
-//! epoch-rotatable), simpler correctness story.
+//! HKDF-SHA-256 (RFC 5869) over (host-derived seed, epoch). This replaces
+//! the broken Feistel prototype; same security properties (per-host
+//! secret, bijective, epoch-rotatable), simpler correctness story.
 //!
 //! Tables are cached in-memory per (seed, epoch, n) tuple. For N=370k the
 //! table is ~3 MiB — fine for a daemon, trivial for a one-shot CLI.
 
-use hmac::{Hmac, Mac};
+use super::kdf;
 use once_cell::sync::Lazy;
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
-use sha2::Sha256;
 use std::collections::HashMap;
 use std::sync::Mutex;
-
-type HmacSha256 = Hmac<Sha256>;
 
 /// Cache key: (seed bytes, epoch, n).
 type Key = ([u8; 32], u64, usize);
@@ -27,14 +24,16 @@ type Tables = (Vec<u32>, Vec<u32>);
 
 static CACHE: Lazy<Mutex<HashMap<Key, Tables>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
+/// Derive the ChaCha20 stream seed for a given (purpose-seed, epoch).
+///
+/// `info = b"fpe-v1" || epoch_be` makes each epoch's permutation
+/// independently keyed; the purpose-seed itself was already
+/// domain-separated upstream by `mapper::purpose_seed`.
 fn derive_chacha_seed(seed: &[u8], epoch: u64) -> [u8; 32] {
-    let mut mac = HmacSha256::new_from_slice(seed).expect("hmac accepts any key length");
-    mac.update(b"babbleon-fpe-v1");
-    mac.update(&epoch.to_be_bytes());
-    let bytes = mac.finalize().into_bytes();
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&bytes);
-    out
+    let mut info = [0u8; 6 + 8];
+    info[..6].copy_from_slice(b"fpe-v1");
+    info[6..].copy_from_slice(&epoch.to_be_bytes());
+    kdf::derive_subkey_32(seed, &info)
 }
 
 fn build(seed: &[u8], epoch: u64, n: usize) -> (Vec<u32>, Vec<u32>) {

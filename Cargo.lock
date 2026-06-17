@@ -150,7 +150,6 @@ dependencies = [
  "dirs",
  "hex",
  "hkdf",
- "hmac",
  "landlock",
  "libc",
  "nix",

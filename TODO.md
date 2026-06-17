@@ -281,11 +281,15 @@ Triaged from a self-review against general secure-software practice.
 
 ### Crypto hygiene
 
-- [ ] **HKDF-SHA-256 (RFC 5869) for domain separation** instead of
-      hand-rolled HMAC-of-purpose-string.  Replace `Mapper::purpose_seed`
-      (`SHA256(host_secret || label)`) and the per-purpose HMAC paths
-      with `hkdf::Hkdf<Sha256>` using explicit `salt` / `info` /
-      `length`.  Same security properties; auditor-recognizable.
+- [x] **HKDF-SHA-256 (RFC 5869) for domain separation** instead of
+      hand-rolled HMAC-of-purpose-string.  `crates/babbleon/src/mapping/kdf.rs`
+      now wraps `hkdf::Hkdf<Sha256>` with a fixed salt
+      `b"babbleon-hkdf-v1"`; `Mapper::purpose_seed` and
+      `fpe::derive_chacha_seed` both call through it.  The `hmac` direct
+      dep was dropped from `babbleon/Cargo.toml` (still pulled in
+      transitively by `hkdf`).  Same security properties as before for a
+      32-byte uniformly random `ikm`; the win is auditor-recognizable
+      shape (explicit `salt` / `info` / `len`).
 - [ ] **Rate-limiting on vault unlock attempts.**  Vault header
       carries an attempt counter; increments before each KDF, clears
       on success; exponential backoff after 3 failures; lock-out at

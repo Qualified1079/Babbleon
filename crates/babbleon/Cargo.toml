@@ -15,7 +15,6 @@ fido2 = []
 [dependencies]
 age = { workspace = true }
 argon2 = { workspace = true }
-hmac = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }

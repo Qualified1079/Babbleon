@@ -1,7 +1,7 @@
 //! Builds per-epoch MappingTable instances.
 
 use super::fpe;
-use sha2::{Digest, Sha256};
+use super::kdf;
 use std::collections::HashMap;
 use zeroize::Zeroizing;
 
@@ -66,14 +66,13 @@ impl Mapper {
         }
     }
 
+    /// Derive a 32-byte per-purpose subkey from the host secret.
+    ///
+    /// `purpose` is the HKDF `info` argument; each distinct purpose
+    /// (mapping table seed, honey-set seed, ...) passes a distinct fixed
+    /// byte string so the subkeys are domain-separated.
     fn purpose_seed(&self, purpose: &[u8]) -> [u8; 32] {
-        let mut h = Sha256::new();
-        h.update(self.host_secret.as_slice());
-        h.update(purpose);
-        let bytes = h.finalize();
-        let mut out = [0u8; 32];
-        out.copy_from_slice(&bytes);
-        out
+        kdf::derive_subkey_32(self.host_secret.as_slice(), purpose)
     }
 
     fn compound(seed: &[u8], epoch: u64, slot_base: usize) -> String {
@@ -230,8 +229,11 @@ mod tests {
         let current = 4u64;
         let stale = m.stale_names_for_previous_epochs(&tools, current, 4);
         let curr = m.build_table(&tools, current);
-        let curr_scrambled: std::collections::HashSet<&str> =
-            curr.real_to_scrambled.values().map(|s| s.as_str()).collect();
+        let curr_scrambled: std::collections::HashSet<&str> = curr
+            .real_to_scrambled
+            .values()
+            .map(|s| s.as_str())
+            .collect();
         for name in &stale {
             assert!(
                 !curr_scrambled.contains(name.as_str()),
