@@ -76,6 +76,43 @@ function changes about the world.**  Boolean predicates start with
 | `FPEPermutation` | `WordlistPermutation` |
 | `NSDriver` | `NamespaceDriver` or `MountNamespaceDriver` |
 
+## Acronym aliases (optional fast path)
+
+Plain English names are the primary, authoritative names.  They
+are what appears in code, audit trails, documentation, and error
+messages.
+
+For operator-facing CLI subcommands and environment variable names
+that operators type repeatedly, v2 also exposes abbreviated
+aliases.  The rule: **the alias is only the initials of each word
+in the plain English name.**
+
+| Plain English (primary) | Acronym alias |
+|---|---|
+| `block-process-inspection-syscalls` | `bpis` |
+| `mount-scrambled-view` | `msv` |
+| `mount-real-view` | `mrv` |
+| `enter-new-mount-namespace` | `enms` |
+| `block-mount-propagation-to-host` | `bmph` |
+| `tripwire-response-policy` | `trp` |
+| `rotate-mapping` | `rm` |
+
+**Scope:** aliases exist for CLI subcommands and env-var short
+forms only.  They do NOT exist as function names, type names,
+module names, or log message identifiers.  The plain English name
+is the only truth at the code level.
+
+**Discovery:** `babbleon help` always shows the plain English name
+first, with the alias in parentheses.  `babbleon ALIAS` routes to
+the subcommand as if the full name were typed.  Autocomplete
+exposes both.
+
+**Alias stability:** once assigned, an acronym alias is frozen.
+If the plain English name is renamed (rare), the alias stays the
+same to avoid breaking operator scripts.  The old plain English
+name becomes a deprecated alias too, with a deprecation warning
+for one minor version cycle before removal.
+
 ## What NOT to rename
 
 Names baked into kernel ABIs, RFCs, or external standards stay:

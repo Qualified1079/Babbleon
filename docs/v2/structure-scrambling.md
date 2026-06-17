@@ -137,29 +137,53 @@ Mitigation: editor plugins, plus a CLI utility
 `babbleon unscramble FILE` that emits the unscrambled source to
 stdout (gated to the trusted tier; refuses to run in untrusted).
 
-### Layer 4 — code-order reorder with execution markers
+### Layer 4 — chunk-level code reorder with word-tag markers
 
 Top-level blocks (function defs, class defs, module-level imports
 and statements) are permuted at scramble time.  Each block carries
-an execution-order marker that the runtime preprocessor honours
-when re-emitting source.
+an **execution-order word-tag** — a wordlist compound drawn from a
+dedicated *marker wordlist* pool — that the runtime preprocessor
+uses to reconstruct the original execution order before emission.
 
-**Why top-level only:** Python (and most languages) tolerate any
-top-level definition order as long as references resolve before
-use.  Reordering inside a function changes semantics; reordering
-top-level definitions does not.
+**Granularity: top-level chunks only.**  Python (and most
+languages) tolerate any top-level definition order as long as
+references resolve before use.  Reordering inside a function
+changes semantics; reordering top-level chunks does not.
+Statement-level reorder is NOT implemented — the runtime cost
+grows roughly as O(N²) for dependency analysis inside a function
+body, and the marginal fingerprint benefit over chunk-level is
+small.
 
-**The marker format:** an opaque wordlist compound the
-preprocessor recognises as "execution-order N".  N is encoded
-into the compound via an HKDF-derived position-permutation, so
-the same N produces the same compound shape across the file but
-N is not extractable without the per-epoch key.
+**The word-tag mechanism:**
+
+Each chunk begins with a compound token drawn from the per-epoch
+marker wordlist.  The compound encodes an ordinal N via an
+HKDF-derived sub-permutation of the marker wordlist: to encode
+position N, the scrambler selects the N-th compound in the
+HKDF-sorted marker list.  The preprocessor reverses this:
+
+1. Scan the wall-of-text for any compound that matches the marker
+   wordlist.
+2. Decode the ordinal N from the compound's position in the
+   HKDF-sorted marker list.
+3. Assign the following tokens (up to the next marker) to chunk N.
+4. Sort all chunks by N; concatenate; emit.
+
+The marker compounds are indistinguishable from any other
+wordlist compound to an observer without the epoch key.  The
+attacker must recover the per-epoch HKDF sub-key for the marker
+pool before they can identify chunk boundaries — which requires
+knowing the host secret.
 
 **What this defeats:** position-based fingerprinting.  Templates
 that assume "imports come first, then helpers, then main" no
-longer work.  The model would have to actually parse the file to
-determine execution order, which requires unscrambling layer 1
-(identifiers) AND layer 3 (whitespace).
+longer work.  The attacker must parse the wall-of-text, identify
+markers, decode ordinals, and reconstruct chunk order — all of
+which requires the epoch key.
+
+**Performance profile:** chunk sort is O(C log C) where C is
+the number of top-level chunks (typically 10–200 per file).
+Negligible.
 
 **Cost:** the preprocessor must topologically sort the marked
 blocks before emitting.  Trivial; one pass.
@@ -174,24 +198,50 @@ that the runtime preprocessor strips before emission.  Target:
 
 - **Inline decoys** — wordlist tokens inserted between real
   tokens.  Marked via a per-epoch *decoy wordlist*; the
-  preprocessor strips any token matching that wordlist.  Cheap to
-  insert, cheap to strip.
-- **Whole-line decoys** — entire fake statements that look
-  syntactically valid (after notional unscrambling) but the
-  preprocessor recognises via a position-marker compound and
-  skips entirely.  More expensive but defeats attackers that
-  parse before stripping.
+  preprocessor strips any token matching that decoy pool.  Cheap
+  to insert, cheap to strip.
+- **Whole-chunk decoys** — entire fake top-level blocks (a fake
+  function-body-shaped blob) that the preprocessor recognises via
+  a marker compound (same word-tag pool as layer 4, with a
+  reserved "null-ordinal" convention) and skips.  More expensive
+  but defeats attackers that try to parse before stripping.
+
+**Default decoy ratio: 30%.**  This is the out-of-box default.
+Configurable via `decoy_ratio` (float 0.0–0.9) in the operator
+config.  Rationale: 70% decoy is the maximum-security target but
+triples preprocessor latency; 30% halves the live-code fraction
+visible to an unarmed attacker at ~1.4× latency cost.  The
+right ratio depends on the hardware and the operator's performance
+budget.
+
+**Auto-calibration** (v2.1, not v2.0): on first install or
+`babbleon calibrate`, the preprocessor runs a benchmark loop,
+measures per-file latency at several `decoy_ratio` steps, and
+proposes the highest ratio that keeps p99 latency under the
+operator's configured budget.  The operator accepts or overrides.
 
 **What this defeats:** the rotation-window attacker.  At v1's
 measured warm-rotation cost (24 ms at N=100), the attacker has
 ~250 ms total to: locate live code, adapt an exploit, submit it.
-With 70% decoy, "locate live code" becomes a 3x more expensive
-parsing task per attempt; the rotation window closes before the
-attack lands.
+With 30% decoy, "locate live code" requires a filtering pass over
+1.4× more tokens per attempt; the rotation window closes before
+the attack adapts.  At 70% decoy, "locate live code" is a 3×
+more expensive parsing task per attempt.
 
 **Cost:** strip-on-read is O(N) over input; preprocessor latency
-scales with decoy ratio.  At 70% decoy, expect ~3x preprocessor
-runtime vs zero-decoy.  Measure before shipping.
+scales with decoy ratio.  At 30% decoy, expect ~1.4× preprocessor
+runtime vs zero-decoy.  At 70% decoy, ~3×.  Measure before
+shipping.
+
+**What v2 does NOT do:** inject fake error messages, fake help
+text, or spoofed version strings.  "Deception output" (fake
+`--help` banners, fake `which` responses) was considered and
+rejected.  It creates compatibility nightmares with monitoring
+tools, EDR products, package managers, container runtimes, and
+automation scripts that parse tool output.  The null banner (exit
+127, no stdout) is the correct untrusted-tier response.
+See `docs/v2/gui-design.md` for the trust-grant mechanism that
+handles legitimate tools that need to run in the trusted tier.
 
 ### Layer 6 — multi-language wordlists
 
