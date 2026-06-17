@@ -5,6 +5,10 @@ members = [
     "crates/babbleon-cli",
     "crates/babbleon-ns-helper",
     "crates/babbleon-pam",
+    # v2 (in-progress; see V2_PLAN.md and docs/v2/).  Subtree-isolated
+    # from v1 per the phase-0 decisions; differential tests against v1
+    # live inside the v2 crates.
+    "crates/v2-babbleon-core",
 ]
 exclude = [
     # cargo-fuzz harness — needs nightly + libfuzzer-sys; lives outside

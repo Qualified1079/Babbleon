@@ -1,0 +1,35 @@
+[package]
+name = "v2-babbleon-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Babbleon v2 core: per-host mapping, vault, tripwires.  Rewritten under the v2 security baseline (forbid(unsafe_code), HKDF, SecretBox)."
+publish = false
+
+[lib]
+name = "babbleon_core_v2"
+path = "src/lib.rs"
+
+[dependencies]
+# Crypto stack (all RustCrypto, audit-friendly).
+hkdf = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
+hex = { workspace = true }
+# Secret hygiene.
+zeroize = { workspace = true }
+subtle = { workspace = true }
+# Errors.
+thiserror = { workspace = true }
+# Logging.
+tracing = { workspace = true }
+# Internal cache: lazy wordlist.
+once_cell = { workspace = true }
+
+[dev-dependencies]
+# Differential test against v1.
+babbleon = { path = "../babbleon" }
+tempfile = { workspace = true }
