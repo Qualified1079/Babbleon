@@ -1966,12 +1966,15 @@ name = "v2-babbleon-core"
 version = "0.1.0"
 dependencies = [
  "babbleon",
+ "ed25519-dalek",
  "hex",
  "hkdf",
  "hmac",
  "once_cell",
  "rand 0.8.6",
  "rand_chacha 0.3.1",
+ "serde",
+ "serde_json",
  "sha2",
  "subtle",
  "tempfile",

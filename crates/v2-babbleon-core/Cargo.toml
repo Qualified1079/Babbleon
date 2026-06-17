@@ -28,6 +28,11 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 # Internal cache: lazy wordlist.
 once_cell = { workspace = true }
+# Event serialization (sinks emit JSONL).
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Audit-chain signing.
+ed25519-dalek = { workspace = true }
 
 [dev-dependencies]
 # Differential test against v1.
