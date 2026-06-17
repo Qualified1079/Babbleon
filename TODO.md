@@ -86,6 +86,57 @@ code items are phases 1-6.
 - [ ] Adversarial-LLM re-test: did this fix the v1
       shape-fingerprint problem?
 
+### Phase 4 — additional obfuscation layers (post-research)
+
+Layers 6-12, filed from `docs/v2/obfuscation-landscape.md`.  Each
+composes with the phase-3 five-layer base; they don't replace it.
+
+- [ ] **Layer 6 — direction segment reversal.**  Byte-reverse
+      marked segments; preprocessor reverses back on emission.
+      Lower priority than 2-5 because gain is smaller and
+      preprocessor cost is similar.  Display-bidi rejected as
+      theatre (collides with Trojan Source linters; LLMs see
+      bytes not display).
+- [ ] **Layer 7 — source-level control-flow flattening.**
+      Composes with layers 2-5: existing unflatteners (D810,
+      CaDeCFF) pattern-match against switch-case shapes that
+      whitespace-as-words destroys.  Cost: ~20-50% runtime
+      overhead per literature.
+- [ ] **Layer 8 — opaque predicates + bogus control flow.**
+      Always-true / always-false branches; cheap (5-15%
+      overhead); LLMs are inconsistent at integer-arithmetic
+      reasoning under load, exactly the case opaque predicates
+      exploit.
+- [ ] **Layer 9 — constant unfolding.**  `port = 22` becomes
+      arithmetic over wordlist-scrambled identifiers.  Composes
+      with the wordlist scramble naturally.
+- [ ] **Layer 10 — path-string obfuscation (narrow scope).**
+      Host-path string literals rewritten to consult the
+      scrambled-path table at runtime.  Not general string
+      obfuscation (that changes program semantics).
+- [ ] **Layer 11 — defensive prompt injection.**  Adversarial
+      prompts in scrambled-source decoy stream.  Operator opt-in
+      (some operators may not want adversarial prompts in their
+      codebase for liability reasons).  Composes with layer 5
+      decoys.
+- [ ] **Layer 12 — mixed-charset / ZWJ / NFKC tokenizer tricks.**
+      Confined to the scrambled-source representation; the
+      preprocessor strips before emission so the interpreter
+      sees clean source.  Cost: zero (clean-source-side).
+
+### Phase 4 — supporting research and measurement
+
+- [ ] Adversarial-LLM measurement on phase-3 prototype against
+      the same models that defeated v1 when shown the original.
+      Required: cannot stack phase-4 layers on top of phase-3
+      until we know phase-3 actually helped.
+- [ ] Smaller-model superlinear-token-cost hypothesis test
+      (existing TODO; reaffirmed here).
+- [ ] TEE direction decision: does v2.0 target
+      individual-developer deployment (no TEE) or
+      enterprise/cloud (TEE available)?  Different priority for
+      v3 work.
+
 ### Phase 4 — multi-language wordlists
 
 - [ ] Add ES, FR, DE wordlists (cheap; permissive licenses)
