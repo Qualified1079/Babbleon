@@ -320,10 +320,15 @@ Triaged from a self-review against general secure-software practice.
       and uploads `babbleon-sbom*.cdx.json` as a 90-day artifact on
       every push.  Release-attached SBOMs land with the sigstore
       signing work below.
-- [ ] **`cargo-vet` for transitive-dep audits** alongside the existing
-      `cargo-deny` / `cargo-audit`.  Addresses xz-class supply-chain
-      attacks that vulnerability databases miss because the attack is
-      in not-yet-disclosed code.
+- [~] **`cargo-vet` for transitive-dep audits** alongside the existing
+      `cargo-deny` / `cargo-audit`.  Bootstrap landed in
+      `supply-chain/config.toml` with import URLs for bytecode-alliance,
+      embark-studios, google, mozilla, and zcash audit collections;
+      first-party workspace crates marked `audit-as-crates-io = false`
+      so they're reviewed via CODEOWNERS instead.  Empty `audits.toml`
+      + `exemptions.toml`.  The first-pass backfill (run `cargo vet
+      regenerate exemptions` after a `cargo vet` failure) and a CI job
+      gating PRs on `cargo vet check` remain to land — filed.
 - [x] **Reproducible-build verification CI job.**
       `.github/workflows/ci.yml` `reproducible` job builds the
       release binaries twice from the same checkout on the same

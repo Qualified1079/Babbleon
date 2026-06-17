@@ -1,0 +1,13 @@
+# cargo-vet audits — our own audit decisions.
+#
+# Empty at bootstrap.  Each entry has the shape:
+#
+#   [[audits.<crate-name>]]
+#   version = "1.2.3"
+#   criteria = "safe-to-deploy"   # or "safe-to-run" for dev-deps
+#   notes    = "Reviewed the X path; OK because Y."
+#
+# Generate from a manual review using `cargo vet certify <crate>`
+# after locally inspecting the relevant version.
+
+[audits]

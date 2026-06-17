@@ -1,0 +1,50 @@
+# cargo-vet config — supply-chain audit gates.
+#
+# Imports the widely-trusted audit collections so we don't have to
+# re-audit the common foundation crates (serde, hashbrown, ...) from
+# scratch.  Our own workspace crates are marked first-party
+# (audit-as-crates-io = false) — they are reviewed via CODEOWNERS,
+# not via cargo-vet.
+#
+# Bootstrap status: imports + workspace policy are wired; the
+# exemptions list is intentionally empty here.  To backfill, an
+# operator runs:
+#
+#   cargo install --locked cargo-vet
+#   cargo vet                    # prints what needs audit decisions
+#   cargo vet regenerate exemptions
+#
+# Tracked in TODO.md under "cargo-vet bootstrap" — landing the
+# initial exemption set is a one-time pass; subsequent dep updates
+# accumulate gradually via Dependabot.
+
+[cargo-vet]
+version = "0.10"
+
+[imports.bytecode-alliance]
+url = "https://raw.githubusercontent.com/bytecodealliance/wasmtime/main/supply-chain/audits.toml"
+
+[imports.embark-studios]
+url = "https://raw.githubusercontent.com/EmbarkStudios/rust-ecosystem/main/audits.toml"
+
+[imports.google]
+url = "https://raw.githubusercontent.com/google/rust-crate-audits/main/audits.toml"
+
+[imports.mozilla]
+url = "https://raw.githubusercontent.com/mozilla/supply-chain/main/audits.toml"
+
+[imports.zcash]
+url = "https://raw.githubusercontent.com/zcash/rust-ecosystem/main/supply-chain/audits.toml"
+
+# First-party crates: not audited via cargo-vet, reviewed via CODEOWNERS.
+[policy.babbleon]
+audit-as-crates-io = false
+
+[policy.babbleon-cli]
+audit-as-crates-io = false
+
+[policy.babbleon-ns-helper]
+audit-as-crates-io = false
+
+[policy.babbleon-pam]
+audit-as-crates-io = false
