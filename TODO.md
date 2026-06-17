@@ -260,16 +260,12 @@ Triaged from a self-review against general secure-software practice.
 
 ### High leverage — land first
 
-- [ ] **`SECURITY.md` / RFC 9116 `security.txt`** at repo root.
-      Declares the disclosure channel, supported versions, response
-      SLA, and PGP key.  Standard for any security tool; its absence
-      is a credibility smell on day one.
-- [ ] **Memory zeroization of secrets via `zeroize`.**  `host_secret`,
-      `KEK`, vault payload bytes, passphrase buffer all currently
-      sit in `Vec<u8>` / `String` and are never wiped on drop.  Fix:
-      `zeroize::Zeroizing<Vec<u8>>` (or `secrecy::SecretBox`)
-      everywhere we hold key material.  Closes the core-dump /
-      paged-out / heap-reuse leakage class.
+- [x] **`SECURITY.md` / RFC 9116 `security.txt`** at repo root.
+      Shipped in commit `dc9e25d` (pre-session).
+- [x] **Memory zeroization of secrets via `zeroize`.**  Shipped in
+      commit `8c34403` (pre-session) — `host_secret`, KEK material,
+      and vault payload bytes now sit in `Zeroizing<Vec<u8>>` and
+      wipe on drop.
 - [x] **Constant-time comparison for secret-derived bytes** via
       `subtle::ConstantTimeEq`.  `crates/babbleon/src/crypto.rs` exposes
       `ct_eq(&[u8], &[u8]) -> bool`; `MappingTable::is_honey` now uses
@@ -277,15 +273,15 @@ Triaged from a self-review against general secure-software practice.
       nor the no-match outcome is leakable by timing.  Pattern set up
       for FIDO2 / Ed25519 sites where comparison against attacker input
       is load-bearing.
-- [ ] **Daemon hardening: refuse core dumps, refuse swap.**  At
-      startup the trusted-tier daemon (and the ns-helper) should call
+- [x] **Daemon hardening: refuse core dumps, refuse swap.**  Shipped
+      in commit `a8351bd` (pre-session).
+      `crates/babbleon/src/process_hardening.rs` calls
       `prctl(PR_SET_DUMPABLE, 0)`, `setrlimit(RLIMIT_CORE, 0)`, and
-      `mlockall(MCL_CURRENT | MCL_FUTURE)` (gated on
-      `RLIMIT_MEMLOCK`).  Closes the swap- and core-dump-leak class.
-- [ ] **`SAFETY:` comments on every `unsafe` block.**  We have
-      several (`libc::kill`, `libc::mkfifo`, the BPF probe).  Each
-      needs a one-line comment naming the invariants the caller
-      relies on.  Trivial; matters at audit time.
+      `mlockall(MCL_CURRENT | MCL_FUTURE)` at CLI start; failures
+      degrade gracefully (warn + continue) so containers without
+      CAP_IPC_LOCK still run.
+- [x] **`SAFETY:` comments on every `unsafe` block.**  Shipped in
+      commit `9348ae3` (pre-session).
 
 ### Crypto hygiene
 
