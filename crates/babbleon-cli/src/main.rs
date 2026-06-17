@@ -102,7 +102,7 @@ fn cmd_tpm_reseal() -> Result<()> {
     eprintln!("  3. babbleon init --tier tpm (re-seals with new PCR values)");
     eprintln!();
     eprintln!("Longer term: tpm2_policyauthorize lets an admin sign new PCR policies");
-    eprintln!("without rotating the host secret. Tracked in DEFERRED.md.");
+    eprintln!("without rotating the host secret. Tracked in TODO.md.");
     std::process::exit(2);
 }
 

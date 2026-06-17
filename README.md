@@ -20,10 +20,10 @@ Early development. M1 (Rust sandbox demo) lands; M3 (real Linux
 namespace enforcement with PAM + setuid helper) is the load-bearing
 piece and is next.
 
-See **TODO.md** for the ship checklist, **PLAN.md** for architecture,
-**RUST_PLAN.md** for the Rust realization, **RESEARCH.md** for the
-threat-model and prior-art notes, and **DEFERRED.md** for items
-explicitly punted with rationale.
+See **TODO.md** for the ship checklist (open and deferred items with
+rationale inline), **PLAN.md** for architecture, **RUST_PLAN.md** for
+the Rust realization, and **RESEARCH.md** for the threat-model and
+prior-art notes.
 
 ## Try it
 

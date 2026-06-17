@@ -149,7 +149,7 @@ Default to (1) for now; (2) is DEFERRED.
 ## What gets kept
 
 - `README.md` (rewritten for Rust install)
-- `PLAN.md`, `RESEARCH.md`, `DEFERRED.md`, `RUST_PLAN.md`
+- `PLAN.md`, `RESEARCH.md`, `TODO.md`, `RUST_PLAN.md`
 - `.gitignore` (updated for Rust artifacts)
 
 ## Acceptance criteria (Rust M1)
@@ -163,9 +163,9 @@ Default to (1) for now; (2) is DEFERRED.
 
 ## Out of scope for this rewrite session
 
-Same DEFERRED.md items as before — Rust doesn't change which items are
-deferred, only the language they'll eventually be written in. Specifically
-DEFERRED in the rewrite:
+Same deferred items as before, now consolidated in TODO.md — Rust
+doesn't change which items are deferred, only the language they'll
+eventually be written in. Specifically deferred in the rewrite:
 
 - pam_babbleon.so (still C, needed for PAM ABI)
 - ns-helper full body (skeleton only this session)

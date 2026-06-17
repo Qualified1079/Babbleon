@@ -4,7 +4,7 @@
 //! to a specific authenticator (YubiKey, Solokey, etc).  Touch required;
 //! private key never leaves the token.
 //!
-//! Compiled only with `--features fido2`.  See DEFERRED.md for the
+//! Compiled only with `--features fido2`.  See TODO.md for the
 //! get_assertion / PIN / multi-authenticator items.
 
 use crate::errors::{BabbleonError, Result};
