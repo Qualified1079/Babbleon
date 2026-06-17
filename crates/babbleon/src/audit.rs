@@ -453,6 +453,55 @@ mod tests {
     }
 
     #[test]
+    fn signed_verify_rejects_malformed_sig_hex() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("signed.jsonl");
+        let sk = SigningKey::generate(&mut OsRng);
+        let vk = sk.verifying_key();
+
+        let log = ChainedAuditLog::open_signed(&path, sk).unwrap();
+        log.emit(&rotation(0, 1));
+
+        // Corrupt the sig field to non-hex.
+        let content = std::fs::read_to_string(&path).unwrap();
+        let mut entry: ChainEntry = serde_json::from_str(content.trim()).unwrap();
+        entry.sig = Some("not-hex-at-all".to_string());
+        std::fs::write(&path, serde_json::to_string(&entry).unwrap() + "\n").unwrap();
+
+        let r = ChainedAuditLog::verify_signed(&path, &vk);
+        assert!(r.is_err(), "non-hex sig must fail");
+    }
+
+    #[test]
+    fn signed_verify_rejects_short_signature() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("signed.jsonl");
+        let sk = SigningKey::generate(&mut OsRng);
+        let vk = sk.verifying_key();
+
+        let log = ChainedAuditLog::open_signed(&path, sk).unwrap();
+        log.emit(&rotation(0, 1));
+
+        // Replace the sig with a too-short hex value.
+        let content = std::fs::read_to_string(&path).unwrap();
+        let mut entry: ChainEntry = serde_json::from_str(content.trim()).unwrap();
+        entry.sig = Some("dead".to_string()); // 2 bytes; need 64
+        std::fs::write(&path, serde_json::to_string(&entry).unwrap() + "\n").unwrap();
+
+        let r = ChainedAuditLog::verify_signed(&path, &vk);
+        match r {
+            Err(BabbleonError::Enforcement(msg)) => {
+                assert!(
+                    msg.contains("bad signature length"),
+                    "expected length-error message, got {msg:?}"
+                );
+            }
+            Err(other) => panic!("expected Enforcement err, got {other:?}"),
+            Ok(_) => panic!("short signature should fail"),
+        }
+    }
+
+    #[test]
     fn chain_verify_ignores_signature_field() {
         // A chain-only `verify` over a signed log should still succeed —
         // it doesn't inspect signatures, just hashes.  Useful for SIEM
