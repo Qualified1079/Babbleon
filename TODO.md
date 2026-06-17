@@ -306,10 +306,15 @@ Triaged from a self-review against general secure-software practice.
 
 ### Supply-chain + build integrity
 
-- [ ] **SLSA provenance + sigstore/cosign signing of release
-      artifacts.**  `cosign sign-blob` over each release tarball;
-      attestation logged to Rekor; verification documented for users.
-      Currently a release is just an unsigned tarball.
+- [x] **SLSA provenance + sigstore/cosign signing of release
+      artifacts.**  `.github/workflows/release.yml` ships a tag-
+      triggered workflow that: builds x86_64-linux-musl static
+      binaries, generates a per-release CycloneDX SBOM, keyless-signs
+      both with cosign (workflow OIDC identity, no long-lived
+      secrets), runs the official SLSA generator
+      (`slsa-framework/slsa-github-generator` v2.0.0) for L3
+      provenance, and attaches everything to a draft GitHub Release.
+      Verification flow in `docs/verify-release.md`.
 - [x] **SBOM generation in CycloneDX or SPDX.**  `.github/workflows/ci.yml`
       gained an `sbom` job that runs `cargo cyclonedx --format json`
       and uploads `babbleon-sbom*.cdx.json` as a 90-day artifact on
@@ -427,21 +432,22 @@ Triaged from a self-review against general secure-software practice.
       contents: read` plus an explicit per-job restatement; every job
       runs read-only against `GITHUB_TOKEN`.  Scorecard Token-
       Permissions should now report green.
-- [ ] **Run Scorecard against the repo** as a scheduled CI workflow
-      and publish the score in README.
+- [x] **Run Scorecard against the repo** as a scheduled CI workflow
+      and publish the score in README.  `.github/workflows/scorecard.yml`
+      runs weekly + on branch-protection-rule changes + on push to
+      `main`; uploads SARIF to the GitHub code-scanning dashboard.
+      README badge is filed for the first run (needs the public
+      Scorecard repo ID).
 
 ### From the standards survey — SLSA
 
-- [ ] **SLSA L2 release workflow.**  GitHub Actions release.yml
-      that produces `intoto` provenance via
-      `slsa-framework/slsa-github-generator`, signs via sigstore,
-      attaches both to the release.  Current state: SLSA L0
-      (workstation tarballs).
-- [ ] **`docs/verify-release.md`** with the `cosign` + `slsa-verifier`
-      commands users run to verify provenance.
-- [ ] **SLSA L3 target** — v2 stretch.  Probably via the official
-      reusable workflow which is documented L3-conformant on
-      GitHub-hosted runners.
+- [x] **SLSA L2 release workflow.** (Subsumed below — landed at L3
+      directly via the reusable generator.)
+- [x] **`docs/verify-release.md`** with the `cosign` + `slsa-verifier`
+      commands users run to verify the signature, provenance, and SBOM.
+- [x] **SLSA L3 target** — landed in `.github/workflows/release.yml`
+      via `slsa-framework/slsa-github-generator@v2.0.0`'s reusable
+      generic generator (L3-conformant on GitHub-hosted runners).
 
 ### From the standards survey — CWE Top 25 audit
 
