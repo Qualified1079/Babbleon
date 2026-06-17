@@ -1,0 +1,13 @@
+# RFC 9116 security.txt
+# https://www.rfc-editor.org/rfc/rfc9116
+#
+# Replace the placeholder values before public release.
+
+Contact: mailto:security@babbleon.dev
+Contact: https://github.com/qualified1079/babbleon/security/advisories/new
+Expires: 2027-06-15T00:00:00.000Z
+Encryption: https://babbleon.dev/.well-known/pgp.asc
+Acknowledgments: https://github.com/qualified1079/babbleon/blob/main/docs/reporters.md
+Preferred-Languages: en
+Canonical: https://babbleon.dev/.well-known/security.txt
+Policy: https://github.com/qualified1079/babbleon/blob/main/SECURITY.md
