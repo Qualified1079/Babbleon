@@ -14,7 +14,7 @@ through the 12-item security-practice priority cluster, plus the
 follow-ups it surfaced (CWE Top 25 documentary audit, SSDF policy
 doc, MAC profile templates, supply-chain hardening).
 
-**Total tests: 128 across the workspace, all green.** (Was 81 at
+**Total tests: 130 across the workspace, all green.** (Was 81 at
 the start of the predecessor session.)
 
 The threat model from the session before this is unchanged: two
@@ -49,8 +49,14 @@ expressions (E1–E4).  See `docs/threat-model.md`.
 | 20 | `406f753` | readme: CI badges + security artifact index |
 | 21 | `9b584ef` | supply-chain: cargo-vet bootstrap (config + imports) |
 | 22 | `512f372` | fmt: rustfmt sweep over audit.rs + backup.rs |
+| 23 | `898bd9b` | ci: cargo-vet job (soft-fail during bootstrap) |
+| 24 | `1b11aa1` | cli: wire backup + restore subcommands through RestorePolicy |
+| 25 | `00cd862` | scrambler: five example puzzles for the adversarial-LLM harness |
+| 26 | `101c659` | todo: mark pre-session checked items |
+| 27 | `c607770` | tests: two more regression tests on the rate-limit + sidecar path |
+| 28 | `fab178c` | fmt: rustfmt sweep over the new backup CLI command |
 
-22 commits.  All push targeted `claude/magical-turing-mele8c`.
+28 commits.  All push targeted `claude/magical-turing-mele8c`.
 
 ---
 
@@ -76,11 +82,12 @@ All 12 closed.
 ## Open follow-ups (next-session pickup queue)
 
 ### Code work (small / medium)
-- Wire the new `RestorePolicy` through the CLI's `restore` subcommand
-  (the bundle structure is ready in `backup.rs`; CLI subcommand
-  doesn't exist yet)
-- `cargo-vet` first-pass exemption backfill (`cargo vet regenerate
-  exemptions`) plus a CI gate
+- Filesystem-side execution of the `RestorePolicy::RewrapToCurrent`
+  rename plan (CLI `restore` currently prints the plan only — the
+  bundle parsing, policy resolution, and rename list are wired)
+- `cargo-vet` first-pass exemption backfill (run `cargo vet
+  regenerate exemptions` on a clean tree, then flip the CI job's
+  `continue-on-error` off)
 - ns-helper privilege-chain ordering test (the CWE-269 audit walks
   the order; no programmatic test confirms refactors don't break it)
 - Tokenizer benchmark — Claude tokenizer via count-tokens API; smaller
@@ -220,7 +227,7 @@ After each commit:
 
 128 tests across the workspace, all green.
 
-- 107 lib unit tests
+- 109 lib unit tests
 - 3 corpus-fingerprint integration tests
 - 5 enforcement integration tests
 - 4 fingerprint integration tests
