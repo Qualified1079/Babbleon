@@ -91,12 +91,17 @@ code items are phases 1-6.
 Layers 6-12, filed from `docs/v2/obfuscation-landscape.md`.  Each
 composes with the phase-3 five-layer base; they don't replace it.
 
-- [ ] **Layer 6 — direction segment reversal.**  Byte-reverse
-      marked segments; preprocessor reverses back on emission.
-      Lower priority than 2-5 because gain is smaller and
-      preprocessor cost is similar.  Display-bidi rejected as
-      theatre (collides with Trojan Source linters; LLMs see
-      bytes not display).
+- [ ] **Layer 6 — direction segment reversal with marker
+      wordlist.**  Byte-reverse marked segments; preprocessor
+      reverses back on emission.  Marker-as-target objection
+      resolved: 20k-word per-epoch *marker wordlist* drawn from
+      the same pool that feeds layers 1-5; compounds mix marker
+      tokens with junk-decoy tokens so an attacker who learns
+      "flip belongs to the marker class" still cannot tell which
+      sub-token of `craigblastflip` IS the marker.  Same
+      defence-in-depth as identifier scramble.  Display-bidi
+      rejected as theatre (collides with Trojan Source linters;
+      LLMs see bytes not display).
 - [ ] **Layer 7 — source-level control-flow flattening.**
       Composes with layers 2-5: existing unflatteners (D810,
       CaDeCFF) pattern-match against switch-case shapes that
@@ -114,11 +119,20 @@ composes with the phase-3 five-layer base; they don't replace it.
       Host-path string literals rewritten to consult the
       scrambled-path table at runtime.  Not general string
       obfuscation (that changes program semantics).
-- [ ] **Layer 11 — defensive prompt injection.**  Adversarial
-      prompts in scrambled-source decoy stream.  Operator opt-in
-      (some operators may not want adversarial prompts in their
-      codebase for liability reasons).  Composes with layer 5
-      decoys.
+- [ ] **Layer 11 — defensive prompt injection (DIRECT
+      implementation, opt-in default ON).**  Real-world precedent
+      established: CVE-2025-53773 (GitHub Copilot RCE via prompt
+      injection in code comments).  Vendor garak (Apache 2.0)
+      probe payloads — ~500 to start — into
+      `crates/babbleon-core/wordlist/prompt-injection-payloads/`
+      with attribution.  Per-epoch random selection from the
+      pool means rotation rotates adversarial prompts for free.
+      Operator opt-out via config; install doc surfaces a clear
+      disclaimer that source files now contain adversarial
+      prompts that may upset CI lint / AI code review tooling.
+      Other corpora (BIPIA Microsoft, IPI Arena, LLMail-Inject,
+      PINT, Purple Llama Meta, OWASP cheat sheet) need per-LICENSE
+      check before adding.
 - [ ] **Layer 12 — mixed-charset / ZWJ / NFKC tokenizer tricks.**
       Confined to the scrambled-source representation; the
       preprocessor strips before emission so the interpreter
@@ -139,12 +153,24 @@ composes with the phase-3 five-layer base; they don't replace it.
 
 ### Phase 4 — multi-language wordlists
 
-- [ ] Add ES, FR, DE wordlists (cheap; permissive licenses)
-- [ ] Add JA, ZH, AR, RU wordlists (more curation)
-- [ ] Per-epoch language cycling logic in `babbleon-core`
+- [ ] **Vendor [HermitDave/FrequencyWords](https://github.com/hermitdave/FrequencyWords)
+      multilingual lists** (MIT license, 61 languages from
+      OpenSubtitles 2018).  Source identified 2026-06-15.
+      Provisional N=100k entries per language; 16 languages →
+      ~1.6M total.  Top 16 by language: EN (already shipped),
+      ES, FR, DE, JA, ZH-Hans, ZH-Hant, AR, RU, PT-BR, IT, NL,
+      PL, TR, HI, KO.  Settle final list per phase 4.
+- [ ] Per-epoch language cycling logic in `babbleon-core`.
 - [ ] Re-run `tools/tokenizer-benchmark/` on multilingual
       compounds vs spaced English; smaller-model superlinear
-      hypothesis
+      hypothesis.
+- [ ] Wordlist-pool allocation table — which N-word subset
+      goes to which role (identifier / keyword / whitespace /
+      decoy / direction-marker / prompt-injection) per epoch.
+      Disjoint subsets prevent cross-class leakage.  Sizes
+      provisional: identifier ~370k, decoy ~100k, direction
+      marker ~20k, whitespace ~10k, keyword ~5k per language,
+      prompt-injection ~0.5k.
 
 ### Phase 5 — hardware backends
 

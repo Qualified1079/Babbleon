@@ -61,17 +61,36 @@ Composes with whitespace-as-words (layer 3): the attacker can't
 even tell where a segment starts because there are no line
 breaks.
 
-**Costs:**
+**The marker-as-attacker-target objection — resolved.**  Initial
+filing flagged that direction markers themselves could be picked
+out and inverted-by-rule.  Operator (2026-06-15) corrected this:
+**the marker wordlist gets the same defence-in-depth as the
+identifier wordlist.**  Specifically: dedicate ~20 000 words per
+epoch to "this is a direction marker".  Compounds are wordlist
+concatenations as in layer 1.
 
-- Preprocessor complexity — must locate markers without ambiguity.
-- The direction markers themselves become attacker targets — if
-  the marker compound is identifiable, the attacker reverses by
-  rule.
+Example: in compound `CRAIGBLASTFLIP`, if `craig` and `blast` are
+junk-decoy tokens (layer 5) and only `flip` is the direction
+marker — an attacker who somehow learned that `flip` belongs to
+the marker class still doesn't know which sub-token of any given
+compound IS the marker.  Three plausible markers per compound and
+a 20k-marker-wordlist-per-epoch turns marker extraction into the
+same problem as identifier extraction: not solvable without the
+per-host secret.
+
+**Costs (revised):**
+
+- Preprocessor complexity — must locate markers without ambiguity
+  (token-position rule + wordlist membership check).
+- Marker wordlist allocation: ~20k words per epoch from the same
+  large pool that feeds layers 1-5.  Disjoint subsets per role
+  to prevent cross-class leakage.
 - Adds latency to preprocessor (one extra pass).
 
-**Verdict: file as v2 layer 6 (after the existing 5).**  Lower
-priority than whitespace-as-words because the gain is smaller and
-the preprocessor cost is similar.
+**Verdict: file as v2 layer 6 (after the existing 5).**  Now
+mid-priority, because the marker-as-target objection is closed.
+Still ranks below whitespace-as-words because the gain is
+smaller per-byte.
 
 Sources:
 
@@ -204,6 +223,14 @@ attacker-LLM ingestion.  Original idea: Pasquini et al. 2024
 - [SecAlign: Defending Against Prompt Injection with Preference Optimization (2410.05451)](https://arxiv.org/abs/2410.05451)
 - [StruQ: Structured Queries (2402.06363)](https://arxiv.org/pdf/2402.06363)
 - [Polymorphic Prompt defence (2506.05739)](https://arxiv.org/pdf/2506.05739)
+- [Hidden-Comment Injection in LLM Agents (2602.10498)](https://arxiv.org/html/2602.10498v1) — academic
+  documentation of HTML-comment-hidden prompt injection.  Same
+  *mechanism* in reverse: the defender hides their own prompts
+  where the attacker LLM ingests them but the legitimate
+  reviewer doesn't see them.
+- **CVE-2025-53773** — GitHub Copilot RCE via prompt injection
+  in code comments.  This is the production-attack proof point.
+  Defensive flip uses the same channel.
 
 **Caveat:** [Adaptive attacks bypass defences (2510.09023, "The
 attacker moves second")](https://arxiv.org/html/2510.09023v1)
@@ -220,10 +247,61 @@ attacker model that ingests a Babbleon-protected file has to:
 Each step is per-rotation work.  Sub-second rotation defeats the
 chain even if each individual step is solvable.
 
-**Verdict: file as v2 layer 11.**  Embed defensive prompts in the
-scrambled-source decoy stream.  Operator can opt out (some
-operators may not want adversarial prompts in their codebase for
-liability reasons).
+### Defensive prompt injection — masterlists and value proposition
+
+Operator question (2026-06-15): does defensive prompt injection
+add enough value to ship as part of the direct Babbleon
+implementation (not just an optional add-on)?  Are there
+prompt-injection masterlists analogous to the wordlists?
+
+**Yes to both.**  Multiple open-source corpora exist.  Triaged by
+licence:
+
+| Corpus | License | Notes |
+|---|---|---|
+| **[garak (NVIDIA)](https://github.com/NVIDIA/garak)** | **Apache 2.0** | Generative AI red-teaming kit; stable 0.13.0 (Sept 2025); includes a broad probe library with indirect-injection payloads.  Vendor-able with attribution. |
+| [BIPIA (Microsoft)](https://github.com/microsoft/BIPIA) | LICENSE file (verify before vendoring) | Indirect-prompt-injection benchmark; portions sourced from OpenAI Evals, WikiTableQuestions, Stack Exchange (each with own terms). |
+| [IPI Arena (Gray Swan)](https://github.com/grayswansecurity/ipi_arena_os) | check repo | 41 behaviours across tool-use, coding, computer-use agents. |
+| [LLMail-Inject (arXiv 2506.09956)](https://arxiv.org/pdf/2506.09956) | check paper | Realistic adaptive injection challenge. |
+| [PINT (Lakera)](https://github.com/lakeraai/pint-benchmark) | check repo | Detection benchmark; less directly applicable as a payload source. |
+| [Purple Llama CyberSecEval (Meta)](https://github.com/facebookresearch/PurpleLlama) | LICENSE in repo | Direct + indirect injection benchmark sets. |
+| OWASP LLM Prompt Injection Prevention Cheat Sheet | CC-BY-SA | Defender-oriented; useful for pattern catalogue. |
+
+**Recommended v2 plan: include defensive prompt injection in the
+direct Babbleon implementation, opt-in via config flag, default
+ON.**  Reasons:
+
+1. **Real-world precedent exists.**  CVE-2025-53773 shows the
+   attack channel is exploited in production.  Defensive use of
+   the same channel is symmetric.
+2. **Open-source corpora are readily available** — at minimum
+   `garak` (Apache 2.0, license-clean for vendoring) provides
+   thousands of probe payloads.
+3. **Composes with rotation.**  Per-epoch random selection from
+   a vendored payload pool means the attacker can't pre-train
+   against a fixed list — adversarial-prompt rotation comes
+   free with mapping rotation.
+4. **Composes with layers 3 + 5.**  Defensive prompts are
+   hidden among layer-3 wall-of-text and layer-5 junk decoys;
+   only an attacker LLM that ingests-then-strips will see them.
+   The strip step is per-rotation work.
+
+**Liability concerns documented in `docs/v2/structure-scrambling.md`
+phase 4 plan:** operator opt-out via config; surface a clear
+disclaimer in the install doc that "your source files now contain
+adversarial prompts intended to derail unauthorised LLM
+ingestion; some downstream tools (CI lint, AI code review) may
+react."
+
+**Vendoring policy proposal:** vendor a subset of garak's
+indirect-injection probes (~500 payloads to start) into
+`crates/babbleon-core/wordlist/prompt-injection-payloads/` with
+Apache 2.0 attribution.  Per-epoch random selection draws from
+this subset.  No legal review blocker.
+
+**Verdict: file as v2 layer 11.**  Promoted from "optional
+side-loadable" to "direct implementation, opt-in via config,
+default ON."
 
 ### Tokenizer-hostile patterns (beyond word-compounds)
 
@@ -428,6 +506,34 @@ phase 3.5).  TEE work is v3.
 
 ---
 
+## Multi-language wordlist sources — research
+
+Layer 4 / phase-4 multi-language wordlists need actual wordlists.
+Searched 2026-06-15 and identified:
+
+**[HermitDave/FrequencyWords](https://github.com/hermitdave/FrequencyWords)
+— MIT license, 61 languages from OpenSubtitles 2018.**  Includes
+Spanish, French, German, Japanese, Chinese (Simplified +
+Traditional), Arabic, Russian, and 53 others.  Frequency-ranked.
+Code MIT; underlying OpenSubtitles data is CC-BY-SA (attribution
+flows through, but no licence conflict for our use).  **This is
+the v2 multilingual wordlist source.**
+
+Considered and rejected:
+
+- **Dict.cc** — proprietary licence post-2018.
+- **Multitran** — proprietary.
+- **LingoPad** — freeware (unclear redistribution).
+- **Refugee Phrasebook** — CC0 but a phrasebook, not a wordlist.
+
+**Action:** vendor frequency-ranked top-N entries per language
+into `crates/babbleon-core/wordlist/multilingual/` with the
+HermitDave MIT licence preserved.  Decide N per language during
+phase 4; provisional 100k per language → 1.6M total across 16
+languages.
+
+---
+
 ## What this research does NOT close
 
 - The structural-scrambling design (`structure-scrambling.md`)
@@ -440,6 +546,10 @@ phase 3.5).  TEE work is v3.
   individual-developer-laptop deployment (where TEE is not
   available), or enterprise / cloud deployment (where it is)?
   Different priorities.
+- The defensive-prompt-injection vendoring legal pass (garak
+  Apache 2.0 is clean; BIPIA, IPI Arena, LLMail-Inject, PINT,
+  Purple Llama each need per-LICENSE check before we vendor
+  from them).
 
 ---
 
