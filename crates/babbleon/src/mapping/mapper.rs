@@ -167,6 +167,28 @@ mod tests {
             .collect()
     }
 
+    /// Wordlist invariants this crate's security claims depend on.
+    /// Detailed rationale in `wordlist/README.md`.
+    #[test]
+    fn wordlist_is_lowercase_alpha_only() {
+        // Invariant 1 — closes CWE-22 for every scrambled wrapper name.
+        for (i, w) in words().iter().enumerate() {
+            assert!(
+                !w.is_empty() && w.bytes().all(|b| b.is_ascii_lowercase()),
+                "wordlist line {i}: {w:?} contains non-[a-z] bytes"
+            );
+        }
+    }
+
+    #[test]
+    fn wordlist_has_sufficient_entries() {
+        // Invariant 2 — per-host adaptation gap.  370k is the current
+        // size; 200k is the floor below which 4-word compounds collide
+        // measurably at realistic host counts.
+        let n = words().len();
+        assert!(n >= 200_000, "wordlist shrank to {n}; minimum is 200k");
+    }
+
     #[test]
     fn no_collisions() {
         let t = Mapper::new(&[5u8; 32]).build_table(&tools(), 0);
