@@ -357,27 +357,76 @@ Triaged from a self-review against general secure-software practice.
       paths; required by branch protection for any meaningful "two
       reviewers required" policy.
 
-### Standards survey to complete
+### Standards survey
 
-- [ ] **Confirm against OWASP ASVS 5.0** (released May 2025) — the
-      350-requirement, 17-category standard for application security
-      verification.  ASVS 5.0 modernizes for cloud-native
-      architectures and adds clearer crypto / supply-chain controls.
-      Map Babbleon's design + tests onto ASVS controls; identify
-      gaps.  See `https://github.com/OWASP/ASVS`.
-- [ ] **Confirm against NIST SP 800-218 (SSDF v1.1)** secure software
-      development practices, especially the PO/PS/PW/RV practice
-      families and the supply-chain integrity profile.  Required
-      reading for any federal procurement path.
-- [ ] **Confirm against CWE Top 25** — make sure none of the Top 25
-      weakness classes have an obvious presence in the current code.
-- [ ] **Confirm against the SLSA v1.0 build levels** — current build
-      sits at SLSA L0; target L2 (hosted CI with provenance) for v1
-      release and L3 (hardened builder) for v2.
+- [x] **Survey completed** — see `docs/standards-survey.md`.  Maps
+      Babbleon against OWASP ASVS 5.0 (17 chapters, ~350 reqs), NIST
+      SSDF v1.1 (PO/PS/PW/RV families), OpenSSF Scorecard (20 active
+      checks), SLSA v1.0 (L0–L3 build levels), and CWE Top 25 (2024
+      ranked list).  Gap items below are taken from that survey.
 
-These four standards-survey items were going to be covered by a web
-search in this session; session limit was hit before the survey
-completed.  Resume against the live documents.
+### From the standards survey — SSDF / Scorecard
+
+- [ ] **`docs/secure-development-policy.md`** — explicit policy doc
+      covering branch protection, required reviewers, allowed
+      crates, dependency-update cadence, release-signing procedure.
+      Maps to SSDF PO.1–PO.5.  Required for any federal procurement
+      pitch.
+- [ ] **`cargo-llvm-cov`** (or `cargo-tarpaulin`) coverage measured
+      in CI.  Maps to SSDF PW.8.  Measurable, not just claimed.
+- [ ] **`cargo-deny` policy sweep** — ban yanked deps, ban
+      non-permissive licenses, ban git-source deps in release.
+      Partially configured today; needs re-review against current
+      SSDF guidance.
+- [ ] **Enable branch protection on the remote** — require PR
+      review, require status checks pass, no force-push to main,
+      signed commits required.  Scorecard Branch-Protection check.
+- [ ] **Configure Dependabot** — weekly cadence on `cargo` +
+      `github-actions` ecosystems.  Scorecard Dependency-Update-Tool.
+- [ ] **Audit `.github/workflows/*.yml` for explicit `permissions:`
+      blocks.**  Scorecard Token-Permissions check flags missing-or-
+      write-all defaults.
+- [ ] **Run Scorecard against the repo** as a scheduled CI workflow
+      and publish the score in README.
+
+### From the standards survey — SLSA
+
+- [ ] **SLSA L2 release workflow.**  GitHub Actions release.yml
+      that produces `intoto` provenance via
+      `slsa-framework/slsa-github-generator`, signs via sigstore,
+      attaches both to the release.  Current state: SLSA L0
+      (workstation tarballs).
+- [ ] **`docs/verify-release.md`** with the `cosign` + `slsa-verifier`
+      commands users run to verify provenance.
+- [ ] **SLSA L3 target** — v2 stretch.  Probably via the official
+      reusable workflow which is documented L3-conformant on
+      GitHub-hosted runners.
+
+### From the standards survey — CWE Top 25 audit
+
+- [ ] **CWE-22 documentary audit** on wrapper-path construction.
+      Scrambled name is an HMAC-output compound (can never contain
+      `/` or `..`).  Audit is documentary, but record it.
+- [ ] **CWE-78 / 77 / 94 wrapper-renderer audit.**  `render()` in
+      `enforcement/wrapper.rs` uses `String::replace` over
+      placeholders — NOT shell-safe escaping.  Decoy banner is
+      single-quote-escaped; verify the other substitution fields
+      (scrambled name, real path, ns_inode) cannot be
+      attacker-controlled.  Trace the chain of trust to vault
+      material.  Fuzz target on the renderer is filed.
+- [ ] **CWE-400 length-bounded honey-FIFO reader.**  Cap
+      `BufReader::with_capacity` and add a per-line length limit
+      so a runaway producer cannot OOM the daemon.
+- [ ] **CWE-798 documentary note for SALT constants** in `soft.rs`
+      and `usb.rs` — explain that SALT is a public domain-separation
+      tag, not a secret.  HKDF migration will make this obvious by
+      type; until then, the comment closes the audit finding.
+- [ ] **CWE-269 documentary audit** on the ns-helper privilege
+      chain.  Walk cap-drop / NNP / seccomp sequence and document
+      why no step can retain residual privilege if the next step
+      fails.
+
+---
 
 ## Cross-cutting / hygiene
 
