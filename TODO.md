@@ -81,23 +81,24 @@ messages.
 - [x] Adversarial fingerprint test vs captured real-tool `--help` corpora
       (`tests/corpus_fingerprint.rs`)
 - [x] Wrapper-size fingerprint leak — fixed via unified template
-- [ ] **Honey tripwire response policy.**  `crates/babbleon/src/events.rs`.
-      `HoneyTriggered` currently only fans out to sinks; no active
-      response.  Planned `ResponsePolicy` enum, selectable per host:
-      `NotifyOnly` (current baseline) · `KillTrigger` (SIGKILL the
-      wrapper's PPID, guarded by `/proc/<ppid>/stat` start-time check
-      to defeat PID-reuse races) · `KillTriggerTree` (`kill -KILL
-      -<pgid>`) · `Quarantine` (move into a freezer cgroup) ·
-      `SystemAlert` (escalate to PAM / login-blocking).  Same-uid
-      kills are free; cross-uid needs CAP_KILL via the ns-helper.
-- [ ] **Stale-mapping tripwire.**  `crates/babbleon/src/mapping/mapper.rs`.
-      Current honey set catches random guessing and wordlist scrapes;
-      it does NOT catch an attacker who exfiltrated a mapping at
-      epoch T and tries to use it at T+1.  Plan: retain previous K
-      epochs' scrambled→real maps in a `StaleMappingIndex`; any exec
-      against a name in that index fires `HoneyTriggered` with a
-      `source` tag.  Cheap, high-signal, complements the existing
-      random honey set.
+- [x] **Honey tripwire response policy** —
+      `crates/babbleon/src/enforcement/response.rs`.  `ResponsePolicy`
+      enum with `NotifyOnly` (default) · `KillTrigger` (SIGKILL the
+      wrapper's PPID, with /proc start-time check to defeat PID
+      reuse) · `KillTriggerTree` (`kill -KILL -<pgid>`).  Wrapper
+      template now captures PPID + start-time and tags FIFO output
+      with `source`.  `HoneyTriggered` event carries structured
+      `triggering_pid` / `triggering_pid_start`.  Operator selects via
+      `BABBLEON_HONEY_POLICY` env-var.  Quarantine + SystemAlert filed
+      as M3.5+++ follow-ups (need cgroup / PAM integration).
+- [x] **Stale-mapping tripwire** —
+      `crates/babbleon/src/mapping/mapper.rs` + wrapper template +
+      CLI.  `Mapper::stale_names_for_previous_epochs(tracked, epoch,
+      STALE_RETAIN_EPOCHS=8)` returns scrambled names from previous
+      epochs; CLI writes `/run/babbleon/stale.list`; wrapper template
+      checks the list and fires `HoneyTriggered { source: Stale }`
+      via FIFO.  Honey match takes precedence over stale when both
+      lists contain a name (random-guess catcher wins ties).
 - [ ] **Background wordlist-permutation pre-build.**
       `crates/babbleon/src/mapping/fpe.rs`.  Each fresh epoch costs
       ~18 ms Fisher-Yates over the 370k-word permutation

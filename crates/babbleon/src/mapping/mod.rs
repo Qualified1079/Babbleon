@@ -6,4 +6,4 @@
 pub mod fpe;
 mod mapper;
 
-pub use mapper::{Mapper, MappingTable, COMPOUND_N, HONEY_COUNT};
+pub use mapper::{Mapper, MappingTable, COMPOUND_N, HONEY_COUNT, STALE_RETAIN_EPOCHS};

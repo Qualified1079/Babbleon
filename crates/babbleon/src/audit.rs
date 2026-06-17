@@ -170,6 +170,10 @@ mod tests {
         log.emit(&Event::HoneyTriggered {
             epoch: 1,
             names: vec!["xx".into()],
+            source: crate::events::TripwireSource::Honey,
+            wrapper_pid: 99,
+            triggering_pid: None,
+            triggering_pid_start: None,
             process_hint: "pid=99".into(),
         });
         let count = ChainedAuditLog::verify(&path).unwrap();

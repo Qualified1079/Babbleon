@@ -29,6 +29,13 @@ pub const HONEY_FIFO: &str = "/run/babbleon/honey.fifo";
 /// File listing one honey name per line; written by `write_honey_list`.
 pub const HONEY_LIST: &str = "/run/babbleon/honey.list";
 
+/// File listing one stale-mapping name per line — names that were the
+/// scrambled mapping for some real tool in a previous epoch.  An attacker
+/// using cached intel from a prior reconnaissance round will hit one of
+/// these; legitimate users have no reason to type them.  Written by
+/// `write_stale_list`.
+pub const STALE_LIST: &str = "/run/babbleon/stale.list";
+
 /// Unified shell template used for BOTH honey and real-tool wrappers.
 ///
 /// Fields:
@@ -45,6 +52,7 @@ _BL_NAME="{self_name}"
 _BL_REAL="{real_path}"
 _BL_NS_INODE="{ns_inode}"
 _BL_HONEY_LIST="{honey_list}"
+_BL_STALE_LIST="{stale_list}"
 _BL_FIFO="{honey_fifo}"
 _in_trusted_ns() {
     _cur=$(stat -Lc '%i' /proc/self/ns/mnt 2>/dev/null) || return 1
@@ -53,10 +61,27 @@ _in_trusted_ns() {
 _is_honey() {
     grep -qxF "$_BL_NAME" "$_BL_HONEY_LIST" 2>/dev/null
 }
-if _is_honey; then
+_is_stale() {
+    grep -qxF "$_BL_NAME" "$_BL_STALE_LIST" 2>/dev/null
+}
+_fire_tripwire() {
+    # $1 = source tag ("honey" or "stale")
     _ts=$(date -u +%s 2>/dev/null || echo 0)
-    printf '{"ts":%s,"pid":%s,"honey":"%s","args":"%s"}\n' \
-        "$_ts" "$$" "$_BL_NAME" "$*" >> "$_BL_FIFO" 2>/dev/null || true
+    # Parent process info — what the responder will act on.  Read PPID
+    # and its start-time (field 22 of /proc/<ppid>/stat) so the
+    # responder can verify identity against PID reuse.
+    _ppid=$(awk '{print $4}' /proc/$$/stat 2>/dev/null || echo 0)
+    _pstart=$(awk '{print $22}' "/proc/$_ppid/stat" 2>/dev/null || echo 0)
+    printf '{"ts":%s,"pid":%s,"ppid":%s,"ppid_start":%s,"source":"%s","honey":"%s","args":"%s"}\n' \
+        "$_ts" "$$" "$_ppid" "$_pstart" "$1" "$_BL_NAME" "$*" \
+        >> "$_BL_FIFO" 2>/dev/null || true
+}
+if _is_honey; then
+    _fire_tripwire honey
+    exit 127
+fi
+if _is_stale; then
+    _fire_tripwire stale
     exit 127
 fi
 case "$1" in
@@ -77,11 +102,13 @@ fn wrapper_padding(name: &str, host_secret: &[u8]) -> String {
     hex::encode(&h.finalize()[..16])
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render(
     name: &str,
     real_path: &str,
     ns_inode: &str,
     honey_list: &str,
+    stale_list: &str,
     honey_fifo: &str,
     decoy_banner: &str,
     host_secret: &[u8],
@@ -93,6 +120,7 @@ fn render(
         .replace("{real_path}", real_path)
         .replace("{ns_inode}", ns_inode)
         .replace("{honey_list}", honey_list)
+        .replace("{stale_list}", stale_list)
         .replace("{honey_fifo}", honey_fifo)
         .replace("{decoy_banner}", &decoy)
 }
@@ -126,6 +154,7 @@ pub fn write_wrapper(
         &real_path.display().to_string(),
         &inode_str,
         HONEY_LIST,
+        STALE_LIST,
         HONEY_FIFO,
         decoy_banner.unwrap_or(""),
         host_secret,
@@ -158,6 +187,7 @@ pub fn write_tripwire_script(
         "/dev/null",
         "0",
         HONEY_LIST,
+        STALE_LIST,
         fifo_path,
         "",
         host_secret,
@@ -193,14 +223,31 @@ pub fn write_honey_list<'a, I>(honey_names: I, path: Option<&Path>) -> Result<()
 where
     I: IntoIterator<Item = &'a str>,
 {
-    let p = path.unwrap_or_else(|| Path::new(HONEY_LIST));
+    write_name_list(honey_names, path.unwrap_or_else(|| Path::new(HONEY_LIST)))
+}
+
+/// Write `/run/babbleon/stale.list` (or `path`) with one stale name per line.
+///
+/// Stale names are scrambled names from previous epochs that have rotated
+/// out.  Any process that types one is using cached intel from before the
+/// last rotation; legitimate users have no source for these names.  The
+/// wrapper template reports stale-list hits to the honey FIFO with
+/// `source="stale"`.
+pub fn write_stale_list<'a, I>(stale_names: I, path: Option<&Path>) -> Result<()>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    write_name_list(stale_names, path.unwrap_or_else(|| Path::new(STALE_LIST)))
+}
+
+fn write_name_list<'a, I>(names: I, p: &Path) -> Result<()>
+where
+    I: IntoIterator<Item = &'a str>,
+{
     if let Some(parent) = p.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let content: String = honey_names
-        .into_iter()
-        .flat_map(|n| [n, "\n"])
-        .collect();
+    let content: String = names.into_iter().flat_map(|n| [n, "\n"]).collect();
     std::fs::write(p, content)?;
     Ok(())
 }
@@ -336,12 +383,15 @@ mod tests {
         let fifo_file = dir.path().join("honey.fifo");
 
         // Render with custom honey_list/fifo paths pointing into our temp dir.
+        let stale_file = dir.path().join("stale.list");
+        std::fs::write(&stale_file, "").unwrap();
         let honey_name = "xq-marble-fern";
         let contents = render(
             honey_name,
             "/dev/null",
             "0",
             list_file.to_str().unwrap(),
+            stale_file.to_str().unwrap(),
             fifo_file.to_str().unwrap(),
             "",
             b"secret",
@@ -370,12 +420,15 @@ mod tests {
         std::fs::write(&list_file, "xq-marble-fern\n").unwrap();
         let log_file = dir.path().join("honey.log");
 
+        let stale_file = dir.path().join("stale.list");
+        std::fs::write(&stale_file, "").unwrap();
         let honey_name = "xq-marble-fern";
         let contents = render(
             honey_name,
             "/dev/null",
             "0",
             list_file.to_str().unwrap(),
+            stale_file.to_str().unwrap(),
             log_file.to_str().unwrap(),
             "",
             b"secret",
@@ -435,5 +488,104 @@ mod tests {
         assert!(content.contains("alpha\n"));
         assert!(content.contains("beta\n"));
         assert!(content.contains("gamma\n"));
+    }
+
+    #[test]
+    fn stale_list_written_correctly() {
+        let dir = tempfile::tempdir().unwrap();
+        let list = dir.path().join("stale.list");
+        write_stale_list(["old-curl-name", "old-ssh-name"], Some(&list)).unwrap();
+        let content = std::fs::read_to_string(&list).unwrap();
+        assert!(content.contains("old-curl-name\n"));
+        assert!(content.contains("old-ssh-name\n"));
+    }
+
+    #[test]
+    fn stale_match_fires_source_stale_event() {
+        // End-to-end: a wrapper whose own name is in stale.list (but
+        // NOT in honey.list) must report to the FIFO with
+        // source="stale" and exit 127 — same shape as a honey hit but
+        // with a different source tag.
+        use std::io::Read;
+        let dir = tempfile::tempdir().unwrap();
+        let honey_list = dir.path().join("honey.list");
+        std::fs::write(&honey_list, "").unwrap();
+        let stale_list = dir.path().join("stale.list");
+        std::fs::write(&stale_list, "stale-target-name\n").unwrap();
+        let log = dir.path().join("honey.log");
+
+        let name = "stale-target-name";
+        let contents = render(
+            name,
+            "/dev/null",
+            "0",
+            honey_list.to_str().unwrap(),
+            stale_list.to_str().unwrap(),
+            log.to_str().unwrap(),
+            "",
+            b"secret",
+        );
+        let wp = dir.path().join(name);
+        write_script(&wp, &contents).unwrap();
+
+        let status = std::process::Command::new("sh")
+            .arg(&wp)
+            .arg("--probe")
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin:/usr/local/bin")
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(127));
+
+        let mut buf = String::new();
+        std::fs::File::open(&log)
+            .unwrap()
+            .read_to_string(&mut buf)
+            .unwrap();
+        assert!(
+            buf.contains(r#""source":"stale""#),
+            "expected source=stale tag in log; got {buf:?}"
+        );
+        assert!(buf.contains(name));
+    }
+
+    #[test]
+    fn honey_match_takes_precedence_over_stale() {
+        // A name in both lists must be classified honey, not stale.
+        // (Honey is the random-guess catcher; stale is the cached-intel
+        // catcher.  Order of the checks is the disambiguation.)
+        use std::io::Read;
+        let dir = tempfile::tempdir().unwrap();
+        let honey_list = dir.path().join("honey.list");
+        std::fs::write(&honey_list, "shared-name\n").unwrap();
+        let stale_list = dir.path().join("stale.list");
+        std::fs::write(&stale_list, "shared-name\n").unwrap();
+        let log = dir.path().join("honey.log");
+
+        let contents = render(
+            "shared-name",
+            "/dev/null",
+            "0",
+            honey_list.to_str().unwrap(),
+            stale_list.to_str().unwrap(),
+            log.to_str().unwrap(),
+            "",
+            b"secret",
+        );
+        let wp = dir.path().join("shared-name");
+        write_script(&wp, &contents).unwrap();
+        std::process::Command::new("sh")
+            .arg(&wp)
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin:/usr/local/bin")
+            .status()
+            .unwrap();
+
+        let mut buf = String::new();
+        std::fs::File::open(&log).unwrap().read_to_string(&mut buf).unwrap();
+        assert!(
+            buf.contains(r#""source":"honey""#),
+            "honey path must win when both lists contain the name; got {buf:?}"
+        );
     }
 }

@@ -40,6 +40,8 @@ pub mod landlock;
 #[cfg(target_os = "linux")]
 pub mod linux_ns;
 #[cfg(target_os = "linux")]
+pub mod response;
+#[cfg(target_os = "linux")]
 pub mod seccomp;
 #[cfg(target_os = "linux")]
 pub(crate) mod syscalls;

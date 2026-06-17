@@ -7,6 +7,15 @@ use std::collections::HashMap;
 pub const COMPOUND_N: usize = 4;
 pub const HONEY_COUNT: usize = 50;
 
+/// How many prior epochs of scrambled names to retain as stale-mapping
+/// tripwires.  Any scrambled name from one of the last K epochs that an
+/// untrusted process attempts to execute fires a high-confidence
+/// `HoneyTriggered` (legitimate users have no source for these names —
+/// they are by definition things only a prior reconnaissance pass would
+/// know).  Independent of the random honey set: catches the *cached
+/// intel* attacker rather than the *random guess* attacker.
+pub const STALE_RETAIN_EPOCHS: u64 = 8;
+
 /// Wordlist embedded at compile time.
 const WORDLIST_RAW: &str = include_str!("../../wordlist/words.txt");
 
@@ -94,6 +103,34 @@ impl Mapper {
             honey_names: honey,
         }
     }
+
+    /// Return the scrambled names that this `tracked` set received in
+    /// the `retain` most recent epochs strictly before `current_epoch`.
+    ///
+    /// Used to populate the stale-mapping tripwire list at rotation
+    /// time.  Any name in this set, executed against the untrusted
+    /// view, is a high-confidence tripwire — the only sources for such
+    /// a name are a prior reconnaissance pass or the kept-around state
+    /// of an attacker that has been on the host across rotations.
+    ///
+    /// Skips the current epoch's names by construction (we don't
+    /// trip-wire the live mapping).
+    pub fn stale_names_for_previous_epochs(
+        &self,
+        tracked: &[String],
+        current_epoch: u64,
+        retain: u64,
+    ) -> Vec<String> {
+        let map_seed = self.purpose_seed(b"babbleon-mapping-v1");
+        let start = current_epoch.saturating_sub(retain);
+        let mut out = Vec::with_capacity(tracked.len() * retain as usize);
+        for past_epoch in start..current_epoch {
+            for (i, _real) in tracked.iter().enumerate() {
+                out.push(Self::compound(&map_seed, past_epoch, i * COMPOUND_N));
+            }
+        }
+        out
+    }
 }
 
 #[cfg(test)]
@@ -151,5 +188,57 @@ mod tests {
         for tool in tools() {
             assert_ne!(t1.scramble(&tool), t2.scramble(&tool));
         }
+    }
+
+    #[test]
+    fn stale_names_cover_previous_epochs() {
+        let m = Mapper::new(&[7u8; 32]);
+        let tools = tools();
+        let current = 5u64;
+        let retain = 3u64;
+        let stale = m.stale_names_for_previous_epochs(&tools, current, retain);
+        assert_eq!(stale.len(), tools.len() * retain as usize);
+
+        // Each stale name must be the scrambled output for some past
+        // epoch — i.e. it must equal what `build_table(... past_epoch)`
+        // produced for one of the tracked tools.
+        let mut expected: Vec<String> = Vec::new();
+        for past in (current - retain)..current {
+            let t = m.build_table(&tools, past);
+            for tool in &tools {
+                expected.push(t.scramble(tool).unwrap().to_string());
+            }
+        }
+        expected.sort();
+        let mut got = stale.clone();
+        got.sort();
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn stale_names_disjoint_from_current() {
+        let m = Mapper::new(&[9u8; 32]);
+        let tools = tools();
+        let current = 4u64;
+        let stale = m.stale_names_for_previous_epochs(&tools, current, 4);
+        let curr = m.build_table(&tools, current);
+        let curr_scrambled: std::collections::HashSet<&str> =
+            curr.real_to_scrambled.values().map(|s| s.as_str()).collect();
+        for name in &stale {
+            assert!(
+                !curr_scrambled.contains(name.as_str()),
+                "stale name {name:?} collides with a current scrambled name"
+            );
+        }
+    }
+
+    #[test]
+    fn stale_names_clamp_at_epoch_zero() {
+        // retain larger than current_epoch must not panic; just produce
+        // fewer entries.
+        let m = Mapper::new(&[3u8; 32]);
+        let tools = tools();
+        let stale = m.stale_names_for_previous_epochs(&tools, 2, 100);
+        assert_eq!(stale.len(), tools.len() * 2);
     }
 }

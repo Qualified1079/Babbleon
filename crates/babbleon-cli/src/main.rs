@@ -340,6 +340,10 @@ fn cmd_demo() -> Result<()> {
         s.bus.emit(Event::HoneyTriggered {
             epoch: s.payload.epoch,
             names: report3.honey_triggered.clone(),
+            source: babbleon::events::TripwireSource::Honey,
+            wrapper_pid: 0,
+            triggering_pid: None,
+            triggering_pid_start: None,
             process_hint: "demo".into(),
         });
     }
@@ -475,10 +479,13 @@ fn cmd_apply_ns(real_root: &std::path::Path) -> Result<()> {
     {
         use babbleon::enforcement::driver::EnforcementDriver;
         use babbleon::enforcement::linux_ns::LinuxNamespaceDriver;
+        use babbleon::enforcement::response::{HoneyResponder, ResponsePolicy};
         use babbleon::enforcement::wrapper::{
-            write_all, write_honey_list, write_tripwire_scripts, HONEY_FIFO,
+            write_all, write_honey_list, write_stale_list, write_tripwire_scripts,
+            HONEY_FIFO,
         };
         use babbleon::events::{EventBus, HoneyFifoReader, StderrSink};
+        use babbleon::mapping::{Mapper, STALE_RETAIN_EPOCHS};
 
         let pw = read_password("passphrase: ")?;
         let s = babbleon::session::Session::unlock(&pw, None, None)?;
@@ -535,9 +542,32 @@ fn cmd_apply_ns(real_root: &std::path::Path) -> Result<()> {
         write_honey_list(s.payload.honey_names.iter().map(String::as_str), None)
             .with_context(|| "write honey.list")?;
 
+        // Compute and write the stale-mapping list: scrambled names that this
+        // tracked set received in the previous K epochs.  Any process invoking
+        // one of these names is using cached intel from before the last
+        // rotation — a high-confidence tripwire.
+        let mapper = Mapper::new(&host_secret);
+        let stale = mapper.stale_names_for_previous_epochs(
+            &s.tracked,
+            s.payload.epoch,
+            STALE_RETAIN_EPOCHS,
+        );
+        write_stale_list(stale.iter().map(String::as_str), None)
+            .with_context(|| "write stale.list")?;
+
+        // Read honey-response policy from BABBLEON_HONEY_POLICY env var.
+        // Defaults to notify-only; operator opt-in to active responses
+        // because killing a triggering process can take a user's shell
+        // with it if a parent shell typed a stale name by mistake.
+        let policy = std::env::var("BABBLEON_HONEY_POLICY")
+            .ok()
+            .and_then(|s| ResponsePolicy::from_str(&s))
+            .unwrap_or_default();
+
         // Spawn the honey-FIFO reader so trigger events become Event::HoneyTriggered.
         let mut bus = EventBus::new();
         bus.add_sink(Box::new(StderrSink));
+        bus.add_sink(Box::new(HoneyResponder::new(policy)));
         let bus_arc = std::sync::Arc::new(bus);
         let _reader = HoneyFifoReader::spawn(bus_arc, s.payload.epoch, HONEY_FIFO.to_string());
 
