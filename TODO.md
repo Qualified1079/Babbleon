@@ -426,9 +426,14 @@ Triaged from a self-review against general secure-software practice.
       (scrambled name, real path, ns_inode) cannot be
       attacker-controlled.  Trace the chain of trust to vault
       material.  Fuzz target on the renderer is filed.
-- [ ] **CWE-400 length-bounded honey-FIFO reader.**  Cap
-      `BufReader::with_capacity` and add a per-line length limit
-      so a runaway producer cannot OOM the daemon.
+- [x] **CWE-400 length-bounded honey-FIFO reader.**
+      `crates/babbleon/src/events.rs`.  `HoneyFifoReader::run` now reads
+      lines through a `Take` adapter capped at `MAX_HONEY_LINE_BYTES`
+      (16 KiB).  Over-limit lines are dropped and the reader resyncs to
+      the next newline via `discard_to_newline`.  Wrapper produces
+      ~150-byte lines; 16 KiB gives 100× headroom and stays well below
+      page-allocation cliffs.  4 new tests cover normal/EOF/over-
+      limit-resync/at-the-boundary.
 - [ ] **CWE-798 documentary note for SALT constants** in `soft.rs`
       and `usb.rs` — explain that SALT is a public domain-separation
       tag, not a secret.  HKDF migration will make this obvious by

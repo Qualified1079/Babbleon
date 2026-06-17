@@ -130,7 +130,22 @@ impl EventSink for JsonlFileSink {
 ///
 /// Call `spawn(bus, epoch, fifo_path)` from the trusted-tier daemon.  The
 /// returned `JoinHandle` runs until the FIFO is removed or an error occurs.
+///
+/// ## CWE-400 length bound
+///
+/// Reads each line through a `Take` adapter capped at
+/// `MAX_HONEY_LINE_BYTES` so a runaway producer cannot OOM the daemon.
+/// Over-limit lines are dropped and the reader resyncs to the next
+/// newline.  Even though Babbleon owns the wrapper that writes the FIFO,
+/// the FIFO is on a path other processes can open in unusual
+/// circumstances (multiple wrappers racing, log replays, fuzzing) —
+/// defence-in-depth.
 pub struct HoneyFifoReader;
+
+/// Per-line byte ceiling for the honey FIFO reader (CWE-400 defence).
+/// The wrapper produces ~150-byte lines today; 16 KiB gives 100× headroom
+/// while still being trivially below the page-allocation cliff.
+pub const MAX_HONEY_LINE_BYTES: usize = 16 * 1024;
 
 #[derive(serde::Deserialize)]
 struct HoneyLine {
@@ -158,7 +173,7 @@ impl HoneyFifoReader {
     }
 
     fn run(bus: std::sync::Arc<EventBus>, epoch: u64, fifo_path: &std::path::Path) {
-        use std::io::{BufRead, BufReader};
+        use std::io::BufReader;
 
         // Create the FIFO if it doesn't exist.
         #[cfg(unix)]
@@ -187,13 +202,32 @@ impl HoneyFifoReader {
             }
         };
 
-        let reader = BufReader::new(f);
-        for line in reader.lines() {
-            let line = match line {
-                Ok(l) if !l.is_empty() => l,
-                _ => break,
+        let mut reader = BufReader::new(f);
+        let mut buf: Vec<u8> = Vec::with_capacity(256);
+        loop {
+            buf.clear();
+            match read_bounded_line(&mut reader, &mut buf, MAX_HONEY_LINE_BYTES) {
+                Ok(LineRead::Eof) => break,
+                Ok(LineRead::OverLimit) => {
+                    tracing::warn!(
+                        "honey fifo: dropped a line exceeding {MAX_HONEY_LINE_BYTES} bytes"
+                    );
+                    continue;
+                }
+                Ok(LineRead::Line) => {}
+                Err(e) => {
+                    tracing::warn!("honey fifo read failed: {e}");
+                    break;
+                }
+            }
+            let line = match std::str::from_utf8(&buf) {
+                Ok(s) => s.trim_end_matches('\n').trim_end_matches('\r'),
+                Err(_) => continue,
             };
-            if let Ok(entry) = serde_json::from_str::<HoneyLine>(&line) {
+            if line.is_empty() {
+                continue;
+            }
+            if let Ok(entry) = serde_json::from_str::<HoneyLine>(line) {
                 let source = match entry.source.as_deref() {
                     Some("stale") => TripwireSource::Stale,
                     _ => TripwireSource::Honey,
@@ -218,6 +252,70 @@ impl HoneyFifoReader {
                     process_hint: hint,
                 });
             }
+        }
+    }
+}
+
+/// Outcome of one bounded-line read.
+#[derive(Debug, PartialEq, Eq)]
+enum LineRead {
+    /// Got a full line (possibly empty) into `buf`.
+    Line,
+    /// Source returned 0 bytes — EOF.
+    Eof,
+    /// Hit the per-line byte ceiling before seeing a newline; `buf`
+    /// contains the truncated prefix and the reader has been advanced
+    /// past the offending line up to (and including) the next newline.
+    OverLimit,
+}
+
+/// Read one line from `reader` into `buf`, refusing to grow past `max`
+/// bytes.  On over-limit, drains the rest of the bad line so the next
+/// call resyncs to a real record.
+///
+/// Implementation note: uses `Take` to bound how many bytes can land in
+/// `buf` per call (read_until on its own would grow the Vec without
+/// bound for a long line).  CWE-400 fix.
+fn read_bounded_line<R: std::io::BufRead + ?Sized>(
+    reader: &mut R,
+    buf: &mut Vec<u8>,
+    max: usize,
+) -> std::io::Result<LineRead> {
+    use std::io::{BufRead, Read};
+    // +1 so a max-byte line ending in \n still fits without tripping
+    // the over-limit branch.
+    let cap = max.saturating_add(1) as u64;
+    let n = (&mut *reader).take(cap).read_until(b'\n', buf)?;
+    if n == 0 {
+        return Ok(LineRead::Eof);
+    }
+    if buf.last().copied() == Some(b'\n') {
+        return Ok(LineRead::Line);
+    }
+    // No newline within `cap` bytes.  Either we are at EOF mid-line
+    // (treat as EOF) or there's still a runaway line in flight; drop
+    // bytes until the next newline before returning.
+    discard_to_newline(reader)?;
+    Ok(LineRead::OverLimit)
+}
+
+/// Consume bytes from `reader` up to and including the next newline.
+/// Returns `Ok(())` even if EOF is reached first.
+fn discard_to_newline<R: std::io::BufRead + ?Sized>(reader: &mut R) -> std::io::Result<()> {
+    loop {
+        let (consumed, done) = {
+            let chunk = reader.fill_buf()?;
+            if chunk.is_empty() {
+                return Ok(());
+            }
+            match chunk.iter().position(|&b| b == b'\n') {
+                Some(p) => (p + 1, true),
+                None => (chunk.len(), false),
+            }
+        };
+        reader.consume(consumed);
+        if done {
+            return Ok(());
         }
     }
 }
@@ -363,6 +461,66 @@ mod tests {
             }
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+
+    #[test]
+    fn bounded_read_handles_normal_line() {
+        let input = b"hello world\n".as_slice();
+        let mut r = std::io::BufReader::new(input);
+        let mut buf = Vec::new();
+        let outcome = read_bounded_line(&mut r, &mut buf, 1024).unwrap();
+        assert_eq!(outcome, LineRead::Line);
+        assert_eq!(buf, b"hello world\n");
+    }
+
+    #[test]
+    fn bounded_read_signals_eof() {
+        let input: &[u8] = b"";
+        let mut r = std::io::BufReader::new(input);
+        let mut buf = Vec::new();
+        let outcome = read_bounded_line(&mut r, &mut buf, 1024).unwrap();
+        assert_eq!(outcome, LineRead::Eof);
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn bounded_read_drops_over_limit_line_and_resyncs() {
+        // 16-byte limit; first line is 50 bytes (over); second is fine.
+        let max = 16usize;
+        let mut input = b"a".repeat(50);
+        input.push(b'\n');
+        input.extend_from_slice(b"short\n");
+        let mut r = std::io::BufReader::new(input.as_slice());
+        let mut buf = Vec::new();
+
+        let first = read_bounded_line(&mut r, &mut buf, max).unwrap();
+        assert_eq!(first, LineRead::OverLimit);
+        // buf should hold at most `max + 1` bytes of the truncated prefix.
+        assert!(
+            buf.len() <= max + 1,
+            "over-limit buf grew to {}; expected ≤ {}",
+            buf.len(),
+            max + 1
+        );
+
+        buf.clear();
+        let second = read_bounded_line(&mut r, &mut buf, max).unwrap();
+        assert_eq!(second, LineRead::Line, "must resync to the next record");
+        assert_eq!(buf, b"short\n");
+    }
+
+    #[test]
+    fn bounded_read_keeps_exactly_max_line() {
+        // A line of exactly `max` bytes plus its newline must succeed
+        // (not trip OverLimit).
+        let max = 8usize;
+        let mut input = b"a".repeat(max);
+        input.push(b'\n');
+        let mut r = std::io::BufReader::new(input.as_slice());
+        let mut buf = Vec::new();
+        let outcome = read_bounded_line(&mut r, &mut buf, max).unwrap();
+        assert_eq!(outcome, LineRead::Line);
+        assert_eq!(buf.len(), max + 1);
     }
 
     #[test]
