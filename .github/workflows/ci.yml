@@ -115,3 +115,27 @@ jobs:
           name: lcov
           path: lcov.info
           retention-days: 30
+
+  miri:
+    name: miri (UB in unsafe)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # Miri runs a small subset — the unsafe-libc blocks (mkfifo, kill,
+    # mlockall, prctl) plus the pure-Rust crypto + mapping paths.
+    # Skipping the integration tests that shell out to `sh`, mount
+    # namespaces, or call mkfifo for real — none of those are valid
+    # under Miri.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - uses: Swatinem/rust-cache@v2
+      - name: run miri on the pure-Rust crates
+        env:
+          MIRIFLAGS: -Zmiri-disable-isolation
+        # Limit to the mapping + crypto modules — the parts where UB
+        # in our own (sparse) unsafe would actually have consequences.
+        run: |
+          cargo miri test -p babbleon --lib mapping:: crypto:: audit:: vault::attempts::

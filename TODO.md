@@ -331,13 +331,22 @@ Triaged from a self-review against general secure-software practice.
 
 ### Testing
 
-- [ ] **`cargo-fuzz` on three surfaces:**
-      - Honey-FIFO JSON parser — defence-in-depth even though we own
-        the wrapper that writes the JSON.
-      - FPE permutation roundtrip — property: encrypt-then-decrypt
-        is identity for any valid input.
-      - Wrapper-template renderer — property: no field substitution
-        can produce shell-injectable output.
+- [x] **`cargo-fuzz` on three surfaces** — scaffolding shipped in
+      `fuzz/`:
+      - `honey_fifo_line` — drives `HoneyFifoReader::run` end-to-end
+        (the parser is private; reaching it through the public path
+        is the closest surface)
+      - `fpe_roundtrip` — asserts `decrypt(encrypt(x)) == x` over
+        arbitrary seed/epoch/n/x
+      - `wrapper_render` — drives `write_wrapper` with arbitrary
+        decoy banner inputs; sanity-checks the rendered shell-script
+        printf-line for runaway quotes
+      Targets are listed in `fuzz/README.md` along with the run
+      commands; CI integration filed below.
+- [ ] **Weekly fuzz CI workflow.**  Run each `cargo fuzz` target for
+      ~5 min on a scheduled GH Actions cron.  Filed separately from
+      the per-PR loop because libfuzzer needs nightly Rust and a long-
+      running job.
 - [x] **`proptest` / `quickcheck` on mapping bijection.**
       `crates/babbleon/tests/mapping_properties.rs` covers six
       properties at 16 cases each (each `build_table` cold-builds the
@@ -346,7 +355,11 @@ Triaged from a self-review against general secure-software practice.
       disjointness, determinism, secret separation, FPE round-trip,
       and rotation moves every entry.  Full property suite runs in
       ~56 s.
-- [ ] **`miri` runs in CI** to catch UB in unsafe-libc blocks.
+- [x] **`miri` runs in CI** to catch UB in unsafe-libc blocks.
+      `.github/workflows/ci.yml` `miri` job (nightly + `-Zmiri-disable-
+      isolation`) runs the mapping/crypto/audit/vault::attempts unit
+      tests under Miri.  Integration tests that shell out, mount NS,
+      or call mkfifo for real are intentionally skipped.
 
 ### Audit-log integrity
 

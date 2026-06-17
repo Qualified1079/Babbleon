@@ -6,6 +6,11 @@ members = [
     "crates/babbleon-ns-helper",
     "crates/babbleon-pam",
 ]
+exclude = [
+    # cargo-fuzz harness — needs nightly + libfuzzer-sys; lives outside
+    # the stable workspace.  See fuzz/README.md.
+    "fuzz",
+]
 
 [workspace.package]
 version = "0.1.0"
