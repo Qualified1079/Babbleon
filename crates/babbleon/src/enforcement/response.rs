@@ -255,11 +255,21 @@ fn kill_with_starttime_check(pid: u32, captured: u64) -> ResponseAction {
 }
 
 fn signal_kill(pid: u32) -> ResponseAction {
-    // Safety: kill(2) is async-signal-safe and the arguments are scalars.
+    // SAFETY: `kill(2)` is async-signal-safe and takes two scalar
+    // arguments (a pid and a signal number).  We pass a `pid_t` and a
+    // libc-defined signal constant — both plain integers, no aliasing
+    // or pointer concerns.  The caller has already verified the PID's
+    // start-time matches the captured value, so we are signalling the
+    // process the policy intended to act on, not a reused PID.
     let rc = unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
     if rc == 0 {
         ResponseAction::Killed { pid }
     } else {
+        // SAFETY: `__errno_location` returns a per-thread pointer to the
+        // calling thread's errno cell.  The pointer is valid for the
+        // lifetime of the thread; dereferencing it for a one-shot read
+        // immediately after a libc call that set it is the documented
+        // contract.
         let errno = unsafe { *libc::__errno_location() };
         match errno {
             libc::ESRCH => ResponseAction::AlreadyExited { pid },
@@ -270,10 +280,16 @@ fn signal_kill(pid: u32) -> ResponseAction {
 
 fn kill_group(pgid: i32) -> ResponseAction {
     // Negative target ⇒ deliver to the whole process group.
+    // SAFETY: see `signal_kill` — same async-signal-safe scalar call.
+    // The negation widens to i32 then narrows to `pid_t`; both targets
+    // here have the same width (libc::pid_t is i32 on every Linux ABI
+    // we support).  Process-group identity is checked by the caller via
+    // the same start-time path used for single-PID signalling.
     let rc = unsafe { libc::kill(-pgid as libc::pid_t, libc::SIGKILL) };
     if rc == 0 {
         ResponseAction::KilledGroup { pgid }
     } else {
+        // SAFETY: see the matching block in `signal_kill`.
         let errno = unsafe { *libc::__errno_location() };
         match errno {
             libc::ESRCH => ResponseAction::AlreadyExited { pid: pgid as u32 },

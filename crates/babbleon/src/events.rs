@@ -164,9 +164,16 @@ impl HoneyFifoReader {
         #[cfg(unix)]
         {
             if !fifo_path.exists() {
+                let path_cstr = std::ffi::CString::new(fifo_path.to_string_lossy().as_bytes())
+                    .unwrap_or_default();
+                // SAFETY: `mkfifo(2)` reads a NUL-terminated C string we own
+                // (allocated by `CString::new` above; lives for the duration
+                // of this call) and takes a plain `mode_t`.  Both arguments
+                // are valid scalars; no aliasing or lifetime concern.  The
+                // return value is ignored — if the FIFO already exists
+                // (EEXIST) or fails for any other reason, the subsequent
+                // `OpenOptions::new().open()` will surface the error.
                 unsafe {
-                    let path_cstr = std::ffi::CString::new(fifo_path.to_string_lossy().as_bytes())
-                        .unwrap_or_default();
                     libc::mkfifo(path_cstr.as_ptr(), 0o600);
                 }
             }
@@ -293,10 +300,14 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let fifo_path = tmp.path().join("honey.fifo");
 
-        // Create FIFO
+        // Create FIFO.
+        // SAFETY: same justification as the production path in
+        // `HoneyFifoReader::run` — `mkfifo(2)` takes a NUL-terminated C
+        // string we own and a scalar mode.  Return code is ignored
+        // because the test will fail explicitly if the FIFO is unusable.
+        let cstr =
+            std::ffi::CString::new(fifo_path.to_string_lossy().as_bytes()).unwrap();
         unsafe {
-            let cstr =
-                std::ffi::CString::new(fifo_path.to_string_lossy().as_bytes()).unwrap();
             libc::mkfifo(cstr.as_ptr(), 0o600);
         }
 

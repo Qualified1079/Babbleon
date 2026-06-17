@@ -103,6 +103,12 @@ mod inner {
         // EPERM  → no privilege.
         // ENOSYS → old kernel.
         const BPF_BTF_LOAD: libc::c_long = 18;
+        // SAFETY: `syscall(2)` is the documented C variadic that dispatches
+        // to the kernel.  We pass `SYS_bpf` (a valid syscall number on
+        // every supported architecture), the BPF command number, a NULL
+        // attribute pointer, and a zero size.  A NULL+0 input is rejected
+        // by the kernel with EINVAL or similar — never dereferenced — so
+        // passing a null pointer is correct, not a violation.
         let rc = unsafe {
             libc::syscall(
                 libc::SYS_bpf,
@@ -112,6 +118,9 @@ mod inner {
             )
         };
         let errno = if rc < 0 {
+            // SAFETY: `__errno_location` returns a per-thread errno pointer
+            // valid for the thread's lifetime; reading immediately after a
+            // syscall is the documented contract.
             unsafe { *libc::__errno_location() }
         } else {
             0
@@ -149,9 +158,14 @@ mod inner {
         fn drop(&mut self) {
             // Close link first so the program is detached before the prog FD goes.
             if self.link_fd >= 0 {
+                // SAFETY: `close(2)` takes a valid fd we own and returns an
+                // int; no aliasing, no lifetime concern.  We own this fd
+                // (handed to us at `BPF_LINK_CREATE` time) and Drop runs at
+                // most once per handle, so we cannot close it twice.
                 unsafe { libc::close(self.link_fd) };
             }
             if self.fd >= 0 {
+                // SAFETY: as above.
                 unsafe { libc::close(self.fd) };
             }
         }

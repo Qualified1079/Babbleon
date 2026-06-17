@@ -83,6 +83,15 @@ fn run() -> Result<()> {
     }
 
     // Fork: we (parent) become PID 1 init-reaper; child execs the command.
+    // SAFETY: `fork(2)` itself is async-signal-safe and takes no arguments;
+    // the unsafety here is purely Rust's "fork can leave the child in a
+    // surprising state" hazard.  At this point in the helper we have NOT
+    // yet started any threads (we run single-threaded by construction —
+    // see the crate's tokio-free dependency tree) and we hold no locks,
+    // so the child inherits exactly the same address space and is safe
+    // to either `execve` immediately (the child branch below does this
+    // via `nix::unistd::execvp`) or to call only async-signal-safe libc
+    // (the reaper branch).
     match unsafe { fork() }.context("fork")? {
         ForkResult::Parent { child } => {
             // Drop back to real UID in the parent reaper.
@@ -140,6 +149,12 @@ fn drop_bounding_set() -> Result<()> {
     // set via PR_CAPBSET_DROP; the child inherits an empty bounding set and
     // can never gain new caps even via file capabilities.
     for cap in 0i32..=40 {
+        // SAFETY: `prctl(2)` with `PR_CAPBSET_DROP` and a capability
+        // number is a documented kernel ABI taking five scalar args.
+        // We pass the cap number as an unsigned long and zero for the
+        // unused trailing args.  No pointers, no aliasing, no lifetime
+        // concern; the only way this can "fail" is EINVAL when the cap
+        // number is not allocated on this kernel, which we handle below.
         let ret = unsafe { libc::prctl(libc::PR_CAPBSET_DROP, cap as libc::c_ulong, 0, 0, 0) };
         if ret != 0 {
             let err = std::io::Error::last_os_error();
