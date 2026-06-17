@@ -59,6 +59,13 @@
 pub mod crypto_compare;
 pub mod errors;
 pub mod key_derivation;
+pub mod mapping;
 pub mod per_host_secret;
+pub mod permutation;
+pub mod wordlist;
 
 pub use errors::{Error, Result};
+pub use mapping::{EpochMapping, MappingBuilder, COMPOUND_N, HONEY_COUNT};
+pub use per_host_secret::{PerHostSecret, PER_HOST_SECRET_LEN};
+pub use permutation::Permutation;
+pub use wordlist::Wordlist;
