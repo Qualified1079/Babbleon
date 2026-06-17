@@ -406,13 +406,15 @@ Triaged from a self-review against general secure-software practice.
 
 ### From the standards survey — SSDF / Scorecard
 
-- [ ] **`docs/secure-development-policy.md`** — explicit policy doc
-      covering branch protection, required reviewers, allowed
-      crates, dependency-update cadence, release-signing procedure.
-      Maps to SSDF PO.1–PO.5.  Required for any federal procurement
-      pitch.
-- [ ] **`cargo-llvm-cov`** (or `cargo-tarpaulin`) coverage measured
-      in CI.  Maps to SSDF PW.8.  Measurable, not just claimed.
+- [x] **`docs/secure-development-policy.md`** — explicit policy doc
+      covering branch protection, required reviewers, allowed crates,
+      dependency-update cadence, release-signing procedure, and a
+      practice→artifact mapping table.  Covers SSDF PO/PS/PW/RV families.
+- [x] **`cargo-llvm-cov`** coverage measured in CI.
+      `.github/workflows/ci.yml` `coverage` job runs
+      `cargo llvm-cov --workspace --lcov` (property suite excluded to
+      keep wall-clock under 5 min) and uploads `lcov.info` as a 30-day
+      artifact.  Maps to SSDF PW.8.1.
 - [x] **`cargo-deny` policy sweep** — `deny.toml` now: `yanked = "deny"`
       (was already set), explicit `unknown-git = "deny"` + empty
       `allow-git = []` (releases must come from crates.io), permissive

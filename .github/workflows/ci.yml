@@ -86,3 +86,32 @@ jobs:
           path: "**/babbleon-sbom*.cdx.json"
           if-no-files-found: error
           retention-days: 90
+
+  coverage:
+    name: coverage (cargo-llvm-cov)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: install libpam-dev
+        run: sudo apt-get update && sudo apt-get install -y libpam0g-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - name: install cargo-llvm-cov
+        run: cargo install --locked cargo-llvm-cov
+      # The proptest job runs ~60 s; coverage adds overhead.  Exclude
+      # the property suite so the coverage job stays under 5 minutes
+      # — line + branch coverage on the unit + integration tests is
+      # what we actually want to track.
+      - name: collect coverage
+        run: cargo llvm-cov --workspace --lcov --output-path lcov.info -- --skip mapping_properties
+      - name: summarise
+        run: cargo llvm-cov report --workspace -- --skip mapping_properties
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lcov
+          path: lcov.info
+          retention-days: 30
