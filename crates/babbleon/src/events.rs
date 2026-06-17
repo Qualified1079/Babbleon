@@ -305,8 +305,7 @@ mod tests {
         // `HoneyFifoReader::run` — `mkfifo(2)` takes a NUL-terminated C
         // string we own and a scalar mode.  Return code is ignored
         // because the test will fail explicitly if the FIFO is unusable.
-        let cstr =
-            std::ffi::CString::new(fifo_path.to_string_lossy().as_bytes()).unwrap();
+        let cstr = std::ffi::CString::new(fifo_path.to_string_lossy().as_bytes()).unwrap();
         unsafe {
             libc::mkfifo(cstr.as_ptr(), 0o600);
         }
@@ -357,7 +356,10 @@ mod tests {
                 assert_eq!(*wrapper_pid, 9999);
                 assert_eq!(*triggering_pid, Some(1234));
                 assert_eq!(*triggering_pid_start, Some(555));
-                assert!(process_hint.contains("9999"), "wrapper pid should appear in hint");
+                assert!(
+                    process_hint.contains("9999"),
+                    "wrapper pid should appear in hint"
+                );
             }
             other => panic!("unexpected event: {other:?}"),
         }

@@ -28,8 +28,14 @@ use tempfile::TempDir;
 
 /// (tool_name, &[signature_fragments])
 static FINGERPRINTS: &[(&str, &[&str])] = &[
-    ("curl", &["curl ", "URL", "Transfer a URL", "libcurl", "curl/"]),
-    ("wget", &["wget ", "GNU Wget", "recursive download", "FTP, HTTP"]),
+    (
+        "curl",
+        &["curl ", "URL", "Transfer a URL", "libcurl", "curl/"],
+    ),
+    (
+        "wget",
+        &["wget ", "GNU Wget", "recursive download", "FTP, HTTP"],
+    ),
     (
         "ssh",
         &[
@@ -61,7 +67,10 @@ static FINGERPRINTS: &[(&str, &[&str])] = &[
             "command interpreter",
         ],
     ),
-    ("aws", &["aws [", "AWS CLI", "Amazon Web Services", "configure", "s3"]),
+    (
+        "aws",
+        &["aws [", "AWS CLI", "Amazon Web Services", "configure", "s3"],
+    ),
     (
         "gh",
         &[
@@ -123,7 +132,10 @@ static FINGERPRINTS: &[(&str, &[&str])] = &[
             "Python packages",
         ],
     ),
-    ("git", &["git [", "git-", "repository", "commit", "branch", "index"]),
+    (
+        "git",
+        &["git [", "git-", "repository", "commit", "branch", "index"],
+    ),
 ];
 
 /// Patterns that a plausible text-tool banner should contain (any one suffices).
@@ -430,5 +442,8 @@ fn wrapper_padding_differs_per_tool_and_secret() {
     let c3 = std::fs::read_to_string(&wp3).unwrap();
 
     assert_ne!(c1, c2, "different secrets must produce different padding");
-    assert_ne!(c1, c3, "different scrambled names must produce different padding");
+    assert_ne!(
+        c1, c3,
+        "different scrambled names must produce different padding"
+    );
 }

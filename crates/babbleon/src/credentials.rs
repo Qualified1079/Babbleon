@@ -91,7 +91,6 @@ pub const SCRUB_ENV_VARS: &[&str] = &[
     "GPG_AGENT_INFO",
     "DBUS_SESSION_BUS_ADDRESS",
     "XDG_RUNTIME_DIR",
-
     // Cloud / orchestration config (not always suffix-matched).
     "AWS_ACCESS_KEY_ID",
     "AWS_SECRET_ACCESS_KEY",
@@ -112,20 +111,17 @@ pub const SCRUB_ENV_VARS: &[&str] = &[
     "KUBECONFIG",
     "DOCKER_AUTH_CONFIG",
     "DOCKER_CONFIG",
-
     // VCS / SCM
     "GITHUB_TOKEN",
     "GH_TOKEN",
     "GITLAB_TOKEN",
     "BITBUCKET_TOKEN",
-
     // Secrets brokers
     "VAULT_TOKEN",
     "VAULT_ADDR",
     "VAULT_NAMESPACE",
     "DOPPLER_TOKEN",
     "OP_SERVICE_ACCOUNT_TOKEN",
-
     // AI / LLM SDK tokens — the highest-leverage credentials on a 2026
     // developer machine (RESEARCH.md T8).  Family expands monthly;
     // suffix-match below catches new vendors automatically as long as
@@ -142,18 +138,15 @@ pub const SCRUB_ENV_VARS: &[&str] = &[
     "GEMINI_API_KEY",
     "GOOGLE_API_KEY",
     "PERPLEXITY_API_KEY",
-
     // Database connection strings — credential material inline.
     "DATABASE_URL",
     "POSTGRES_PASSWORD",
     "MYSQL_PWD",
     "MONGO_URI",
     "REDIS_URL",
-
     // History / shell context
     "HISTFILE",
     "BASH_HISTORY",
-
     // Less-suffixed cloud and registry tokens.
     "DIGITALOCEAN_ACCESS_TOKEN",
     "HEROKU_API_KEY",
@@ -244,8 +237,13 @@ mod tests {
         let scrubbed = scrub_env(env);
         let keys: std::collections::HashSet<_> = scrubbed.iter().map(|(k, _)| k.as_str()).collect();
         assert!(keys.contains("PATH"));
-        for k in ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "HF_TOKEN",
-                  "MISTRAL_API_KEY", "COHERE_API_KEY"] {
+        for k in [
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "HF_TOKEN",
+            "MISTRAL_API_KEY",
+            "COHERE_API_KEY",
+        ] {
             assert!(!keys.contains(k), "{k} leaked through");
         }
     }
@@ -265,9 +263,17 @@ mod tests {
         let scrubbed = scrub_env(env);
         let keys: std::collections::HashSet<_> = scrubbed.iter().map(|(k, _)| k.as_str()).collect();
         assert!(keys.contains("LEGITIMATE_PATH"));
-        for leaked in ["MYSERVICE_API_KEY", "CUSTOMER_INTERNAL_TOKEN",
-                       "ACME_DB_PASSWORD", "APP_CLIENT_SECRET", "RSA_PRIVATE_KEY"] {
-            assert!(!keys.contains(leaked), "{leaked} should have been scrubbed by suffix");
+        for leaked in [
+            "MYSERVICE_API_KEY",
+            "CUSTOMER_INTERNAL_TOKEN",
+            "ACME_DB_PASSWORD",
+            "APP_CLIENT_SECRET",
+            "RSA_PRIVATE_KEY",
+        ] {
+            assert!(
+                !keys.contains(leaked),
+                "{leaked} should have been scrubbed by suffix"
+            );
         }
     }
 
@@ -284,7 +290,12 @@ mod tests {
         ];
         let scrubbed = scrub_env(env);
         let keys: std::collections::HashSet<_> = scrubbed.iter().map(|(k, _)| k.as_str()).collect();
-        for k in ["KEYBOARD_LAYOUT", "TOKENIZER_PATH", "SECRETARY_NAME", "PATH"] {
+        for k in [
+            "KEYBOARD_LAYOUT",
+            "TOKENIZER_PATH",
+            "SECRETARY_NAME",
+            "PATH",
+        ] {
             assert!(keys.contains(k), "{k} should NOT have been scrubbed");
         }
     }
@@ -297,7 +308,10 @@ mod tests {
             assert!(!v.contains(' '));
         }
         for &s in SCRUB_ENV_SUFFIXES {
-            assert!(s.starts_with('_'), "suffix {s} must start with _ to avoid mid-word matches");
+            assert!(
+                s.starts_with('_'),
+                "suffix {s} must start with _ to avoid mid-word matches"
+            );
             assert_eq!(s, s.to_uppercase(), "suffix {s} must be uppercase");
         }
     }

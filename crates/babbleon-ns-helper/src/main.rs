@@ -175,4 +175,3 @@ fn drop_bounding_set() -> Result<()> {
     }
     Ok(())
 }
-

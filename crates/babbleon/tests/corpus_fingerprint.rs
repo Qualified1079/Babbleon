@@ -278,7 +278,8 @@ fn distinctive_substring_extractor_rejects_boilerplate() {
     // Sanity check on the extractor: a pure-boilerplate input should
     // produce no candidates, so the headline test cannot be vacuously
     // passing because of an over-aggressive filter.
-    let boilerplate = "Usage: tool [OPTIONS]\n  --help    Show this help\n  --version Print version\n";
+    let boilerplate =
+        "Usage: tool [OPTIONS]\n  --help    Show this help\n  --version Print version\n";
     let subs = distinctive_substrings(boilerplate);
     assert!(
         subs.is_empty(),

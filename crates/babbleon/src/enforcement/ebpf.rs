@@ -187,10 +187,7 @@ mod inner {
     ///
     /// Returns `Err` if BPF LSM is unavailable, the kernel is too old, the
     /// bytecode is empty (not yet compiled), or loading fails.
-    pub fn load_exec_guard(
-        _trusted_ns_inode: u64,
-        _scrambled_root: &Path,
-    ) -> Result<BpfLsmHandle> {
+    pub fn load_exec_guard(_trusted_ns_inode: u64, _scrambled_root: &Path) -> Result<BpfLsmHandle> {
         // Kernel gate — refuse to load on pre-MIN_KERNEL even if BPF appears available.
         if !kernel_meets_minimum() {
             return Err(BabbleonError::Enforcement(format!(

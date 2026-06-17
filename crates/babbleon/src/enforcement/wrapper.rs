@@ -355,20 +355,20 @@ mod tests {
         let real_bin = dir.path().join("curl");
         std::fs::write(&real_bin, "#!/bin/sh\n").unwrap();
 
-        let honey_wp =
-            write_tripwire_script("honey-name", dir.path(), b"secret", None).unwrap();
-        let real_wp =
-            write_wrapper("curl", "real-name", &real_bin, dir.path(), b"secret", None, None)
-                .unwrap();
+        let honey_wp = write_tripwire_script("honey-name", dir.path(), b"secret", None).unwrap();
+        let real_wp = write_wrapper(
+            "curl",
+            "real-name",
+            &real_bin,
+            dir.path(),
+            b"secret",
+            None,
+            None,
+        )
+        .unwrap();
 
-        let honey_lines = std::fs::read_to_string(&honey_wp)
-            .unwrap()
-            .lines()
-            .count();
-        let real_lines = std::fs::read_to_string(&real_wp)
-            .unwrap()
-            .lines()
-            .count();
+        let honey_lines = std::fs::read_to_string(&honey_wp).unwrap().lines().count();
+        let real_lines = std::fs::read_to_string(&real_wp).unwrap().lines().count();
         assert_eq!(
             honey_lines, real_lines,
             "honey ({honey_lines}) and real-tool ({real_lines}) wrappers must have the same line count"
@@ -582,7 +582,10 @@ mod tests {
             .unwrap();
 
         let mut buf = String::new();
-        std::fs::File::open(&log).unwrap().read_to_string(&mut buf).unwrap();
+        std::fs::File::open(&log)
+            .unwrap()
+            .read_to_string(&mut buf)
+            .unwrap();
         assert!(
             buf.contains(r#""source":"honey""#),
             "honey path must win when both lists contain the name; got {buf:?}"

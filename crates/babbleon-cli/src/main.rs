@@ -493,8 +493,7 @@ fn cmd_apply_ns(real_root: &std::path::Path) -> Result<()> {
         use babbleon::enforcement::linux_ns::LinuxNamespaceDriver;
         use babbleon::enforcement::response::{HoneyResponder, ResponsePolicy};
         use babbleon::enforcement::wrapper::{
-            write_all, write_honey_list, write_stale_list, write_tripwire_scripts,
-            HONEY_FIFO,
+            write_all, write_honey_list, write_stale_list, write_tripwire_scripts, HONEY_FIFO,
         };
         use babbleon::events::{EventBus, HoneyFifoReader, StderrSink};
         use babbleon::mapping::{Mapper, STALE_RETAIN_EPOCHS};
@@ -505,12 +504,10 @@ fn cmd_apply_ns(real_root: &std::path::Path) -> Result<()> {
         // Snapshot the *host* mount-NS inode BEFORE we unshare.  Wrapper
         // scripts embed this as their "trusted" inode so they correctly
         // detect when they're being invoked from inside the scrambled NS.
-        let host_ns_inode = std::fs::metadata("/proc/self/ns/mnt")
-            .ok()
-            .map(|m| {
-                use std::os::unix::fs::MetadataExt;
-                m.ino()
-            });
+        let host_ns_inode = std::fs::metadata("/proc/self/ns/mnt").ok().map(|m| {
+            use std::os::unix::fs::MetadataExt;
+            m.ino()
+        });
         // Persist it so trusted-tier callers (PAM session, etc.) can read it.
         if let Some(inode) = host_ns_inode {
             let _ = std::fs::create_dir_all("/run/babbleon");
@@ -522,14 +519,10 @@ fn cmd_apply_ns(real_root: &std::path::Path) -> Result<()> {
         let mapping_pairs: Vec<(String, String)> = s
             .tracked
             .iter()
-            .filter_map(|t| {
-                s.mapping
-                    .scramble(t)
-                    .map(|sc| (t.clone(), sc.to_string()))
-            })
+            .filter_map(|t| s.mapping.scramble(t).map(|sc| (t.clone(), sc.to_string())))
             .collect();
-        let host_secret = hex::decode(&s.payload.host_secret_hex)
-            .context("invalid host_secret_hex in vault")?;
+        let host_secret =
+            hex::decode(&s.payload.host_secret_hex).context("invalid host_secret_hex in vault")?;
         write_all(
             mapping_pairs,
             real_root,
