@@ -116,6 +116,55 @@ jobs:
           path: lcov.info
           retention-days: 30
 
+  reproducible:
+    name: reproducible release build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # Build the release artifact twice from the same source tree and
+    # confirm the produced binary bytes are identical.  The operator
+    # docs (`docs/operator.md`) claim musl-static reproducibility;
+    # this is the test that confirms the claim.
+    steps:
+      - uses: actions/checkout@v4
+      - name: install musl tooling
+        run: sudo apt-get update && sudo apt-get install -y musl-tools libpam0g-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+
+      - name: build (round 1)
+        run: |
+          cargo build --release --target x86_64-unknown-linux-musl \
+            -p babbleon-cli -p babbleon-ns-helper
+          mkdir -p artifacts/run1
+          cp target/x86_64-unknown-linux-musl/release/babbleon artifacts/run1/
+          cp target/x86_64-unknown-linux-musl/release/babbleon-ns-helper artifacts/run1/
+          cargo clean
+
+      - name: build (round 2)
+        run: |
+          cargo build --release --target x86_64-unknown-linux-musl \
+            -p babbleon-cli -p babbleon-ns-helper
+          mkdir -p artifacts/run2
+          cp target/x86_64-unknown-linux-musl/release/babbleon artifacts/run2/
+          cp target/x86_64-unknown-linux-musl/release/babbleon-ns-helper artifacts/run2/
+
+      - name: compare
+        run: |
+          set -eu
+          for bin in babbleon babbleon-ns-helper; do
+            a=$(sha256sum artifacts/run1/${bin} | awk '{print $1}')
+            b=$(sha256sum artifacts/run2/${bin} | awk '{print $1}')
+            echo "${bin}: run1=${a} run2=${b}"
+            if [ "${a}" != "${b}" ]; then
+              echo "::error::${bin} not reproducible (${a} != ${b})"
+              cmp -l artifacts/run1/${bin} artifacts/run2/${bin} | head -50 || true
+              exit 1
+            fi
+          done
+
   miri:
     name: miri (UB in unsafe)
     runs-on: ubuntu-latest

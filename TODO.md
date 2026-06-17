@@ -324,10 +324,13 @@ Triaged from a self-review against general secure-software practice.
       `cargo-deny` / `cargo-audit`.  Addresses xz-class supply-chain
       attacks that vulnerability databases miss because the attack is
       in not-yet-disclosed code.
-- [ ] **Reproducible-build verification CI job.**  Build twice on
-      different runners and `cmp` the artifacts.  Operator docs claim
-      musl-static reproducibility; nothing currently confirms the
-      bytes are deterministic.
+- [x] **Reproducible-build verification CI job.**
+      `.github/workflows/ci.yml` `reproducible` job builds the
+      release binaries twice from the same checkout on the same
+      runner, `cargo clean`s between, and compares SHA-256s of the
+      `babbleon` and `babbleon-ns-helper` output.  Cross-runner
+      verification is the stronger guarantee — filed as a stretch
+      follow-up once the same-runner version stays green.
 
 ### Testing
 
