@@ -325,10 +325,14 @@ Triaged from a self-review against general secure-software practice.
         is identity for any valid input.
       - Wrapper-template renderer — property: no field substitution
         can produce shell-injectable output.
-- [ ] **`proptest` / `quickcheck` on mapping bijection.**  Property:
-      `build_table` over any tracked list of N tools produces N
-      unique scrambled names (collision-freeness as a property, not
-      a single example).
+- [x] **`proptest` / `quickcheck` on mapping bijection.**
+      `crates/babbleon/tests/mapping_properties.rs` covers six
+      properties at 16 cases each (each `build_table` cold-builds the
+      370k-entry permutation, so case-count is wall-clock-bound):
+      bijection (no collisions, scramble∘reveal = id), honey
+      disjointness, determinism, secret separation, FPE round-trip,
+      and rotation moves every entry.  Full property suite runs in
+      ~56 s.
 - [ ] **`miri` runs in CI** to catch UB in unsafe-libc blocks.
 
 ### Audit-log integrity
