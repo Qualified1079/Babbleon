@@ -14,7 +14,7 @@ through the 12-item security-practice priority cluster, plus the
 follow-ups it surfaced (CWE Top 25 documentary audit, SSDF policy
 doc, MAC profile templates, supply-chain hardening).
 
-**Total tests: 130 across the workspace, all green.** (Was 81 at
+**Total tests: 132 across the workspace, all green.** (Was 81 at
 the start of the predecessor session.)
 
 The threat model from the session before this is unchanged: two
@@ -227,7 +227,7 @@ After each commit:
 
 128 tests across the workspace, all green.
 
-- 109 lib unit tests
+- 111 lib unit tests
 - 3 corpus-fingerprint integration tests
 - 5 enforcement integration tests
 - 4 fingerprint integration tests
