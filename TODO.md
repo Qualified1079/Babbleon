@@ -343,10 +343,10 @@ Triaged from a self-review against general secure-software practice.
         printf-line for runaway quotes
       Targets are listed in `fuzz/README.md` along with the run
       commands; CI integration filed below.
-- [ ] **Weekly fuzz CI workflow.**  Run each `cargo fuzz` target for
-      ~5 min on a scheduled GH Actions cron.  Filed separately from
-      the per-PR loop because libfuzzer needs nightly Rust and a long-
-      running job.
+- [x] **Weekly fuzz CI workflow.**  `.github/workflows/fuzz.yml`
+      runs each cargo-fuzz target for 5 min on Sunday 02:00 UTC (plus
+      manual `workflow_dispatch`).  Crashes upload as
+      `fuzz-artifacts-<target>` 30-day artifacts on failure.
 - [x] **`proptest` / `quickcheck` on mapping bijection.**
       `crates/babbleon/tests/mapping_properties.rs` covers six
       properties at 16 cases each (each `build_table` cold-builds the
@@ -406,9 +406,13 @@ Triaged from a self-review against general secure-software practice.
       the `rust` matrix entry when it ships to stable.  C support
       (the PAM shim) is filed for once libpam-dev is in the runner
       image consistently.
-- [ ] **STRIDE-formatted threat model.**  We have a threat-model doc;
-      it's not formatted as STRIDE / data-flow diagrams.  Industry
-      procurement expects STRIDE for any security-claiming product.
+- [x] **STRIDE-formatted threat model.**  `docs/threat-model-stride.md`
+      — 24-row STRIDE table covering Spoofing / Tampering /
+      Repudiation / Information-Disclosure / Denial-of-Service /
+      Elevation-of-Privilege threats, each with a status + reference
+      back to the code surface or doc artifact.  Companion to the
+      existing `docs/threat-model.md` (which is structured around
+      the AI-attacker classification).
 - [x] **`CODEOWNERS`** at repo root.  Carves out per-path owners for
       crypto/vault/audit/setuid/CI/policy/docs surfaces above the repo-
       wide default.  Required by branch protection for any meaningful
