@@ -1,0 +1,103 @@
+# SELinux type-enforcement module for Babbleon.
+#
+# Conservative starting point.  Defines two domains:
+#   - `babbleon_t`             — the trusted-tier CLI runtime
+#   - `babbleon_ns_helper_t`   — the setuid namespace helper, which
+#                                briefly holds CAP_SYS_ADMIN to unshare
+#                                mount + PID namespaces, then drops it
+#
+# Build + install:
+#   cd policies/selinux
+#   make -f /usr/share/selinux/devel/Makefile babbleon.pp
+#   sudo semodule -i babbleon.pp
+#
+# Label binaries:
+#   sudo semanage fcontext -a -t babbleon_exec_t \
+#       '/usr/local/bin/babbleon'
+#   sudo semanage fcontext -a -t babbleon_ns_helper_exec_t \
+#       '/usr/local/libexec/babbleon-ns-helper'
+#   sudo restorecon -v /usr/local/bin/babbleon \
+#                       /usr/local/libexec/babbleon-ns-helper
+#
+# Label runtime + state directories (after installation):
+#   sudo semanage fcontext -a -t babbleon_runtime_t '/run/babbleon(/.*)?'
+#   sudo restorecon -Rv /run/babbleon
+#
+# Start in permissive (`semanage permissive -a babbleon_t`) for a day,
+# review denials with `ausearch -m AVC -ts recent`, then move to
+# enforcing once clean.
+
+policy_module(babbleon, 0.1.0)
+
+########################################
+# Required system interfaces
+require {
+    type init_t, kernel_t, sysfs_t, proc_t, tmpfs_t, devpts_t;
+    type bin_t, shell_exec_t, user_home_dir_t, user_home_t;
+    class file { read write open create getattr setattr execute execute_no_trans unlink rename };
+    class dir { read write open search add_name remove_name create rmdir getattr setattr };
+    class fifo_file { read write open create unlink };
+    class process { transition fork sigchld signal getsched setsched };
+    class capability { sys_admin setpcap setuid setgid dac_override };
+    class filesystem { mount remount unmount associate };
+}
+
+########################################
+# Types
+type babbleon_t;
+type babbleon_exec_t;
+type babbleon_ns_helper_t;
+type babbleon_ns_helper_exec_t;
+type babbleon_runtime_t;
+type babbleon_vault_t;
+
+########################################
+# Domain transitions
+# `babbleon` runs in babbleon_t.
+init_daemon_domain(babbleon_t, babbleon_exec_t)
+# `babbleon-ns-helper` runs in babbleon_ns_helper_t, transitioned from babbleon_t.
+domain_auto_trans(babbleon_t, babbleon_ns_helper_exec_t, babbleon_ns_helper_t)
+
+########################################
+# babbleon_t — the trusted CLI
+allow babbleon_t self:process { fork signal getsched setsched };
+allow babbleon_t self:capability { setuid setgid };
+
+# Read system identity / nameservice.
+allow babbleon_t bin_t:file { read open execute getattr };
+allow babbleon_t proc_t:dir { read open search getattr };
+allow babbleon_t proc_t:file { read open getattr };
+
+# Vault + per-user config.
+allow babbleon_t babbleon_vault_t:dir { read write open search add_name remove_name create getattr };
+allow babbleon_t babbleon_vault_t:file { read write open create unlink rename getattr setattr };
+allow babbleon_t user_home_dir_t:dir search;
+allow babbleon_t user_home_t:dir { read search getattr };
+
+# Runtime FIFO + lists.
+allow babbleon_t babbleon_runtime_t:dir { read write open search add_name remove_name create rmdir getattr setattr };
+allow babbleon_t babbleon_runtime_t:file { read write open create unlink rename getattr setattr };
+allow babbleon_t babbleon_runtime_t:fifo_file { read write open create unlink };
+
+########################################
+# babbleon_ns_helper_t — the setuid helper
+# Allowed to call `unshare` (needs CAP_SYS_ADMIN briefly, then drops it).
+allow babbleon_ns_helper_t self:capability { sys_admin setpcap setuid setgid };
+allow babbleon_ns_helper_t self:process { fork sigchld signal };
+allow babbleon_ns_helper_t proc_t:dir { read open search };
+allow babbleon_ns_helper_t proc_t:file { read open };
+allow babbleon_ns_helper_t babbleon_runtime_t:dir { read write open search add_name create };
+allow babbleon_ns_helper_t babbleon_runtime_t:file { read write open create unlink };
+
+# The helper transitions into the caller's chosen binary (a tracked
+# wrapper, which itself is a labelled shell script).  Type bin_t is the
+# default for /usr/bin and /usr/local/bin.
+allow babbleon_ns_helper_t bin_t:file { read open execute execute_no_trans getattr };
+allow babbleon_ns_helper_t shell_exec_t:file { read open execute execute_no_trans getattr };
+
+########################################
+# Hard denials — surface explicitly even though SELinux's default-deny
+# already excludes these.  Documents the threat-model intent.
+neverallow babbleon_t self:capability sys_module;
+neverallow babbleon_t self:capability sys_ptrace;
+neverallow babbleon_ns_helper_t self:capability sys_module;

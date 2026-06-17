@@ -357,11 +357,20 @@ Triaged from a self-review against general secure-software practice.
 
 ### OS-level profile templates
 
-- [ ] **AppArmor profile** template for `babbleon` and
-      `babbleon-ns-helper`.  Even a permissive template that
-      operators can tighten is better than nothing.
-- [ ] **SELinux policy module** template covering the setuid helper
-      and the credential-gate mount syscalls.
+- [x] **AppArmor profile** template for `babbleon` and
+      `babbleon-ns-helper`.  `policies/apparmor/usr.local.bin.babbleon`
+      with explicit allow paths for vault/runtime/CLI state, denials
+      for shadow/sudoers/sys_admin/sys_module/dac_override, and a
+      nested `ns-helper` child profile that briefly holds CAP_SYS_ADMIN
+      for `unshare`.  Install instructions in `policies/README.md`.
+- [x] **SELinux policy module** template covering the setuid helper
+      and the credential-gate mount syscalls.  `policies/selinux/`
+      has `babbleon.te` (two domains — `babbleon_t` and
+      `babbleon_ns_helper_t` — with auto-transition between them),
+      `babbleon.fc` (file-context labels for the binaries, runtime,
+      vault), and `babbleon.if` (callable interfaces for other
+      modules).  `neverallow` lines record the hard exclusions
+      (sys_module, sys_ptrace).
 
 ### Compliance / publication signals
 

@@ -1,0 +1,32 @@
+## <summary>Babbleon namespace-obfuscation runtime.</summary>
+
+########################################
+## <summary>
+##  Execute babbleon in the babbleon domain.
+## </summary>
+## <param name="domain">
+##  <summary>Source domain calling babbleon.</summary>
+## </param>
+#
+interface(`babbleon_run',`
+    gen_require(`
+        type babbleon_t, babbleon_exec_t;
+    ')
+    domtrans_pattern($1, babbleon_exec_t, babbleon_t)
+')
+
+########################################
+## <summary>
+##  Read babbleon vault material from a user shell.
+##  Use sparingly — leaks the sealed-vault path to the source domain.
+## </summary>
+## <param name="domain">
+##  <summary>Source domain.</summary>
+## </param>
+#
+interface(`babbleon_read_vault',`
+    gen_require(`
+        type babbleon_vault_t;
+    ')
+    read_files_pattern($1, babbleon_vault_t, babbleon_vault_t)
+')
