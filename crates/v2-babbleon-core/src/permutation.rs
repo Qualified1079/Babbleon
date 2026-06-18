@@ -8,7 +8,7 @@
 //! others; given the public algorithm, the only way to "guess" the
 //! mapping is to brute-force the seed.
 //!
-//! v1 used a Fisher-Yates shuffle of `[0, N)` driven by ChaCha20
+//! v1 used a Fisher-Yates shuffle of `[0, N)` driven by `ChaCha20`
 //! seeded from `HMAC-SHA-256(host_secret, "babbleon-fpe-v1" ||
 //! epoch_be)`.  v2 simplifies: the seed comes directly from
 //! `key_derivation::derive_subkey` and we drop the prior ad-hoc HMAC
@@ -82,6 +82,14 @@ impl Permutation {
     /// - `Error::Crypto` if subkey derivation fails (only possible
     ///   when HKDF's expand limit is exceeded; not possible for our
     ///   32-byte subkeys).
+    ///
+    /// # Panics
+    ///
+    /// Internally uses `u32::try_from(n).expect(...)` after the
+    /// `n > u32::MAX as usize` bounds check above; the `expect` is
+    /// statically unreachable.  If the bounds check is ever removed
+    /// or relaxed without revisiting the cast site, the function
+    /// will panic on `n > u32::MAX`.
     pub fn build(
         secret: &PerHostSecret,
         epoch: u64,
@@ -104,13 +112,21 @@ impl Permutation {
         let mut rng = ChaCha20Rng::from_seed(seed_arr);
 
         // Fisher-Yates.
-        let mut perm: Vec<u32> = (0..n as u32).collect();
+        // SAFETY of the casts below: line 94 already guards
+        // `n > u32::MAX as usize`, so every index up to n-1 fits in u32.
+        // try_from documents the precondition; expect() carries the
+        // invariant statement so a future refactor cannot silently
+        // truncate.
+        let n_u32 = u32::try_from(n).expect("bounds-checked: n <= u32::MAX above");
+        let mut perm: Vec<u32> = (0..n_u32).collect();
         perm.shuffle(&mut rng);
 
         // Build inverse for O(1) reverse lookups.
         let mut inverse = vec![0u32; n];
         for (input, &output) in perm.iter().enumerate() {
-            inverse[output as usize] = input as u32;
+            let input_u32 = u32::try_from(input)
+                .expect("bounds-checked: input < n <= u32::MAX above");
+            inverse[output as usize] = input_u32;
         }
 
         Ok(Self { perm, inverse })

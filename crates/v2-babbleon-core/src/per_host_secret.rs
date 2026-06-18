@@ -33,7 +33,7 @@
 //!
 //! - Defeats: passive reads of process memory after secret usage.
 //! - Does NOT defeat: live reads of process memory DURING usage
-//!   (require seccomp + Landlock + ptrace_scope=2 to block).
+//!   (require seccomp + Landlock + `ptrace_scope=2` to block).
 //! - Does NOT defeat: kernel-privilege attackers who read the
 //!   process address space directly (v3 confidential-VM mitigates).
 

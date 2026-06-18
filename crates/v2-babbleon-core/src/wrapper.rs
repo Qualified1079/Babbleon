@@ -109,7 +109,7 @@ pub const TRIPWIRE_STALE_LIST: &str = "/run/babbleon/tripwire-stale.list";
 
 /// Domain label for per-wrapper HKDF padding.
 ///
-/// Produces 16 distinct bytes per (host_secret, epoch, name) triple.
+/// Produces 16 distinct bytes per (`host_secret`, epoch, name) triple.
 const HKDF_PURPOSE_WRAPPER_PAD: &[u8] = b"v2-wrapper-pad";
 
 // ---------------------------------------------------------------------------
@@ -271,9 +271,7 @@ pub fn write_wrapper(
     std::fs::create_dir_all(output_dir)
         .map_err(|e| crate::errors::Error::Internal(format!("I/O failed: {}", e.kind())))?;
     let padding = wrapper_padding_hex(secret, epoch, scrambled_name)?;
-    let inode = trusted_ns_inode
-        .map(|i| i.to_string())
-        .unwrap_or_else(|| "0".into());
+    let inode = trusted_ns_inode.map_or_else(|| "0".into(), |i| i.to_string());
     let contents = render(
         scrambled_name,
         &real_path.display().to_string(),

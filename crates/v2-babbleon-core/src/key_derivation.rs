@@ -10,9 +10,9 @@
 //!
 //! v2 derives every per-purpose sub-key with `HKDF-SHA-256`:
 //!
-//!   sub_key = HKDF-Expand(HKDF-Extract(salt=epoch_bytes,
-//!                                      ikm=host_secret),
-//!                          info=purpose_label,
+//!   `sub_key` = HKDF-Expand(HKDF-Extract(salt=`epoch_bytes`,
+//!                                      `ikm=host_secret`),
+//!                          `info=purpose_label`,
 //!                          length=L)
 //!
 //! - **ikm** (input keying material) — the 32-byte per-host secret.
@@ -68,7 +68,7 @@ use crate::per_host_secret::PerHostSecret;
 /// # Errors
 ///
 /// - `Error::Crypto` if HKDF's expand step fails (only possible if
-///   `length` exceeds 255 × HashLen = 8 160 bytes for SHA-256).
+///   `length` exceeds 255 × `HashLen` = 8 160 bytes for SHA-256).
 pub fn derive_subkey(
     secret: &PerHostSecret,
     epoch: u64,

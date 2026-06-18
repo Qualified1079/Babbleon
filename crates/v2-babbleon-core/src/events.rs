@@ -224,7 +224,7 @@ impl EventSink for JsonlFileSink {
 
 impl JsonlFileSink {
     fn write_line(&self, line: &str) {
-        let _g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = self.lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -357,7 +357,7 @@ impl EventSink for AuditChainSink {
         // Append to chain.  prev_hash_hex covers the *previous*
         // entry's (prev_hash || event_hash) pair, giving a strict
         // tail-extension property.
-        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut st = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let seq = st.seq;
         let prev_hash_hex = st.prev_hash_hex.clone();
 
