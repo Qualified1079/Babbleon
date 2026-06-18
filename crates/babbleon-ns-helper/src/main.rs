@@ -1,3 +1,8 @@
+//! **DEPRECATED v1 — see `crates/DEPRECATED-V1.md`.  v2 replaces this
+//! with `crates/v2-babbleon-launch-untrusted` (file capabilities, NOT
+//! setuid).  Do not extend this binary; v2 is the source of truth for
+//! new work.**
+//!
 //! `babbleon-ns-helper`: setuid helper that establishes the untrusted-tier
 //! mount + PID namespace, drops all capabilities, then execs the child.
 //!

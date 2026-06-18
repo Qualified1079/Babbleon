@@ -1,3 +1,7 @@
+//! **DEPRECATED v1 — see `crates/DEPRECATED-V1.md`.  v2 CLI lives at
+//! `crates/v2-babbleon`.  Do not extend this binary; v2 is the source
+//! of truth for new work.**
+//!
 //! `babbleon` command-line interface.
 
 mod deception;

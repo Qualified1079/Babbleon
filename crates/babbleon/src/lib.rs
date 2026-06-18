@@ -1,3 +1,7 @@
+//! **DEPRECATED v1 — see `crates/DEPRECATED-V1.md`.  v2 lives at
+//! `crates/v2-babbleon-core` and `crates/v2-babbleon`.  Do not extend
+//! this crate; v2 is the source of truth for new work.**
+//!
 //! Babbleon: per-host randomized namespace obfuscation.
 //!
 //! Public modules form a layered stack:
