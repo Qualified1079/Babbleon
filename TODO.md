@@ -36,8 +36,16 @@ code items are phases 1-6.
 - [ ] `docs/v2/threat-model.md` — STRIDE matrix + ATT&CK/D3FEND
       traceability + 800-190 section map + 800-207 zero-trust
       tenet map
-- [ ] `docs/v2/security-baseline.md` — "designed-in from day one"
-      checklist every v2 crate must pass before merge
+- [x] `docs/v2/security-baseline.md` — "designed-in from day one"
+      checklist every v2 crate must pass before merge.  15 rules
+      (forbid unsafe, deny missing-docs, Zeroizing/SecretBox,
+      constant-time compare, HKDF, plain-English names, module-
+      doc template, process hardening, SAFETY: comments,
+      CAPABILITY: comments, no String secrets, RFC primitives
+      only, errors don't leak secrets, &-ref secret args, layered
+      tests) + a rule-summary table + a per-crate certification
+      procedure.  v2-babbleon-core verified compliant against
+      rules 1, 3, 7, 11; pedantic warnings under triage.
 - [ ] `docs/v2/attack-mapping.md` — full ATT&CK + D3FEND
       traceability matrix referenced from standards-alignment
 

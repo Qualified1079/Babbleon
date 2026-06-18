@@ -146,7 +146,7 @@ docs/v2/                            ✅ phase 0
   phase0-research-notes.md          ✅ 11 research threads
   phase0-decisions.md               ✅ recommendations on 5 decisions
   threat-model.md                   ❌ TBD (STRIDE + ATT&CK + D3FEND)
-  security-baseline.md              ❌ TBD (designed-in checklist)
+  security-baseline.md              ✅ filed 2026-06-18 (15 rules + cert procedure)
   attack-mapping.md                 ❌ TBD (full traceability matrix)
   dynamic-keywords.md               ❌ TBD (item B above)
   gui-design.md                     ❌ TBD (item C above)
@@ -260,16 +260,23 @@ caps, NOT setuid) follows, then phase 3 (structural scrambling).
 
 ---
 
-## Three docs still owed in phase 0 (low-priority; can land
+## Two docs still owed in phase 0 (low-priority; can land
 during phase 1 or 2)
 
 - `docs/v2/threat-model.md` — STRIDE + ATT&CK + D3FEND +
   800-190 §4.4/§4.5 + 800-207 seven-tenet map.  Sources:
   `phase0-research-notes.md` §§1–3.
-- `docs/v2/security-baseline.md` — designed-in-from-day-one
-  checklist every v2 crate must pass before merge.
 - `docs/v2/attack-mapping.md` — full ATT&CK + D3FEND
   traceability matrix.
+
+(`docs/v2/security-baseline.md` was filed 2026-06-18 — 15 rules
+covering crate root config, secret handling, KDF discipline,
+naming/doc templates, process hardening, capability annotation,
+serde trap closure, allowed-primitives ban list, error hygiene,
+secret-arg passing, layered tests; rule-summary table; per-crate
+certification procedure.  v2-babbleon-core verified compliant
+against rules 1, 3, 7, 11; remaining rules are review-only and
+pass at the current snapshot.)
 
 The three operator-design docs from this session:
 
