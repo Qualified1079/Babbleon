@@ -55,8 +55,17 @@ code items are phases 1-6.
       tests) + a rule-summary table + a per-crate certification
       procedure.  v2-babbleon-core verified compliant against
       rules 1, 3, 7, 11; pedantic warnings under triage.
-- [ ] `docs/v2/attack-mapping.md` — full ATT&CK + D3FEND
-      traceability matrix referenced from standards-alignment
+- [x] `docs/v2/attack-mapping.md` — full ATT&CK + D3FEND
+      traceability matrix referenced from standards-alignment.
+      Filed 2026-06-18.  Forward direction: ATT&CK technique →
+      status (Defends/Partial/Out-of-scope/N-A) → mechanism →
+      D3FEND ID → v2 code surface; sorted by Tactic then ID;
+      covers Initial Access through Impact (12 tactics, ~60
+      techniques).  Reverse direction: each of the 7 D3FEND
+      techniques v2 implements with the ATT&CK IDs it raises
+      cost on.  Coverage-statistics table by tactic +
+      doc-limitation pointers.  Strongest coverage: Credential
+      Access (11 Defends) and Discovery (4 Defends).
 
 ### Phase 0 — operator decisions CONFIRMED 2026-06-15
 

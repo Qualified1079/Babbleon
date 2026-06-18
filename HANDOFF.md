@@ -165,7 +165,7 @@ docs/v2/                            ✅ phase 0
   phase0-decisions.md               ✅ recommendations on 5 decisions
   threat-model.md                   ✅ filed 2026-06-18 (STRIDE 30 rows; ATT&CK v17 keyed; D3FEND; 800-190; 800-207)
   security-baseline.md              ✅ filed 2026-06-18 (15 rules + cert procedure)
-  attack-mapping.md                 ❌ TBD (full traceability matrix)
+  attack-mapping.md                 ✅ filed 2026-06-18 (forward + reverse traceability; coverage stats)
   dynamic-keywords.md               ❌ TBD (item B above)
   gui-design.md                     ❌ TBD (item C above)
 
@@ -278,14 +278,11 @@ caps, NOT setuid) follows, then phase 3 (structural scrambling).
 
 ---
 
-## One doc still owed in phase 0 (low-priority; can land
-during phase 1 or 2)
+## Phase 0 docs — complete
 
-- `docs/v2/attack-mapping.md` — full ATT&CK + D3FEND
-  traceability matrix.  Threat model (filed 2026-06-18) already
-  carries the keyed-by-technique table; attack-mapping is the
-  fuller grep-friendly cross-reference (ATT&CK ID → mechanism →
-  D3FEND ID → v2 code surface).  Pure documentary; no code.
+All three phase-0 docs are filed (2026-06-18).  Next session
+picks up phase 2 (launcher + PAM port) or phase 3
+(preprocessor); the doc track no longer blocks.
 
 Filed 2026-06-18:
 
@@ -305,6 +302,14 @@ Filed 2026-06-18:
   (L1 BYOE-runtime / L2 BYOE-payload / L3 libc-leak) re-affirmed
   as still load-bearing, detection signals, failure modes,
   update cadence.
+- `docs/v2/attack-mapping.md` — forward direction (ATT&CK ID →
+  status → mechanism → D3FEND ID → v2 code surface) covering
+  all 12 ATT&CK tactics and ~60 techniques.  Reverse direction
+  (each of 7 D3FEND techniques v2 implements → ATT&CK IDs
+  covered).  Coverage-statistics table per tactic.  Strongest
+  coverage in Credential Access (11 Defends) + Discovery
+  (4 Defends).  Pointer table to where in the v2 docs the
+  mechanism behind each row lives.
 
 The three operator-design docs from this session:
 
