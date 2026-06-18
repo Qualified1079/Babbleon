@@ -163,7 +163,7 @@ docs/v2/                            ✅ phase 0
   obfuscation-landscape.md          ✅ 7 additional layers + research
   phase0-research-notes.md          ✅ 11 research threads
   phase0-decisions.md               ✅ recommendations on 5 decisions
-  threat-model.md                   ❌ TBD (STRIDE + ATT&CK + D3FEND)
+  threat-model.md                   ✅ filed 2026-06-18 (STRIDE 30 rows; ATT&CK v17 keyed; D3FEND; 800-190; 800-207)
   security-baseline.md              ✅ filed 2026-06-18 (15 rules + cert procedure)
   attack-mapping.md                 ❌ TBD (full traceability matrix)
   dynamic-keywords.md               ❌ TBD (item B above)
@@ -278,23 +278,33 @@ caps, NOT setuid) follows, then phase 3 (structural scrambling).
 
 ---
 
-## Two docs still owed in phase 0 (low-priority; can land
+## One doc still owed in phase 0 (low-priority; can land
 during phase 1 or 2)
 
-- `docs/v2/threat-model.md` — STRIDE + ATT&CK + D3FEND +
-  800-190 §4.4/§4.5 + 800-207 seven-tenet map.  Sources:
-  `phase0-research-notes.md` §§1–3.
 - `docs/v2/attack-mapping.md` — full ATT&CK + D3FEND
-  traceability matrix.
+  traceability matrix.  Threat model (filed 2026-06-18) already
+  carries the keyed-by-technique table; attack-mapping is the
+  fuller grep-friendly cross-reference (ATT&CK ID → mechanism →
+  D3FEND ID → v2 code surface).  Pure documentary; no code.
 
-(`docs/v2/security-baseline.md` was filed 2026-06-18 — 15 rules
-covering crate root config, secret handling, KDF discipline,
-naming/doc templates, process hardening, capability annotation,
-serde trap closure, allowed-primitives ban list, error hygiene,
-secret-arg passing, layered tests; rule-summary table; per-crate
-certification procedure.  v2-babbleon-core verified compliant
-against rules 1, 3, 7, 11; remaining rules are review-only and
-pass at the current snapshot.)
+Filed 2026-06-18:
+
+- `docs/v2/security-baseline.md` — 15 rules covering crate root
+  config, secret handling, KDF discipline, naming/doc templates,
+  process hardening, capability annotation, serde trap closure,
+  allowed-primitives ban list, error hygiene, secret-arg
+  passing, layered tests; rule-summary table; per-crate
+  certification procedure.  v2-babbleon-core verified compliant
+  against rules 1, 3, 7, 11; remaining rules pass at the current
+  snapshot.
+- `docs/v2/threat-model.md` — 30-row STRIDE matrix re-evaluated
+  for v2 (with new rows for preprocessor / mapping-worker /
+  structural-scramble surfaces), ATT&CK v17 mapping,
+  D3FEND mapping, NIST SP 800-190 §§4.4–4.5 subsection map,
+  NIST SP 800-207 seven-tenet map, the three v1 limitations
+  (L1 BYOE-runtime / L2 BYOE-payload / L3 libc-leak) re-affirmed
+  as still load-bearing, detection signals, failure modes,
+  update cadence.
 
 The three operator-design docs from this session:
 

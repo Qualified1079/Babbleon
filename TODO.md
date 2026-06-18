@@ -33,9 +33,18 @@ code items are phases 1-6.
       missed-standards inventory (ATT&CK, D3FEND, 800-190,
       800-207, in-toto, TUF, CycloneDX, GUAC, CSAF, SARIF, FIPS,
       CIS, STIG, SAMM, Top 10)
-- [ ] `docs/v2/threat-model.md` — STRIDE matrix + ATT&CK/D3FEND
+- [x] `docs/v2/threat-model.md` — STRIDE matrix + ATT&CK/D3FEND
       traceability + 800-190 section map + 800-207 zero-trust
-      tenet map
+      tenet map.  Filed 2026-06-18.  Composes v1's threat-model.md
+      (adversary classification) and threat-model-stride.md
+      (24-row STRIDE matrix, re-evaluated for v2 with new rows for
+      preprocessor / mapping-worker / structural-scramble
+      surfaces).  ATT&CK keyed by v17 technique IDs; D3FEND keyed
+      by the techniques v2 implements (D3-HCH, D3-MA, D3-PSEP,
+      D3-FAPA, D3-DSE, D3-RAPA, D3-OAM); 800-190 §§4.4–4.5 mapped
+      subsection-by-subsection; 800-207 mapped tenet-by-tenet.
+      The full ATT&CK ⇄ D3FEND traceability matrix is split into
+      `attack-mapping.md` (still owed).
 - [x] `docs/v2/security-baseline.md` — "designed-in from day one"
       checklist every v2 crate must pass before merge.  15 rules
       (forbid unsafe, deny missing-docs, Zeroizing/SecretBox,
