@@ -1995,6 +1995,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "v2-babbleon-launch-untrusted"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "libc",
+ "nix",
+ "seccompiler",
+ "thiserror",
+ "tracing",
+ "tracing-subscriber",
+ "v2-babbleon-core",
+]
+
+[[package]]
 name = "valuable"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

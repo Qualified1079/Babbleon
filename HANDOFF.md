@@ -22,10 +22,14 @@ Branch (push target): `claude/magical-turing-mele8c` (operator
 intends to rename to `v1-maintenance` out-of-band; until that
 lands, push here)
 
-Date: 2026-06-16 01:42 UTC
+Date: 2026-06-19 (user-asleep session — claude-opus-4-7)
 
-Last commit before this handoff: `ed03caa` — v2 phase-1 commit 2/N:
-permutation + wordlist + EpochMapping
+Last commit before this handoff: `1d0fa1d` — chore(v2-core): clear
+12 pedantic clippy warnings
+
+This session landed phase 2 step-1: `v2-babbleon-launch-untrusted`
+crate skeleton + the eight lifecycle modules, 21 unit tests green,
+compiles clean.  Details under "Phase 2 — current state" below.
 
 ---
 
@@ -275,6 +279,133 @@ In order:
 
 After phase 1 mapping primitive lands, phase 2 (launcher with file
 caps, NOT setuid) follows, then phase 3 (structural scrambling).
+
+---
+
+## Phase 2 — current state (landed this session)
+
+`crates/v2-babbleon-launch-untrusted/` now exists with the 11-step
+lifecycle from `docs/v2/least-privilege.md` compartmentalized one
+module per step.  The crate is in the workspace, builds clean,
+21 unit tests pass.  12 clippy pedantic warnings remain (doc
+backticks + `similar_names` on `real_uid`/`real_gid`); they are
+warnings (not deny) per security-baseline rule 2.
+
+### What landed
+
+```
+crates/v2-babbleon-launch-untrusted/
+  Cargo.toml                           ✅
+  src/
+    lib.rs                             ✅ module map + 11-step doc table
+    main.rs                            ✅ orchestrator (step 1..=11)
+    cli.rs                             ✅ clap; trailing_var_arg passthrough
+    errors.rs                          ✅ Error + Step + exit-code mapping
+    preflight.rs                       ✅ root-uid reject + NUL-byte check
+    syscall.rs                         ✅ unsafe quarantine (all libc::prctl,
+                                          capget); SAFETY: on every block
+    bounding_set.rs                    ✅ step 2 + 10; WORKING_CAPS = the 4
+    process_hardening.rs               ✅ step 3 (apply_secret_hygiene)
+                                          + step 7 (set_no_new_privs)
+    namespaces.rs                      ✅ step 4 (unshare NEWNS|NEWPID)
+                                          + step 5 (MS_PRIVATE|MS_REC)
+    mounts.rs                          ⚠️ step 6 PARTIAL — only the
+                                          tmpfs is mounted; per-tool
+                                          bind-mount loop deferred until
+                                          daemon-IPC channel exists
+    identity_drop.rs                   ✅ step 9 (setgroups + setgid + setuid)
+    seccomp_profile.rs                 ✅ step 8 (allowlist; KillProcess
+                                          mismatch); 4 self-tests assert
+                                          no dangerous syscall slipped in
+```
+
+Build:  `cargo build -p v2-babbleon-launch-untrusted` → clean.
+Tests:  `cargo test -p v2-babbleon-launch-untrusted` → 21/21.
+
+### Design notes that matter
+
+- **Step 8 (seccomp) runs after step 10 in the orchestrator** even
+  though the lifecycle table in least-privilege.md lists it as
+  step 8.  Reason: the seccomp allowlist deliberately does NOT
+  include `setuid`, `setgid`, `setgroups`, or `prctl` — those are
+  privileged surface we want gone before the filter goes on.
+  So the orchestrator runs the strict ordering 1..=7 → 9 → 10 → 8
+  → 11.  The comment in `main.rs::run` documents the divergence;
+  `docs/v2/least-privilege.md` should be updated to match.
+- **WORKING_CAPS = 4**: `CAP_SYS_ADMIN`, `CAP_SETUID`, `CAP_SETGID`,
+  `CAP_IPC_LOCK`.  Encoded as raw integers (6, 7, 14, 21) because
+  the libc crate does not export them.  Constants are named in
+  `bounding_set.rs`.
+- **Exit-code contract** (`Step::code`) — operator-visible; do not
+  reorder.  Failed step name is also written to stderr.
+- **Pre-flight rejects real-UID 0** before any state change.  Avoids
+  confused-deputy where root scripts accidentally inherit a
+  half-built namespace.
+- **Unsafe quarantine** in `syscall.rs` — `lib.rs` uses
+  `deny(unsafe_code)` rather than `forbid`; `syscall.rs` carries
+  `allow(unsafe_code)` + `deny(clippy::undocumented_unsafe_blocks)`
+  per security-baseline rule 1 exception policy.  Every unsafe block
+  has a `SAFETY:` comment.
+
+### Phase-2 next steps (the next session's queue)
+
+In order:
+
+1. **Privileged-path validation.**  Set up a rooted-test harness
+   (probably a `cargo test --ignored` group gated by `is_root`).
+   The lifecycle modules only have unprivileged-path unit tests
+   today; the actual `unshare`+`mount`+`setuid` paths are
+   exercised only by integration.
+
+2. **Daemon-IPC channel for the activated mapping table.**  Step 6
+   (`mounts.rs`) needs to receive the `EpochMapping`
+   (`v2-babbleon-core::mapping`) from the daemon at exec time —
+   the launcher MUST NOT hold the per-host secret.  Design:
+   one-shot pipe from the daemon, sent over a Unix socket at
+   `/run/babbleon/launcher.sock`; payload is the activated
+   table (scrambled → wrapper path) serialised as a JSONL block.
+   Once received, the launcher does the bind-mount loop.
+
+3. **Unified runtime-table wrapper bind-mount.**  v1 bind-mounts
+   one wrapper per tracked tool; v2 should bind a single unified
+   wrapper (already generated by
+   `v2-babbleon-core::wrapper::write_wrapper`) at every scrambled
+   name and let it read the table file at exec time.  Cheaper at
+   N=200+ tools.
+
+4. **Credential-dir tmpfs overlay.**  Port v1's
+   `credentials::apply_untrusted_gate` under v2 conventions.
+   Lives in `crates/v2-babbleon-core/src/credentials.rs` (new).
+
+5. **PAM module (`crates/v2-babbleon-pam/`).**  C shim invoking
+   the launcher at session open.  Existing v1 PAM code at
+   `crates/babbleon-pam/` is reference; rewrite under v2 names.
+
+6. **Clean up the 12 pedantic warnings** in the launcher crate.
+   `cargo clippy -p v2-babbleon-launch-untrusted --fix --lib` does
+   7 of them mechanically; the `similar_names` on
+   `real_uid`/`real_gid` warrants a per-item allow with inline
+   justification (operator-facing names; matter for the lifecycle
+   semantics).
+
+7. **Documentation update.**  Edit `docs/v2/least-privilege.md` to
+   reflect the actual ordering (step 8 runs after step 10 in the
+   orchestrator).  See main.rs::run comment.
+
+### What this DOES NOT defeat yet
+
+Until items 1-3 land:
+
+- The launcher mounts an empty tmpfs at `/run/babbleon/scrambled`
+  and `execve`s the child.  The child sees an empty scrambled
+  view (no tool wrappers bound in).  This is enough to validate
+  the namespace+caps+seccomp pipeline but is NOT yet a working
+  obfuscation system.
+- Pre-flight rejects root, but the launcher trusts whatever the
+  daemon installer set up at `/run/babbleon/` — if that
+  directory is missing, step 6 returns `Error::Mount` and
+  exits with code 6.  A daemon-side liveness check is filed as
+  follow-up.
 
 ---
 

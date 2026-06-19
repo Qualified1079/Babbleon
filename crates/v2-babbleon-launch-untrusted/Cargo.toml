@@ -1,0 +1,31 @@
+[package]
+name = "v2-babbleon-launch-untrusted"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Babbleon v2 untrusted-tier launcher. Installs with file capabilities (NOT setuid-root) per docs/v2/least-privilege.md."
+publish = false
+
+[[bin]]
+name = "babbleon-launch-untrusted"
+path = "src/main.rs"
+
+[dependencies]
+# Errors + logging.
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+# CLI.
+clap = { workspace = true }
+# Linux syscall surface — every unsafe libc call is quarantined to
+# `syscall.rs` per security-baseline rule 1 exception policy.
+libc = { workspace = true }
+# Higher-level Linux primitives we use through safe wrappers.
+nix = { workspace = true }
+# seccomp-bpf filter for the post-step-10 syscall lockdown.
+seccompiler = { workspace = true }
+
+[dev-dependencies]
+# Used by the lifecycle-ordering unit test.
+v2-babbleon-core = { path = "../v2-babbleon-core" }

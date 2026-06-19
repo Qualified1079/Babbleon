@@ -1,0 +1,150 @@
+//! `babbleon-launch-untrusted` — entry point.
+//!
+//! Orchestrates the 11-step lifecycle from `docs/v2/least-privilege.md`.
+//! All substantive logic lives in [`v2_babbleon_launch_untrusted`]
+//! crate modules; this binary is purely a sequencer with exit-code
+//! mapping.
+
+#![cfg_attr(target_os = "linux", deny(unsafe_code))]
+#![cfg_attr(not(target_os = "linux"), forbid(unsafe_code))]
+#![deny(missing_docs)]
+#![warn(clippy::pedantic)]
+
+use clap::Parser;
+
+use v2_babbleon_launch_untrusted::cli::Args;
+use v2_babbleon_launch_untrusted::errors::Step;
+
+fn main() {
+    // tracing init — INFO by default; honour RUST_LOG override so
+    // CI / debugging can crank verbosity without a rebuild.
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .init();
+
+    let args = Args::parse();
+    let exit_code = run(&args);
+    std::process::exit(exit_code);
+}
+
+#[cfg(target_os = "linux")]
+fn run(args: &Args) -> i32 {
+    use v2_babbleon_launch_untrusted::{
+        bounding_set, identity_drop, mounts, namespaces, preflight,
+        process_hardening, seccomp_profile,
+    };
+
+    macro_rules! step {
+        ($step:expr, $expr:expr) => {
+            match $expr {
+                Ok(v) => v,
+                Err(e) => return exit_for_step($step, &e.to_string()),
+            }
+        };
+    }
+
+    // ---- Step 1 — pre-flight ------------------------------------
+    let real_uid = nix::unistd::getuid().as_raw();
+    let real_gid = nix::unistd::getgid().as_raw();
+    let outcome = step!(Step::Preflight, preflight::check(args, real_uid, real_gid));
+
+    tracing::info!(
+        step = %Step::Preflight,
+        real_uid,
+        real_gid,
+        cmd_argc = outcome.child_command.len(),
+        "preflight ok"
+    );
+
+    // ---- Step 2 — trim bounding set to 4-cap working set --------
+    step!(Step::BoundingSetTrim, bounding_set::trim_to_working_set());
+    tracing::info!(step = %Step::BoundingSetTrim, "bounding set trimmed");
+
+    // ---- Step 3 — process hardening -----------------------------
+    step!(Step::ProcessHardening, process_hardening::apply_secret_hygiene());
+    tracing::info!(step = %Step::ProcessHardening, "hardening applied");
+
+    // ---- Step 4 — enter NEWNS|NEWPID ----------------------------
+    step!(Step::EnterNamespaces, namespaces::enter_fresh_namespaces());
+    tracing::info!(step = %Step::EnterNamespaces, "namespaces entered");
+
+    // ---- Step 5 — make root mount tree private ------------------
+    step!(Step::MakeRootPrivate, namespaces::make_root_private());
+    tracing::info!(step = %Step::MakeRootPrivate, "/ marked MS_PRIVATE|MS_REC");
+
+    // ---- Step 6 — mount scrambled view --------------------------
+    // PARTIAL (phase 2 in flight): tmpfs only; per-tool bind-mount
+    // loop deferred pending daemon-IPC channel (see mounts.rs).
+    step!(Step::MountScrambledView, mounts::mount_scrambled_view_tmpfs());
+    tracing::info!(step = %Step::MountScrambledView, "scrambled-view tmpfs mounted");
+
+    // ---- Step 7 — PR_SET_NO_NEW_PRIVS ---------------------------
+    step!(Step::SetNoNewPrivs, process_hardening::set_no_new_privs());
+    tracing::info!(step = %Step::SetNoNewPrivs, "NO_NEW_PRIVS=1");
+
+    // ---- Step 9 — drop identity ---------------------------------
+    // NOTE: identity drop happens BEFORE seccomp install in this
+    // ordering because the v2 baseline requires seccomp to allow
+    // execve and the post-step-10 surface to be minimal — we want
+    // setuid/setgid to NOT be in the post-seccomp allowlist, so
+    // they must run first.  Document this divergence from the
+    // strict 1..=11 ordering in least-privilege.md: step 9 runs
+    // before step 8 by design.  Step 8 (seccomp) closes the window
+    // on every cap-requiring syscall before step 11 fires.
+    step!(
+        Step::DropIdentity,
+        identity_drop::drop_to_real_user(outcome.real_uid, outcome.real_gid)
+    );
+    tracing::info!(step = %Step::DropIdentity, uid = outcome.real_uid, "identity dropped");
+
+    // ---- Step 10 — drop remaining permitted caps ----------------
+    // After setuid with KEEPCAPS=0 the effective set is already
+    // cleared by the kernel; tightening the bounding set here
+    // prevents file-cap regain across step-11 execve.
+    step!(Step::DropAllPermitted, bounding_set::drop_all_bounding());
+    tracing::info!(step = %Step::DropAllPermitted, "bounding set fully cleared");
+
+    // ---- Step 8 (deferred to here) — seccomp ---------------------
+    step!(Step::ApplySeccomp, seccomp_profile::apply());
+    tracing::info!(step = %Step::ApplySeccomp, "seccomp filter installed");
+
+    // ---- Step 11 — execve child ---------------------------------
+    exec_child(&outcome.child_command)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn run(_args: &Args) -> i32 {
+    eprintln!(
+        "babbleon-launch-untrusted: Linux-only.  This binary uses \
+         capabilities, mount namespaces, and seccomp; none have a \
+         meaningful cross-platform analog."
+    );
+    Step::Preflight.code()
+}
+
+#[cfg(target_os = "linux")]
+fn exec_child(cmd: &[String]) -> i32 {
+    use std::os::unix::process::CommandExt;
+    let program = &cmd[0];
+    let mut command = std::process::Command::new(program);
+    command.args(&cmd[1..]);
+    let err = command.exec();
+    eprintln!(
+        "babbleon-launch-untrusted: step {} exec {}: {err}",
+        Step::ExecChild.name(),
+        program,
+    );
+    // exec(2) only returns on failure; use the step code so an
+    // operator looking at $? alone can attribute the failure.
+    Step::ExecChild.code()
+}
+
+/// Map a step error to a stable exit code.  Codes match
+/// [`Step::code`]; values are part of the operator contract.
+fn exit_for_step(step: Step, message: &str) -> i32 {
+    eprintln!("babbleon-launch-untrusted: step {}: {message}", step.name());
+    step.code()
+}
