@@ -57,6 +57,7 @@
 // as the crate grows.
 
 pub mod activated_table;
+pub mod credentials;
 pub mod crypto_compare;
 pub mod errors;
 pub mod events;
@@ -71,6 +72,11 @@ pub mod wrapper;
 pub use activated_table::{
     build_activated_table_from_mapping, ActivatedEntry, ActivatedTable,
     ActivatedTableBuilder, MAX_TABLE_BYTES,
+};
+pub use credentials::{
+    discover_credential_dirs, is_credential_env_var,
+    scrub_credential_env_vars, CREDENTIAL_DIRS_RELATIVE_TO_HOME,
+    SCRUB_ENV_SUFFIXES, SCRUB_ENV_VAR_NAMES,
 };
 pub use errors::{Error, Result};
 pub use events::{

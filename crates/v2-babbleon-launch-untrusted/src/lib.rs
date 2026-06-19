@@ -76,6 +76,8 @@ pub mod activated_table_input;
 #[cfg(target_os = "linux")]
 pub mod bounding_set;
 #[cfg(target_os = "linux")]
+pub mod credential_gate;
+#[cfg(target_os = "linux")]
 pub mod identity_drop;
 #[cfg(target_os = "linux")]
 pub mod mounts;

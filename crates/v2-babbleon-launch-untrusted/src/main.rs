@@ -122,6 +122,12 @@ fn run(args: &Args) -> i32 {
         );
     }
 
+    // ---- Step 6 (continued) — credential-dir tmpfs overlays ----
+    step!(
+        Step::MountScrambledView,
+        run_credential_gate(outcome.real_uid)
+    );
+
     // ---- Step 7 — PR_SET_NO_NEW_PRIVS ---------------------------
     step!(Step::SetNoNewPrivs, process_hardening::set_no_new_privs());
     tracing::info!(step = %Step::SetNoNewPrivs, "NO_NEW_PRIVS=1");
@@ -164,6 +170,52 @@ fn run(_args: &Args) -> i32 {
          meaningful cross-platform analog."
     );
     Step::Preflight.code()
+}
+
+/// Look up the caller's home via getpwuid (NOT via `HOME`, which an
+/// attacker can spoof), discover the per-user credential-dir set,
+/// and overlay an empty tmpfs over each.
+///
+/// Returns `Ok(())` if the gate ran cleanly OR if home lookup failed
+/// gracefully (no `/etc/passwd` entry).  Returns `Err(_)` only on a
+/// `mount(2)` failure, which is a real configuration / capability
+/// problem worth aborting on.
+#[cfg(target_os = "linux")]
+fn run_credential_gate(real_uid: u32) -> v2_babbleon_launch_untrusted::Result<()> {
+    use v2_babbleon_launch_untrusted::credential_gate;
+
+    let user_result =
+        nix::unistd::User::from_uid(nix::unistd::Uid::from_raw(real_uid));
+    let user = match user_result {
+        Ok(Some(u)) => u,
+        Ok(None) => {
+            tracing::warn!(
+                uid = real_uid,
+                "no passwd entry for caller uid; skipping credential gate",
+            );
+            return Ok(());
+        }
+        Err(e) => {
+            tracing::warn!(
+                uid = real_uid,
+                error = %e,
+                "passwd lookup failed; skipping credential gate",
+            );
+            return Ok(());
+        }
+    };
+    let cred_dirs = babbleon_core_v2::discover_credential_dirs(&user.dir);
+    if cred_dirs.is_empty() {
+        tracing::info!(
+            home = %user.dir.display(),
+            "no credential dirs to overlay",
+        );
+        return Ok(());
+    }
+    let count = cred_dirs.len();
+    credential_gate::hide_credential_dirs_with_tmpfs(&cred_dirs)?;
+    tracing::info!(count, "credential dirs overlaid with empty tmpfs");
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
