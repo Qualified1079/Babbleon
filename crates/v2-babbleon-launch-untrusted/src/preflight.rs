@@ -103,6 +103,7 @@ mod tests {
         Args {
             activated_table_fd: None,
             activated_table_path: None,
+            daemon_socket: None,
             child_command: items.iter().map(|s| (*s).to_string()).collect(),
         }
     }

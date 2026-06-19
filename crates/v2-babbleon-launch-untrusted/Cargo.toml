@@ -31,6 +31,14 @@ seccompiler = { workspace = true }
 # refactor may extract activated_table into its own crate to
 # tighten the audit surface; tracked in HANDOFF.md.
 v2-babbleon-core = { path = "../v2-babbleon-core" }
+# Daemon-socket protocol + client (Request, Response, round_trip).
+# We pull the daemon crate solely for its IPC surface so the launcher
+# can ask a running daemon for the activated table; the daemon's
+# state / handlers / socket-listener code is dead from the
+# launcher's POV and the linker drops it.  A future refactor will
+# extract protocol + client into a thin shared crate; tracked in
+# HANDOFF.md.
+v2-babbleon-daemon = { path = "../v2-babbleon-daemon" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

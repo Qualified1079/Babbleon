@@ -11,7 +11,7 @@
 //!
 //! # Mechanism
 //!
-//! Two input modes, selected by the CLI:
+//! Three input modes, selected by the CLI:
 //!
 //! - **`--activated-table-fd <FD>`**: the parent process (typically
 //!   the daemon) opened the table file or a pipe, dup'd the
@@ -25,6 +25,13 @@
 //! - **`--activated-table-path <P>`**: the launcher opens the
 //!   file at `P` and reads from it.  Used by the rooted-test
 //!   harness and by daemonless smoke tests.
+//! - **`--daemon-socket <P>`**: the launcher connects to the running
+//!   daemon at the Unix socket path `P`, sends an
+//!   `EmitActivatedTable` request, and parses the JSONL body of the
+//!   response.  This is the production flow: PAM launches the
+//!   launcher, the launcher asks the daemon for the current epoch's
+//!   table, the launcher bind-mounts.  No FD passing required —
+//!   simpler for PAM to set up than `--activated-table-fd`.
 //!
 //! # Compartmentalization
 //!
@@ -58,41 +65,48 @@ use crate::errors::{Error, Result};
 
 /// Read and validate the activated table from the chosen source.
 ///
-/// At most one of `fd` and `path` is meaningful; if both are
-/// supplied the CLI layer should have rejected the invocation
-/// before reaching this function (see
-/// [`crate::cli::Args::activated_table_fd`]).  Defense in depth:
-/// if both arrive here, the FD wins (matches the documented
-/// daemon-trust ordering) and a tracing warning is emitted.
+/// At most one of `fd`, `path`, and `daemon_socket` is meaningful;
+/// the CLI layer (`conflicts_with` attributes) rejects multiple
+/// inputs before this function runs.  Defense in depth: if more than
+/// one arrives here, the precedence is **fd > daemon-socket > path**
+/// (matches the documented trust ordering: daemon-passed FD over
+/// daemon-served socket over operator-supplied file) and a tracing
+/// warning is emitted.
 ///
-/// Returns `Ok(None)` if neither source is supplied — the
-/// orchestrator interprets that as "no bind-mounts, exec into an
-/// empty scrambled view", which is the namespace+caps+seccomp
-/// smoke-test mode.
+/// Returns `Ok(None)` if no source is supplied — the orchestrator
+/// interprets that as "no bind-mounts, exec into an empty
+/// scrambled view", which is the namespace+caps+seccomp smoke-test
+/// mode.
 ///
 /// # Errors
 ///
 /// - [`Error::ActivatedTable`] for any failure reading or parsing
-///   the table.  The error message names the source (fd N or
-///   path P) so the operator can correlate with the daemon side.
+///   the table.  The error message names the source (fd N, path P,
+///   or daemon-socket S) so the operator can correlate with the
+///   daemon side.
 pub fn read_if_present(
     fd: Option<i32>,
     path: Option<&Path>,
+    daemon_socket: Option<&Path>,
 ) -> Result<Option<ActivatedTable>> {
-    match (fd, path) {
-        (Some(fd), Some(p)) => {
-            tracing::warn!(
-                fd,
-                path = %p.display(),
-                "both --activated-table-fd and --activated-table-path supplied; \
-                 preferring fd (daemon-trust ordering)",
-            );
-            read_from_fd(fd).map(Some)
-        }
-        (Some(fd), None) => read_from_fd(fd).map(Some),
-        (None, Some(p)) => read_from_path(p).map(Some),
-        (None, None) => Ok(None),
+    let supplied = (fd.is_some(), daemon_socket.is_some(), path.is_some());
+    if matches!(supplied, (true, true, _) | (true, _, true) | (_, true, true))
+    {
+        tracing::warn!(
+            "multiple activated-table sources supplied; preferring fd > \
+             daemon-socket > path (trust ordering)",
+        );
     }
+    if let Some(fd) = fd {
+        return read_from_fd(fd).map(Some);
+    }
+    if let Some(socket) = daemon_socket {
+        return read_from_daemon_socket(socket).map(Some);
+    }
+    if let Some(p) = path {
+        return read_from_path(p).map(Some);
+    }
+    Ok(None)
 }
 
 fn read_from_fd(fd: i32) -> Result<ActivatedTable> {
@@ -121,6 +135,48 @@ fn read_from_fd(fd: i32) -> Result<ActivatedTable> {
     let reader = BufReader::new(file);
     ActivatedTable::read_jsonl(reader).map_err(|e| {
         Error::ActivatedTable(format!("activated-table fd {fd}: parse: {e}"))
+    })
+}
+
+/// Ask the running daemon at `socket_path` for the current epoch's
+/// activated table.  Returns the parsed table on success.
+///
+/// The daemon's response is a JSON object whose `jsonl` field
+/// contains the activated-table bytes; this function extracts those
+/// bytes and feeds them through the same parser the FD / path paths
+/// use, so all three input modes converge on the same validation.
+fn read_from_daemon_socket(socket_path: &Path) -> Result<ActivatedTable> {
+    use babbleon_daemon_v2::{round_trip, ErrorKind, Request, Response};
+    let resp = round_trip(socket_path, &Request::EmitActivatedTable)
+        .map_err(|e| {
+            Error::ActivatedTable(format!(
+                "activated-table daemon-socket {}: round-trip: {e}",
+                socket_path.display()
+            ))
+        })?;
+    let jsonl = match resp {
+        Response::ActivatedTable { jsonl, .. } => jsonl,
+        Response::Error { kind, message } => {
+            return Err(Error::ActivatedTable(format!(
+                "activated-table daemon-socket {}: daemon error ({:?}): {message}",
+                socket_path.display(),
+                kind
+            )));
+        }
+        other => {
+            let _ = ErrorKind::Internal; // ensure import is referenced when this branch is unreachable
+            return Err(Error::ActivatedTable(format!(
+                "activated-table daemon-socket {}: unexpected response shape: {other:?}",
+                socket_path.display()
+            )));
+        }
+    };
+    let reader = BufReader::new(std::io::Cursor::new(jsonl));
+    ActivatedTable::read_jsonl(reader).map_err(|e| {
+        Error::ActivatedTable(format!(
+            "activated-table daemon-socket {}: parse: {e}",
+            socket_path.display()
+        ))
     })
 }
 
@@ -196,8 +252,8 @@ mod tests {
     }
 
     #[test]
-    fn read_if_present_returns_none_when_neither_source_given() {
-        let t = read_if_present(None, None).unwrap();
+    fn read_if_present_returns_none_when_no_source_given() {
+        let t = read_if_present(None, None, None).unwrap();
         assert!(t.is_none(), "no source means no table");
     }
 
@@ -206,13 +262,26 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("table.jsonl");
         write_sample_table(&p);
-        let t = read_if_present(None, Some(&p)).unwrap().unwrap();
+        let t = read_if_present(None, Some(&p), None).unwrap().unwrap();
         assert_eq!(t.epoch, 7);
     }
 
     #[test]
     fn read_if_present_rejects_negative_fd() {
-        let err = read_if_present(Some(-1), None).unwrap_err();
+        let err = read_if_present(Some(-1), None, None).unwrap_err();
         assert!(format!("{err}").contains("negative"));
+    }
+
+    #[test]
+    fn read_if_present_returns_error_for_missing_daemon_socket() {
+        let dir = tempfile::tempdir().unwrap();
+        let nonexistent = dir.path().join("daemon.sock");
+        let err = read_if_present(None, None, Some(&nonexistent))
+            .unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("daemon-socket") && msg.contains("round-trip"),
+            "expected daemon-socket round-trip error, got: {msg}",
+        );
     }
 }

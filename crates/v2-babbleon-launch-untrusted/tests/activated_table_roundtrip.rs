@@ -94,7 +94,7 @@ fn launcher_reads_table_from_path_written_by_core() {
     }
 
     let parsed =
-        activated_table_input::read_if_present(None, Some(path.as_path()))
+        activated_table_input::read_if_present(None, Some(path.as_path()), None)
             .unwrap()
             .unwrap();
     assert_eq!(parsed, table);
@@ -103,7 +103,7 @@ fn launcher_reads_table_from_path_written_by_core() {
 #[test]
 fn launcher_returns_none_when_no_source_supplied() {
     let parsed =
-        activated_table_input::read_if_present(None, None).unwrap();
+        activated_table_input::read_if_present(None, None, None).unwrap();
     assert!(parsed.is_none());
 }
 
@@ -161,6 +161,7 @@ fn full_daemon_side_pipeline_writes_wrappers_and_table_consumable_by_launcher() 
     let parsed = activated_table_input::read_if_present(
         None,
         Some(table_path.as_path()),
+        None,
     )
     .unwrap()
     .unwrap();

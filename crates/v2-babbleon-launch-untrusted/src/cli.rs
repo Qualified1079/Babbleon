@@ -14,8 +14,11 @@
 //! - `--activated-table-path P`: read the JSONL from file P.  Used
 //!   by the rooted-test harness and by operators who want to drive
 //!   the launcher without a daemon (e.g. CI smoke tests).
+//! - `--daemon-socket P`: connect to the running daemon at `P` and
+//!   request the current epoch's activated table.  Production
+//!   flow.
 //!
-//! If neither flag is given, the launcher establishes the
+//! If no source flag is given, the launcher establishes the
 //! scrambled-view tmpfs and exec()s the child with NO bind-mounts
 //! — useful for namespace+caps+seccomp smoke testing, NOT a
 //! functional obfuscation deployment.
@@ -46,17 +49,33 @@ cap_ipc_lock), NOT setuid-root.  See docs/v2/least-privilege.md.",
 )]
 pub struct Args {
     /// File descriptor to read the activated-table JSONL from.
-    /// Mutually exclusive with `--activated-table-path`.  The daemon
-    /// passes the table this way so it never touches the launcher's
-    /// filesystem view.
-    #[arg(long = "activated-table-fd", value_name = "FD", conflicts_with = "activated_table_path")]
+    /// Mutually exclusive with `--activated-table-path` and
+    /// `--daemon-socket`.  The daemon passes the table this way so
+    /// it never touches the launcher's filesystem view.
+    #[arg(
+        long = "activated-table-fd",
+        value_name = "FD",
+        conflicts_with_all = ["activated_table_path", "daemon_socket"],
+    )]
     pub activated_table_fd: Option<i32>,
 
     /// Path to a JSONL file holding the activated table.  Mutually
-    /// exclusive with `--activated-table-fd`.  Intended for the
-    /// rooted-test harness and for daemonless smoke tests.
-    #[arg(long = "activated-table-path", value_name = "PATH")]
+    /// exclusive with `--activated-table-fd` and `--daemon-socket`.
+    /// Intended for the rooted-test harness and for daemonless
+    /// smoke tests.
+    #[arg(
+        long = "activated-table-path",
+        value_name = "PATH",
+        conflicts_with = "daemon_socket",
+    )]
     pub activated_table_path: Option<std::path::PathBuf>,
+
+    /// Unix-socket path of the running daemon.  The launcher will
+    /// connect, request the current epoch's activated table, and
+    /// proceed.  Mutually exclusive with the two
+    /// `--activated-table-*` flags.  Production flow.
+    #[arg(long = "daemon-socket", value_name = "PATH")]
+    pub daemon_socket: Option<std::path::PathBuf>,
 
     /// The child command and its arguments.  Required — at least
     /// one element.  Passed to `execvp(child_command[0],
@@ -153,6 +172,47 @@ mod tests {
             "/bin/bash",
         ]);
         assert!(result.is_err(), "both flags together must be rejected");
+    }
+
+    #[test]
+    fn daemon_socket_flag_parses() {
+        let args = Args::try_parse_from([
+            "babbleon-launch-untrusted",
+            "--daemon-socket",
+            "/run/babbleon/daemon.sock",
+            "/bin/bash",
+        ])
+        .unwrap();
+        assert_eq!(
+            args.daemon_socket,
+            Some(std::path::PathBuf::from("/run/babbleon/daemon.sock"))
+        );
+    }
+
+    #[test]
+    fn daemon_socket_is_mutually_exclusive_with_fd() {
+        let result = Args::try_parse_from([
+            "babbleon-launch-untrusted",
+            "--activated-table-fd",
+            "7",
+            "--daemon-socket",
+            "/x",
+            "/bin/bash",
+        ]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn daemon_socket_is_mutually_exclusive_with_path() {
+        let result = Args::try_parse_from([
+            "babbleon-launch-untrusted",
+            "--activated-table-path",
+            "/x/table.jsonl",
+            "--daemon-socket",
+            "/x",
+            "/bin/bash",
+        ]);
+        assert!(result.is_err());
     }
 
     #[test]

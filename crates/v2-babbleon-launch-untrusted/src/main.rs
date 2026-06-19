@@ -72,6 +72,7 @@ fn run(args: &Args) -> i32 {
         activated_table_input::read_if_present(
             args.activated_table_fd,
             args.activated_table_path.as_deref(),
+            args.daemon_socket.as_deref(),
         )
     );
     if let Some(ref t) = activated_table {
