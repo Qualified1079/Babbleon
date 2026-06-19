@@ -22,14 +22,50 @@ Branch (push target): `claude/magical-turing-mele8c` (operator
 intends to rename to `v1-maintenance` out-of-band; until that
 lands, push here)
 
-Date: 2026-06-19 (user-asleep session — claude-opus-4-7)
+Date: 2026-06-19 (user-asleep session continued — claude-opus-4-7)
 
-Last commit before this handoff: `1d0fa1d` — chore(v2-core): clear
-12 pedantic clippy warnings
+Last commit before this handoff: `b138c27` — feat(v2-core): bridge
+EpochMapping -> ActivatedTable for daemon side
 
-This session landed phase 2 step-1: `v2-babbleon-launch-untrusted`
-crate skeleton + the eight lifecycle modules, 21 unit tests green,
-compiles clean.  Details under "Phase 2 — current state" below.
+This session continued from the prior phase-2 step-1 landing.
+What's new since `1d0fa1d`:
+
+1. `docs/v2/least-privilege.md` — orchestrator step ordering
+   documented (1..=7 → 9 → 10 → 8 → 11; was straight 1..=11).
+   Reflects what `v2-babbleon-launch-untrusted::main::run` actually
+   does.  Commit `87209c9`.
+2. `v2-babbleon-launch-untrusted` clippy cleared — 12 pedantic
+   warnings, all fixed.  9 mechanical doc_markdown backticks; 3
+   `similar_names` get per-item `#[allow]` with justification
+   (kernel terminology preserved across the lifecycle).  Commit
+   `02cf945`.
+3. `v2-babbleon-core::activated_table` — the secret-free per-epoch
+   artefact the daemon ships to the launcher.  JSONL wire format,
+   strict parse-time validation, hard-cap on size, no `serde::Deserialize`
+   on operator-influenceable surface.  19 unit tests.  Commit
+   `c9dda0e`.
+4. `v2-babbleon-launch-untrusted` consumes the activated table.
+   New flags `--activated-table-fd N` / `--activated-table-path P`
+   (mutually exclusive).  New module `activated_table_input` for
+   source selection; `mounts::bind_mount_entries` for the
+   post-tmpfs bind loop; `syscall::adopt_raw_fd_as_file` for
+   parent-passed-FD adoption with documented SAFETY contract.
+   Read happens BEFORE step 2 so a malformed table never leaves
+   the process in a half-set-up namespace.  Commit `ad0aafd`.
+5. `v2-babbleon-core::build_activated_table_from_mapping` — the
+   daemon-side bridge.  Iterates `EpochMapping` in canonical-name
+   order so the JSONL is reproducible.  Commit `b138c27`.
+6. Cross-crate integration test `tests/activated_table_roundtrip.rs`
+   in the launcher crate: builds mapping with core, bridges to
+   activated-table, serialises, deserialises via the launcher's
+   input path, asserts equivalence.  Also asserts epoch rotation
+   invalidates every entry.  4 tests, all green.
+
+Test counts after this session: **v2-babbleon-core 84** (was 41
+when the prior session ended at handoff, then 62 at the start of
+this one, +22 in this session); **v2-babbleon-launch-untrusted
+32 unit + 4 integration** (was 21 unit; +15 this session);
+**v2-babbleon 3** (unchanged).  All clippy clean.
 
 ---
 
@@ -349,58 +385,76 @@ Tests:  `cargo test -p v2-babbleon-launch-untrusted` → 21/21.
 
 ### Phase-2 next steps (the next session's queue)
 
-In order:
+Items 2, 3, 6, 7 from the original list landed this session.
+What remains, in order:
 
 1. **Privileged-path validation.**  Set up a rooted-test harness
    (probably a `cargo test --ignored` group gated by `is_root`).
    The lifecycle modules only have unprivileged-path unit tests
-   today; the actual `unshare`+`mount`+`setuid` paths are
-   exercised only by integration.
+   today; the actual `unshare`+`mount`+`setuid` paths plus
+   `bind_mount_entries` are exercised only via the cross-crate
+   integration test (`tests/activated_table_roundtrip.rs`) which
+   covers the *table* but not the kernel-call path.  The harness
+   should:
+   - Skip when `geteuid() != 0`.
+   - In a child process, run a synthesised activated table
+     against a tempdir scrambled root, assert every bind landed
+     where expected, assert the orchestrator's `Step::code`
+     contract on injected failures.
 
-2. **Daemon-IPC channel for the activated mapping table.**  Step 6
-   (`mounts.rs`) needs to receive the `EpochMapping`
-   (`v2-babbleon-core::mapping`) from the daemon at exec time —
-   the launcher MUST NOT hold the per-host secret.  Design:
-   one-shot pipe from the daemon, sent over a Unix socket at
-   `/run/babbleon/launcher.sock`; payload is the activated
-   table (scrambled → wrapper path) serialised as a JSONL block.
-   Once received, the launcher does the bind-mount loop.
+2. **Daemon binary.**  The launcher's input contract is set
+   (`--activated-table-fd N` or `--activated-table-path P`); a
+   real daemon that holds the per-host secret, builds the per-
+   epoch mapping, writes wrappers, and pipes the activated table
+   to the launcher does not yet exist.  Crate name to be
+   `crates/v2-babbleon-daemon` per the naming convention.
+   Sub-tasks:
+   - Vault load (port from v1's `vault.rs`).
+   - Long-running event loop: accept Unix-socket connections from
+     PAM-launched launchers; reply with the activated-table JSONL
+     over a one-shot pipe.
+   - Tripwire FIFO reader + responder; carry over v2-core's
+     `tripwire` + `events` modules.
+   - Privilege model per `docs/v2/least-privilege.md` (own UID,
+     seccomp deny-list, no network).
 
-3. **Unified runtime-table wrapper bind-mount.**  v1 bind-mounts
-   one wrapper per tracked tool; v2 should bind a single unified
-   wrapper (already generated by
-   `v2-babbleon-core::wrapper::write_wrapper`) at every scrambled
-   name and let it read the table file at exec time.  Cheaper at
-   N=200+ tools.
-
-4. **Credential-dir tmpfs overlay.**  Port v1's
+3. **Credential-dir tmpfs overlay.**  Port v1's
    `credentials::apply_untrusted_gate` under v2 conventions.
    Lives in `crates/v2-babbleon-core/src/credentials.rs` (new).
+   Once the daemon exists, the launcher receives the per-host
+   credential dir list via the same socket as the activated
+   table.
 
-5. **PAM module (`crates/v2-babbleon-pam/`).**  C shim invoking
+4. **PAM module (`crates/v2-babbleon-pam/`).**  C shim invoking
    the launcher at session open.  Existing v1 PAM code at
    `crates/babbleon-pam/` is reference; rewrite under v2 names.
 
-6. **Clean up the 12 pedantic warnings** in the launcher crate.
-   `cargo clippy -p v2-babbleon-launch-untrusted --fix --lib` does
-   7 of them mechanically; the `similar_names` on
-   `real_uid`/`real_gid` warrants a per-item allow with inline
-   justification (operator-facing names; matter for the lifecycle
-   semantics).
+5. **Daemon-side wrapper materialisation.**  `write_all_wrappers`
+   in `v2-babbleon-core::wrapper` already exists; what's missing
+   is the daemon-side flow that:
+   - Acquires the per-host secret from the unlocked vault.
+   - Builds an `EpochMapping` for the requested epoch.
+   - Calls `write_all_wrappers` into the daemon's wrapper dir.
+   - Calls `build_activated_table_from_mapping` into a JSONL.
+   - Pipes the JSONL to the launcher via the socket.
 
-7. **Documentation update.**  Edit `docs/v2/least-privilege.md` to
-   reflect the actual ordering (step 8 runs after step 10 in the
-   orchestrator).  See main.rs::run comment.
+6. **Activated-table extraction to its own crate** (optional;
+   filed for security-baseline tightening).  The launcher
+   currently depends on `v2-babbleon-core` for the
+   `activated_table` module only.  Extracting it to
+   `crates/v2-babbleon-activated-table` would shrink the
+   launcher's audit surface (no HKDF / ed25519 transitively).
+   Pure-mechanical refactor; defer until the daemon side is in
+   place so we can move both crates' dependency edges at once.
 
 ### What this DOES NOT defeat yet
 
-Until items 1-3 land:
+Until item 2 (daemon binary) lands:
 
-- The launcher mounts an empty tmpfs at `/run/babbleon/scrambled`
-  and `execve`s the child.  The child sees an empty scrambled
-  view (no tool wrappers bound in).  This is enough to validate
-  the namespace+caps+seccomp pipeline but is NOT yet a working
-  obfuscation system.
+- The launcher's `--activated-table-path` mode works end-to-end
+  in tests, but a production deployment has no daemon to
+  *produce* the table.  An operator can hand-craft a table for
+  smoke testing; that is not a working obfuscation system.
 - Pre-flight rejects root, but the launcher trusts whatever the
   daemon installer set up at `/run/babbleon/` — if that
   directory is missing, step 6 returns `Error::Mount` and
