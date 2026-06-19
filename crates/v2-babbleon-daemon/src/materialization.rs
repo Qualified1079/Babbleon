@@ -27,15 +27,15 @@
 //!   paths (the failure mode before this module: the daemon emitted
 //!   `wrapper_path` fields the launcher then tried to bind-mount
 //!   from non-existent files).  Tripwire firing on previous-epoch
-//!   scrambled-name invocation (the stale list).
-//! - **Does NOT defeat:** wrappers from N-2 or older epochs that
-//!   accumulate in `wrapper_dir`.  An invocation of such a wrapper
-//!   falls past the honey check (list moved on) and the stale check
-//!   (list reflects N-1 only), then `exec`s `/dev/null` or its
-//!   stale `real_path` with no tripwire fire.  Compensating control:
-//!   a future cleanup pass; tracked in HANDOFF.md.  For MVP we
-//!   accept the lossy stale window in exchange for a bounded
-//!   stale-list size.
+//!   scrambled-name invocation (the stale list).  Wrapper-directory
+//!   bloat across many rotations (see [`cleanup_stale_wrappers`]).
+//! - **Does NOT defeat:** a worm that cached a scrambled name from
+//!   epoch N-2 or older.  After rotation N→N+1, the cleanup pass
+//!   prunes wrappers older than N-1, so the cached name's wrapper
+//!   no longer exists and the invocation fails with ENOENT —
+//!   blocking the call but emitting no tripwire signal.  Compensating
+//!   control: defenders rely on filesystem-level audit (`open()`,
+//!   `execve()`) for the older-than-N-1 detection signal.
 //! - **Does NOT defeat:** an attacker with write access to
 //!   `wrapper_dir`.  By construction the wrapper files are owned by
 //!   the daemon UID; only root can rewrite them.  See

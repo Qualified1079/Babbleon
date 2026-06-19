@@ -11,8 +11,18 @@ publish = false
 name = "babbleon-v2"
 path = "src/main.rs"
 
+[dev-dependencies]
+tempfile = { workspace = true }
+
 [dependencies]
 v2-babbleon-core = { path = "../v2-babbleon-core" }
+# Used for the daemon socket protocol + client; the user-facing CLI
+# does NOT spawn or hold the daemon's state — it just round-trips
+# requests over the Unix socket.  Future refactor: extract
+# protocol+client into a thin shared crate so v2-babbleon and
+# v2-babbleon-launch-untrusted both depend on the leaf rather than
+# the daemon binary's full surface.
+v2-babbleon-daemon = { path = "../v2-babbleon-daemon" }
 clap = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }

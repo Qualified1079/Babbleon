@@ -30,8 +30,14 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
-use anyhow::Result;
+use std::path::PathBuf;
+
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+
+use babbleon_daemon_v2::{
+    default_socket_path, round_trip, Request, Response,
+};
 
 /// Top-level CLI.  The bare `babbleon` invocation prints help.
 #[derive(Parser)]
@@ -47,6 +53,12 @@ struct Cli {
     /// WARN and above (errors only on success paths).
     #[arg(short = 'v', long = "verbose", action = clap::ArgAction::Count, global = true)]
     verbose: u8,
+
+    /// Override the daemon's Unix-socket path.  Defaults to the
+    /// production location (`/run/babbleon/daemon.sock`); override
+    /// for tests or non-default installs.
+    #[arg(long = "socket", value_name = "PATH", global = true)]
+    socket: Option<PathBuf>,
 
     #[command(subcommand)]
     cmd: Cmd,
@@ -92,16 +104,65 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     install_tracing(cli.verbose);
 
+    let socket_path = cli.socket.unwrap_or_else(default_socket_path);
+
     match cli.cmd {
-        // Stubs until the daemon-side wiring lands in phase 2.  Each
-        // returns an Err so a script that conditionally relies on the
-        // operation having taken effect fails loudly rather than
-        // silently no-op'ing.
+        // Phase 3 — need the vault-unlock protocol on the daemon socket.
         Cmd::Init => not_yet_implemented("init"),
         Cmd::Unlock => not_yet_implemented("unlock"),
-        Cmd::RotateMapping => not_yet_implemented("rotate-mapping"),
-        Cmd::Status => not_yet_implemented("status"),
+        // Phase 2 — wired through to the daemon as of this commit.
+        Cmd::RotateMapping => run_rotate_mapping(&socket_path),
+        Cmd::Status => run_status(&socket_path),
+        // Phase 3 — needs the launcher binary to be on PATH and the
+        // PAM module wired.
         Cmd::MountScrambledView => not_yet_implemented("mount-scrambled-view"),
+    }
+}
+
+/// Read-only status: connects to the daemon, prints the current
+/// epoch, the tracked-tool count, the vault-locked state, and the
+/// last-rotation timestamp (or `null` if the clock is pre-UNIX).
+fn run_status(socket_path: &std::path::Path) -> Result<()> {
+    let resp = round_trip(socket_path, &Request::Status)
+        .with_context(|| format!("daemon round-trip via {}", socket_path.display()))?;
+    match resp {
+        Response::Status {
+            epoch,
+            tracked_count,
+            vault_locked,
+            last_rotation_unix_secs,
+        } => {
+            println!("epoch: {epoch}");
+            println!("tracked_count: {tracked_count}");
+            println!("vault_locked: {vault_locked}");
+            println!(
+                "last_rotation_unix_secs: {}",
+                last_rotation_unix_secs
+                    .map_or("null".to_string(), |s| s.to_string()),
+            );
+            Ok(())
+        }
+        Response::Error { kind, message } => {
+            anyhow::bail!("daemon error ({kind:?}): {message}")
+        }
+        other => anyhow::bail!("expected Status response, got {other:?}"),
+    }
+}
+
+/// Mutator: bump the epoch and rebuild.  Prints the new epoch on
+/// success.
+fn run_rotate_mapping(socket_path: &std::path::Path) -> Result<()> {
+    let resp = round_trip(socket_path, &Request::RotateMapping)
+        .with_context(|| format!("daemon round-trip via {}", socket_path.display()))?;
+    match resp {
+        Response::Rotated { new_epoch } => {
+            println!("rotated to epoch: {new_epoch}");
+            Ok(())
+        }
+        Response::Error { kind, message } => {
+            anyhow::bail!("daemon error ({kind:?}): {message}")
+        }
+        other => anyhow::bail!("expected Rotated response, got {other:?}"),
     }
 }
 
