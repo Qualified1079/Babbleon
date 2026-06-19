@@ -66,10 +66,12 @@
 
 pub mod cli;
 pub mod errors;
+pub mod handlers;
 pub mod protocol;
 pub mod state;
 
 pub use cli::Args;
 pub use errors::{Error, Result};
+pub use handlers::dispatch;
 pub use protocol::{ErrorKind, Request, Response, MAX_REQUEST_BYTES};
 pub use state::DaemonState;
