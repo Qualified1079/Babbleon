@@ -24,9 +24,41 @@ lands, push here)
 
 Date: 2026-06-19 (user-asleep session continued — claude-opus-4-7)
 
-Last commit before this handoff: `bf21356` — test(v2-daemon):
-integration test against the real binary (daemon now end-to-end
-functional in phase-2 stub mode).
+Last commit before this handoff: `5b6f58e` — feat(v2-daemon):
+wrapper materialisation on startup + every rotation (daemon now
+writes the wrapper files it has been advertising; closes phase-2
+items 1, 4, and 5).
+
+## What landed AFTER the previous handoff refresh
+
+Three previously-open phase-2 items closed since the prior
+handoff section ("What landed THIS session", below) was written.
+The previous handoff's open-items list (numbered 1-6) listed
+these — they are now done; the list is rewritten at the bottom
+of this file.
+
+- **Item 1 (Launcher `--daemon-socket` input mode)** — closed by
+  `b7e80a0`.  Launcher now has three activated-table input modes
+  (`--activated-table-fd`, `--activated-table-path`,
+  `--daemon-socket`), all converging on the same
+  `ActivatedTable::read_jsonl` reader.  Two new integration tests
+  in `tests/daemon_socket_input.rs`.
+- **Item 5 (Daemon process hardening)** — closed by `ca2268e`.
+  New `hardening.rs` applies `PR_SET_DUMPABLE=0` + `RLIMIT_CORE=0`
+  (fatal on failure) and `mlockall` (best-effort) before the
+  per-host secret enters memory.  Closes the security regression
+  flagged in the previous handoff.
+- **Item 4 (Daemon-side wrapper materialisation)** — closed
+  by `5b6f58e` (this session).  The daemon now writes wrapper
+  files to `wrapper_dir` on startup (epoch 0) and on every
+  rotation.  Tracked-tool CLI accepts `NAME=PATH` for explicit
+  real-binary paths and falls back to `$PATH` resolution.  Stale
+  list is populated from the previous epoch's real + honey
+  scrambled names so a worm that cached a name from N-1 trips a
+  "stale" tripwire when it tries to invoke that name at N.
+  Daemon tests now 88 unit + 5 integration.  Smoke-tested
+  end-to-end: epoch 0 produces 52 wrappers (2 real + 50 honey),
+  rotation adds 52 more.
 
 ## What landed THIS session (2026-06-19 night, user asleep)
 
@@ -142,43 +174,55 @@ mapping primitive.  Confirmed: epoch rotates; tracked count
 matches; wrappers paths align under `--wrapper-dir`; activated
 table re-parses through the core's reader without error.
 
-### Open / next-session items (priority order)
+### Open / next-session items (priority order — refreshed 2026-06-19)
 
-1. **Launcher `--daemon-socket` input mode.**  The launcher
-   already consumes activated tables via `--activated-table-fd`
-   and `--activated-table-path`.  The production flow needs a
-   third mode where the launcher connects to the daemon
-   itself, requests the table, and pipes it into the existing
-   `activated_table_input` reader.  Two days of work; closes
-   the PAM → launcher → daemon → mounts loop.
-2. **Real vault unlock.**  Phase 2 ships the
+Items 1, 4, 5 from the prior list closed (`b7e80a0`, `5b6f58e`,
+`ca2268e`).  Remaining work:
+
+1. **Real vault unlock.**  Phase 2 ships the
    `--insecure-stub-secret` flag.  Phase 3 replaces it with
    a vault-unlock protocol added to the socket
    (`Request::Unlock { vault_payload }`).  Port v1's
    `vault.rs` under v2 conventions; SecretBox / Zeroizing
    wrappers per security-baseline rule 11.
-3. **PAM module skeleton.**  `crates/v2-babbleon-pam/` —
+2. **PAM module skeleton.**  `crates/v2-babbleon-pam/` —
    C shim invoking the launcher at session open with the
    daemon socket FD passed via SCM_RIGHTS.  v1's
    `crates/babbleon-pam/` is reference.
-4. **Daemon-side wrapper materialisation.**  The wrapper
-   generator (`v2-babbleon-core::wrapper::write_all_wrappers`)
-   already exists; what's missing is the daemon flow that
-   builds wrappers on every rotation and pipes paths into the
-   activated table.  Lives in the daemon's `Rotate` handler.
-5. **Daemon process hardening.**  Apply security-baseline
-   rule 8 at daemon startup: `PR_SET_DUMPABLE=0`,
-   `RLIMIT_CORE=0`, `mlockall(CURRENT|FUTURE)`.  Currently
-   missing; the launcher applies them but the daemon (which
-   holds the secret!) does not yet.  **This is a security
-   regression that should be fixed in the next commit.**
-6. **Daemon seccomp profile.**  Allowed-syscall list per
+3. **Daemon seccomp profile.**  Allowed-syscall list per
    `docs/v2/least-privilege.md` (daemon's expected envelope).
    Filed for after the daemon's privilege envelope settles.
+4. **Wrapper-dir cleanup pass.**  `materialize()` accumulates
+   wrappers across epochs forever; the stale-list mechanism only
+   catches N-1.  Invocations of wrappers from epoch <= N-2 fall
+   past honey + stale checks and noop-exec.  Want a
+   `cleanup_pre_epoch(epoch_floor)` that deletes wrappers whose
+   filename is not in `current.real_to_scrambled.values() ∪
+   current.honey_names` and not in the stale-list.  Roughly
+   half a day; lives in `materialization.rs`.
+5. **Atomic wrapper-dir swap.**  `materialize()` writes
+   individual files; a mid-flight failure leaves disk and
+   in-memory mapping out of sync.  Want
+   write-to-`{wrapper_dir}.next` + `rename(2)` swap.  Touches
+   the launcher contract (bind-mounts must follow the rename);
+   defer until after item 2 (PAM) so we understand the full
+   lifecycle.
 
-Items 1, 2, 3 are roughly independent and can be tackled in
-any order.  Items 5, 6 should land before any production
+Items 1 and 2 are roughly independent and can be tackled in
+either order.  Items 3, 4, 5 should land before any production
 deployment but don't block phase-2 progress.
+
+### Test counts AFTER 2026-06-19 night session
+
+| Crate | Tests |
+|---|---|
+| `v2-babbleon-core` | 103 unit + 1 doc |
+| `v2-babbleon-launch-untrusted` | 38 unit + 5 integ + 2 daemon-socket-integ + 3 rooted (ignored) |
+| `v2-babbleon` | 3 |
+| `v2-babbleon-daemon` | 88 unit + 5 integration |
+| **Total v2 (excl ignored rooted)** | **245** |
+
+All clippy pedantic clean across all four v2 crates.
 
 ---
 
