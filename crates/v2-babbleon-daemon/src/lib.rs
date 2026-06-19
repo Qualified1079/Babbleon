@@ -68,10 +68,15 @@ pub mod cli;
 pub mod errors;
 pub mod handlers;
 pub mod protocol;
+pub mod socket;
 pub mod state;
 
 pub use cli::Args;
 pub use errors::{Error, Result};
 pub use handlers::dispatch;
 pub use protocol::{ErrorKind, Request, Response, MAX_REQUEST_BYTES};
+pub use socket::{
+    bind_socket, default_socket_path, handle_one_request, serve_blocking,
+    SOCKET_MODE,
+};
 pub use state::DaemonState;
