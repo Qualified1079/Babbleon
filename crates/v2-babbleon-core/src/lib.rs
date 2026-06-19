@@ -56,6 +56,7 @@
 // Pedantic lints we explicitly relax — none yet; reconsider per file
 // as the crate grows.
 
+pub mod activated_table;
 pub mod crypto_compare;
 pub mod errors;
 pub mod events;
@@ -67,6 +68,9 @@ pub mod tripwire;
 pub mod wordlist;
 pub mod wrapper;
 
+pub use activated_table::{
+    ActivatedEntry, ActivatedTable, ActivatedTableBuilder, MAX_TABLE_BYTES,
+};
 pub use errors::{Error, Result};
 pub use events::{
     AuditChainSink, Event, EventSink, JsonlFileSink, Severity, StderrSink,
