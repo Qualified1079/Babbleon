@@ -200,6 +200,81 @@ fn bind_mount_entries_succeeds_in_fresh_namespace() {
 }
 
 #[test]
+#[ignore = "requires root + Linux; runs only under `cargo test -- --ignored`"]
+fn credential_gate_overlays_empty_tmpfs_on_each_discovered_dir() {
+    if !require_root() {
+        eprintln!("SKIP: rooted-test requires effective UID 0");
+        return;
+    }
+
+    run_in_forked_mount_ns(|| {
+        use babbleon_core_v2::discover_credential_dirs;
+        use v2_babbleon_launch_untrusted::credential_gate;
+
+        // Synthesise a "home" with two of the canonical cred dirs
+        // populated.  The discovery walk should pick exactly those
+        // two; the gate should overlay an empty tmpfs over each.
+        let home_holder = match tempfile::tempdir() {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("tempdir: {e}");
+                return 4;
+            }
+        };
+        let home = home_holder.path();
+        let aws_dir = home.join(".aws");
+        let kube_dir = home.join(".kube");
+        std::fs::create_dir_all(&aws_dir).unwrap();
+        std::fs::create_dir_all(&kube_dir).unwrap();
+        // Drop a sentinel file in each; after the overlay it
+        // should be invisible.
+        std::fs::write(aws_dir.join("credentials"), b"REAL-SECRET").unwrap();
+        std::fs::write(kube_dir.join("config"), b"REAL-KUBECONFIG").unwrap();
+
+        let dirs = discover_credential_dirs(home);
+        if dirs.len() != 2 {
+            eprintln!("discover returned {} dirs; expected 2", dirs.len());
+            return 5;
+        }
+
+        if let Err(e) =
+            credential_gate::hide_credential_dirs_with_tmpfs(&dirs)
+        {
+            eprintln!("hide_credential_dirs_with_tmpfs: {e}");
+            return 6;
+        }
+
+        // Post-overlay: each dir exists but is empty.  The
+        // sentinel file must be inaccessible (overlay shadows it).
+        for dir in &dirs {
+            let entries: Vec<_> =
+                std::fs::read_dir(dir).unwrap().collect();
+            if !entries.is_empty() {
+                eprintln!(
+                    "{} should be empty after overlay; has {} entries",
+                    dir.display(),
+                    entries.len(),
+                );
+                return 7;
+            }
+        }
+
+        // Final assertion: the sentinel files cannot be opened.
+        // open(2) returns ENOENT because the overlay shadows them.
+        if std::fs::read(aws_dir.join("credentials")).is_ok() {
+            eprintln!(".aws/credentials should be unreadable after overlay");
+            return 8;
+        }
+        if std::fs::read(kube_dir.join("config")).is_ok() {
+            eprintln!(".kube/config should be unreadable after overlay");
+            return 9;
+        }
+
+        0
+    });
+}
+
+#[test]
 #[ignore = "requires root + Linux"]
 fn unprivileged_skip_returns_quickly() {
     // Sanity check: when the test runs without root the SKIP path
