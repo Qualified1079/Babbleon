@@ -24,10 +24,8 @@ lands, push here)
 
 Date: 2026-06-19 (user-asleep session continued — claude-opus-4-7)
 
-Last commit before this handoff: `5b6f58e` — feat(v2-daemon):
-wrapper materialisation on startup + every rotation (daemon now
-writes the wrapper files it has been advertising; closes phase-2
-items 1, 4, and 5).
+Last commit before this handoff: `81f7bec` — feat(v2-babbleon):
+wire status + rotate-mapping through to the daemon.
 
 ## What landed AFTER the previous handoff refresh
 
@@ -56,9 +54,22 @@ of this file.
   list is populated from the previous epoch's real + honey
   scrambled names so a worm that cached a name from N-1 trips a
   "stale" tripwire when it tries to invoke that name at N.
-  Daemon tests now 88 unit + 5 integration.  Smoke-tested
-  end-to-end: epoch 0 produces 52 wrappers (2 real + 50 honey),
-  rotation adds 52 more.
+- **Item 4b (Wrapper-dir cleanup pass)** — closed by `bc0523f`
+  (this session).  `materialize()` now prunes wrappers whose
+  names are not in `current ∪ previous_stale`.  Cleanup checks
+  the WRAPPER_SIGNATURE header before unlinking so foreign files
+  in `wrapper_dir` survive.  Best-effort: read_dir / unlink
+  failures log warn but don't block the materialise.  Smoke
+  test: epoch 0→1 adds 51 wrappers (now 102 = N + N-1);
+  epoch 2+ stays at 102.
+- **Phase-2 user-CLI wiring** — `81f7bec` (this session).
+  `babbleon status` and `babbleon rotate-mapping` are no longer
+  `not_yet_implemented` stubs; they `round_trip()` through
+  v2-babbleon-daemon's socket protocol.  `init` / `unlock` /
+  `mount-scrambled-view` remain stubbed (they need phase 3).
+  4 new integration tests covering the happy paths +
+  missing-daemon error + the stub-still-stubbed regression
+  guard.
 
 ## What landed THIS session (2026-06-19 night, user asleep)
 
@@ -174,32 +185,41 @@ mapping primitive.  Confirmed: epoch rotates; tracked count
 matches; wrappers paths align under `--wrapper-dir`; activated
 table re-parses through the core's reader without error.
 
-### Open / next-session items (priority order — refreshed 2026-06-19)
+### Open / next-session items (priority order — refreshed 2026-06-19 late)
 
-Items 1, 4, 5 from the prior list closed (`b7e80a0`, `5b6f58e`,
-`ca2268e`).  Remaining work:
+Items 1, 4, 4b, 5 from the prior list closed (`b7e80a0`,
+`5b6f58e`, `ca2268e`, `bc0523f`).  CLI status/rotate wiring
+also landed (`81f7bec`).  Remaining work:
 
 1. **Real vault unlock.**  Phase 2 ships the
    `--insecure-stub-secret` flag.  Phase 3 replaces it with
    a vault-unlock protocol added to the socket
    (`Request::Unlock { vault_payload }`).  Port v1's
    `vault.rs` under v2 conventions; SecretBox / Zeroizing
-   wrappers per security-baseline rule 11.
+   wrappers per security-baseline rule 11.  When this lands,
+   wire `babbleon init` and `babbleon unlock` in the
+   user-facing CLI (currently `not_yet_implemented` stubs;
+   regression-guarded).
 2. **PAM module skeleton.**  `crates/v2-babbleon-pam/` —
    C shim invoking the launcher at session open with the
    daemon socket FD passed via SCM_RIGHTS.  v1's
    `crates/babbleon-pam/` is reference.
-3. **Daemon seccomp profile.**  Allowed-syscall list per
+3. **Extract `v2-babbleon-daemon-protocol` crate.**  Both
+   `v2-babbleon-launch-untrusted` (since `b7e80a0`) and
+   `v2-babbleon` (since `81f7bec`) now depend on the daemon
+   crate purely for the protocol+client surface.  This
+   inflates their audit surface with the daemon's state /
+   handlers / socket-server code that the linker drops but the
+   dependency graph still pulls.  Carve out
+   `crates/v2-babbleon-daemon-protocol/` containing only
+   `protocol.rs`, `client.rs`, and the subset of `errors.rs` /
+   `default_socket_path` they need.  Half a day, mostly
+   mechanical.
+4. **Daemon seccomp profile.**  Allowed-syscall list per
    `docs/v2/least-privilege.md` (daemon's expected envelope).
-   Filed for after the daemon's privilege envelope settles.
-4. **Wrapper-dir cleanup pass.**  `materialize()` accumulates
-   wrappers across epochs forever; the stale-list mechanism only
-   catches N-1.  Invocations of wrappers from epoch <= N-2 fall
-   past honey + stale checks and noop-exec.  Want a
-   `cleanup_pre_epoch(epoch_floor)` that deletes wrappers whose
-   filename is not in `current.real_to_scrambled.values() ∪
-   current.honey_names` and not in the stale-list.  Roughly
-   half a day; lives in `materialization.rs`.
+   The envelope grew this session (materialise calls openat /
+   write / fchmod / unlinkat / read_dir); pin the profile only
+   once the operator confirms the envelope.
 5. **Atomic wrapper-dir swap.**  `materialize()` writes
    individual files; a mid-flight failure leaves disk and
    in-memory mapping out of sync.  Want
@@ -209,18 +229,20 @@ Items 1, 4, 5 from the prior list closed (`b7e80a0`, `5b6f58e`,
    lifecycle.
 
 Items 1 and 2 are roughly independent and can be tackled in
-either order.  Items 3, 4, 5 should land before any production
+either order.  Item 3 is the lightest-touch refactor and a
+prerequisite for tightening the launcher's audit surface for
+phase 3.  Items 4, 5 should land before any production
 deployment but don't block phase-2 progress.
 
-### Test counts AFTER 2026-06-19 night session
+### Test counts AFTER 2026-06-19 late session
 
 | Crate | Tests |
 |---|---|
 | `v2-babbleon-core` | 103 unit + 1 doc |
 | `v2-babbleon-launch-untrusted` | 38 unit + 5 integ + 2 daemon-socket-integ + 3 rooted (ignored) |
-| `v2-babbleon` | 3 |
-| `v2-babbleon-daemon` | 88 unit + 5 integration |
-| **Total v2 (excl ignored rooted)** | **245** |
+| `v2-babbleon` | 3 unit + 4 integration |
+| `v2-babbleon-daemon` | 91 unit + 5 integration |
+| **Total v2 (excl ignored rooted)** | **252** |
 
 All clippy pedantic clean across all four v2 crates.
 
