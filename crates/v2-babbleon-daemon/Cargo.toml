@@ -29,6 +29,10 @@ nix = { workspace = true }
 # Linux syscall surface — only used if we need raw libc (avoided
 # where possible; nix wraps most needs).
 libc = { workspace = true }
+# Wire format for the socket protocol.  Hand-parsed via serde_json::Value
+# (no `#[derive(Deserialize)]` on operator-influenceable surfaces; see
+# security-baseline rule 11).
+serde_json = { workspace = true }
 # Async runtime — to be decided.  Phase 2 ships a single-threaded
 # blocking loop; phase 4+ may move to tokio if the wrapper-build
 # pipeline benefits from parallelism.  Not yet pulled in.
