@@ -41,6 +41,9 @@
 //!   the daemon UID; only root can rewrite them.  See
 //!   `docs/v2/least-privilege.md`.
 
+use std::collections::HashSet;
+use std::hash::BuildHasher;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use babbleon_core_v2::{
@@ -49,6 +52,11 @@ use babbleon_core_v2::{
 };
 
 use crate::errors::{Error, Result};
+
+/// First line of every Babbleon wrapper file.  Files in
+/// `wrapper_dir` that do NOT start with this byte sequence are
+/// considered foreign and are NEVER deleted by [`cleanup_stale_wrappers`].
+const WRAPPER_SIGNATURE: &[u8] = b"#!/bin/sh\n# babbleon-v2 wrapper pad:";
 
 /// Knobs that vary between production and test invocations.
 ///
@@ -149,7 +157,83 @@ pub fn materialize(
     )
     .map_err(|e| Error::Wrapper(format!("stale list: {e}")))?;
 
+    let keep: HashSet<&str> = current
+        .real_to_scrambled
+        .values()
+        .map(String::as_str)
+        .chain(honey_refs.iter().copied())
+        .chain(previous_scrambled.iter().map(String::as_str))
+        .collect();
+    let removed = cleanup_stale_wrappers(&config.wrapper_dir, &keep);
+    if removed > 0 {
+        tracing::info!(
+            wrapper_dir = %config.wrapper_dir.display(),
+            removed,
+            "pruned wrapper files from previous epochs",
+        );
+    }
+
     Ok(())
+}
+
+/// Remove every Babbleon-signed wrapper file in `wrapper_dir` whose
+/// filename is not in `keep`.  Files lacking the
+/// [`WRAPPER_SIGNATURE`] header are left alone — they belong to
+/// someone else and we will not unlink them.  Returns the count of
+/// removed files.  Errors are logged at `warn` level and counted as
+/// "not removed"; cleanup is best-effort and never blocks a
+/// materialise.
+pub fn cleanup_stale_wrappers<S: BuildHasher>(
+    wrapper_dir: &Path,
+    keep: &HashSet<&str, S>,
+) -> usize {
+    let entries = match std::fs::read_dir(wrapper_dir) {
+        Ok(e) => e,
+        Err(err) => {
+            tracing::warn!(
+                wrapper_dir = %wrapper_dir.display(),
+                error = %err,
+                "cleanup: read_dir failed; skipping prune",
+            );
+            return 0;
+        }
+    };
+
+    let mut removed = 0usize;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if keep.contains(name) {
+            continue;
+        }
+        if !is_babbleon_wrapper(&path) {
+            continue;
+        }
+        match std::fs::remove_file(&path) {
+            Ok(()) => removed += 1,
+            Err(err) => tracing::warn!(
+                path = %path.display(),
+                error = %err,
+                "cleanup: remove_file failed",
+            ),
+        }
+    }
+    removed
+}
+
+fn is_babbleon_wrapper(path: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else { return false };
+    if !meta.is_file() {
+        return false;
+    }
+    let Ok(mut f) = std::fs::File::open(path) else { return false };
+    let mut buf = [0u8; WRAPPER_SIGNATURE.len()];
+    match f.read(&mut buf) {
+        Ok(n) if n == WRAPPER_SIGNATURE.len() => buf == *WRAPPER_SIGNATURE,
+        _ => false,
+    }
 }
 
 /// Build the previous-epoch stale name set from an
@@ -356,6 +440,99 @@ mod tests {
                 .unwrap();
             assert!(st.success(), "wrapper at {} fails sh -n", p.display());
         }
+    }
+
+    #[test]
+    fn cleanup_removes_wrappers_not_in_keep_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let secret = fixed_secret();
+        let n1 = build_mapping(0, &["curl"]);
+        let n2 = build_mapping(1, &["curl"]);
+        let tracked = tracked_for(dir.path(), &["curl"]);
+        let config = cfg(dir.path());
+
+        materialize(&config, &secret, &n1, &[], &tracked).unwrap();
+        let count_n1 = std::fs::read_dir(&config.wrapper_dir).unwrap().count();
+
+        materialize(
+            &config,
+            &secret,
+            &n2,
+            &stale_names_from(&n1),
+            &tracked,
+        )
+        .unwrap();
+        let count_n2 = std::fs::read_dir(&config.wrapper_dir).unwrap().count();
+        // After rotating once, the directory holds at most the
+        // current epoch's wrappers + the previous epoch's (stale).
+        // No N-2 ghosts.
+        assert!(
+            count_n2 <= count_n1 * 2,
+            "wrapper count exploded: {count_n1} -> {count_n2}",
+        );
+
+        // Third rotation: epoch-0 wrappers (now N-2) must be gone.
+        let n3 = build_mapping(2, &["curl"]);
+        materialize(
+            &config,
+            &secret,
+            &n3,
+            &stale_names_from(&n2),
+            &tracked,
+        )
+        .unwrap();
+        for old in n1.real_to_scrambled.values().chain(n1.honey_names.iter()) {
+            assert!(
+                !config.wrapper_dir.join(old).exists(),
+                "epoch-0 wrapper {old} should have been pruned",
+            );
+        }
+    }
+
+    #[test]
+    fn cleanup_preserves_previous_epoch_wrappers_via_stale_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let secret = fixed_secret();
+        let n1 = build_mapping(0, &["curl"]);
+        let n2 = build_mapping(1, &["curl"]);
+        let tracked = tracked_for(dir.path(), &["curl"]);
+        let config = cfg(dir.path());
+
+        materialize(&config, &secret, &n1, &[], &tracked).unwrap();
+        materialize(
+            &config,
+            &secret,
+            &n2,
+            &stale_names_from(&n1),
+            &tracked,
+        )
+        .unwrap();
+
+        // Previous-epoch (N-1) wrappers must remain so a stale-name
+        // invocation still trips the wrapper's stale-list check.
+        for prev in n1.real_to_scrambled.values().chain(n1.honey_names.iter()) {
+            assert!(
+                config.wrapper_dir.join(prev).exists(),
+                "previous-epoch wrapper {prev} unexpectedly pruned",
+            );
+        }
+    }
+
+    #[test]
+    fn cleanup_does_not_touch_foreign_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let secret = fixed_secret();
+        let mapping = build_mapping(0, &["curl"]);
+        let tracked = tracked_for(dir.path(), &["curl"]);
+        let config = cfg(dir.path());
+        std::fs::create_dir_all(&config.wrapper_dir).unwrap();
+
+        // Drop a foreign file in wrapper_dir.
+        let foreign = config.wrapper_dir.join("readme.txt");
+        std::fs::write(&foreign, "not a babbleon wrapper\n").unwrap();
+
+        materialize(&config, &secret, &mapping, &[], &tracked).unwrap();
+        assert!(foreign.exists(), "foreign file must not be deleted");
     }
 
     #[test]
