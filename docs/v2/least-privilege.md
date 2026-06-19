@@ -154,21 +154,39 @@ setuid:
   cap-elevation; you have to grant caps via the file metadata
   AND inherit, then set NNP after the elevation has happened.
 
-v2 launcher order:
-1. Get invoked (caps granted by file metadata).
-2. Drop all caps except the four needed (PR_CAPBSET_DROP for
-   every cap not in {SYS_ADMIN, SETUID, SETGID, IPC_LOCK}).
-3. Apply hardening (PR_SET_DUMPABLE = 0, RLIMIT_CORE = 0,
-   mlockall — uses IPC_LOCK).
-4. unshare(NEWNS|NEWPID) — uses SYS_ADMIN.
-5. make_root_private — uses SYS_ADMIN.
-6. bind-mounts, tmpfs — uses SYS_ADMIN (post-unshare, but the
-   cap is still needed at this stage).
-7. PR_SET_NO_NEW_PRIVS = 1.
-8. Apply seccomp (NNP allows unprivileged install).
-9. setuid(real_uid), setgid(real_gid) — uses SETUID, SETGID.
-10. Drop SYS_ADMIN, SETUID, SETGID, IPC_LOCK from permitted set.
-11. fork, exec child.
+v2 launcher order — **as listed (the design) vs. as run (the
+orchestrator)**:
+
+| # | Step | Capability used | Note |
+|---|---|---|---|
+| 1 | Pre-flight (reject real-UID 0; NUL-byte check on args) | none | refuse before any state change |
+| 2 | Drop all caps except {SYS_ADMIN, SETUID, SETGID, IPC_LOCK} via `PR_CAPBSET_DROP` | none for self | leaves the four working caps |
+| 3 | Hardening: `PR_SET_DUMPABLE=0`, `RLIMIT_CORE=0`, `mlockall` | `CAP_IPC_LOCK` | secret hygiene |
+| 4 | `unshare(NEWNS\|NEWPID)` | `CAP_SYS_ADMIN` | fresh mount + PID NS |
+| 5 | make `/` `MS_PRIVATE\|MS_REC` | `CAP_SYS_ADMIN` | block mount propagation to host |
+| 6 | mount scrambled view (tmpfs + per-tool bind loop) | `CAP_SYS_ADMIN` | post-unshare; still needs the cap |
+| 7 | `PR_SET_NO_NEW_PRIVS=1` | none | seals against post-exec elevation |
+| 9 | `setgroups`, `setgid(real_gid)`, `setuid(real_uid)` | `CAP_SETUID`, `CAP_SETGID` | drop to caller identity |
+| 10 | `PR_CAPBSET_DROP` over remaining working caps | none for self | bounding set fully cleared |
+| 8 | Install seccomp allowlist | none (NNP set in step 7) | filter excludes setuid/setgid/prctl by design |
+| 11 | `execve` child | none | launches the user command |
+
+**Why steps 8 and 9/10 transpose.**  The seccomp allowlist
+deliberately omits `setuid`, `setgid`, `setgroups`, and `prctl` —
+those are privileged surface the launcher should not be able to
+touch by the time the filter is on.  Installing seccomp at the
+"natural" step 8 would either force the allowlist to include
+those four syscalls (defeating the point) or fail at step 9
+(the next syscall is `setgroups`).  So the orchestrator runs the
+strict ordering `1..=7 → 9 → 10 → 8 → 11`.  The numeric step
+identity is retained for exit-code stability (see
+`errors::Step::code`); only the *execution* order moves.
+
+The orchestrator divergence is captured in
+[`crates/v2-babbleon-launch-untrusted/src/main.rs`](../../crates/v2-babbleon-launch-untrusted/src/main.rs)
+inside `run()`.  A test that asserts this ordering by trace
+emission is filed under follow-up "rooted test harness" in the
+phase-2 queue.
 
 By step 10 the launcher holds no capabilities and cannot
 re-acquire any (NNP guarantee).  The child inherits an empty
