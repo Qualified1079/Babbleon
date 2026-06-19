@@ -77,11 +77,26 @@ mod tests {
     use std::thread;
 
     fn make_state() -> DaemonState {
-        DaemonState::new(
+        use crate::materialization::{MaterializationConfig, TrackedTool};
+        DaemonState::new_without_materialization(
             PerHostSecret::from_bytes(&[2u8; 32]).unwrap(),
             Wordlist::english_baseline(),
-            vec!["curl".into(), "git".into()],
-            PathBuf::from("/wrappers"),
+            vec![
+                TrackedTool {
+                    name: "curl".into(),
+                    real_path: PathBuf::from("/usr/bin/curl"),
+                },
+                TrackedTool {
+                    name: "git".into(),
+                    real_path: PathBuf::from("/usr/bin/git"),
+                },
+            ],
+            MaterializationConfig {
+                wrapper_dir: PathBuf::from("/wrappers"),
+                honey_list_path: None,
+                stale_list_path: None,
+                trusted_ns_inode: None,
+            },
         )
         .unwrap()
     }

@@ -13,10 +13,11 @@ use std::process::ExitCode;
 
 use clap::Parser;
 
-use babbleon_daemon_v2::cli::{Args, Cmd, RunArgs};
+use babbleon_daemon_v2::cli::{Args, Cmd, ParsedTrackedTool, RunArgs};
 use babbleon_daemon_v2::{
     apply_secret_hygiene, bind_socket, default_socket_path, round_trip,
-    serve_blocking, DaemonState, ErrorKind, Request, Response,
+    serve_blocking, DaemonState, ErrorKind, MaterializationConfig, Request,
+    Response, TrackedTool,
 };
 use babbleon_core_v2::{PerHostSecret, Wordlist};
 
@@ -75,13 +76,21 @@ fn run_daemon(
     apply_secret_hygiene()
         .map_err(|e| format!("secret-hygiene startup: {e}"))?;
 
+    let tracked = resolve_tracked_tools(args.tracked_tools)?;
+
     let secret = PerHostSecret::from_bytes(&INSECURE_STUB_SECRET)
         .map_err(|e| format!("constructing stub secret: {e}"))?;
+    let materialization = MaterializationConfig {
+        wrapper_dir: args.wrapper_dir,
+        honey_list_path: None,
+        stale_list_path: None,
+        trusted_ns_inode: None,
+    };
     let mut state = DaemonState::new(
         secret,
         Wordlist::english_baseline(),
-        args.tracked_tools,
-        args.wrapper_dir,
+        tracked,
+        materialization,
     )
     .map_err(|e| format!("constructing DaemonState: {e}"))?;
 
@@ -138,6 +147,60 @@ fn one_shot(
     }
     let _ = ErrorKind::Internal; // silence unused-import lint when no Error path is hit.
     Ok(())
+}
+
+/// Resolve every parsed `--tracked-tool` to an absolute real-binary
+/// path.  Explicit `NAME=PATH` entries are accepted as-is; bare
+/// `NAME` entries are searched for in `$PATH` via [`which_in_path`].
+/// An unresolved name is a fatal startup error (the operator
+/// intended to track a binary that does not exist on this host).
+fn resolve_tracked_tools(
+    parsed: Vec<ParsedTrackedTool>,
+) -> Result<Vec<TrackedTool>, String> {
+    let path_env = std::env::var_os("PATH").unwrap_or_default();
+    let mut out = Vec::with_capacity(parsed.len());
+    for p in parsed {
+        let real_path = match p.real_path {
+            Some(explicit) => explicit,
+            None => which_in_path(&p.name, &path_env).ok_or_else(|| {
+                format!(
+                    "tracked tool {:?} not found in $PATH; pass --tracked-tool {0}=/abs/path \
+                     to override",
+                    p.name,
+                )
+            })?,
+        };
+        out.push(TrackedTool {
+            name: p.name,
+            real_path,
+        });
+    }
+    Ok(out)
+}
+
+/// Return the first absolute path in `$PATH` that names an executable
+/// file called `name`.  We deliberately do NOT use the `which` crate
+/// — adding a dependency for a 12-line PATH walk is not worth the
+/// audit surface.
+fn which_in_path(
+    name: &str,
+    path_env: &std::ffi::OsStr,
+) -> Option<std::path::PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    for dir in std::env::split_paths(path_env) {
+        let candidate = dir.join(name);
+        let Ok(meta) = std::fs::metadata(&candidate) else { continue };
+        if !meta.is_file() {
+            continue;
+        }
+        if meta.permissions().mode() & 0o111 == 0 {
+            continue;
+        }
+        if candidate.is_absolute() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 fn install_tracing(verbose: u8) {

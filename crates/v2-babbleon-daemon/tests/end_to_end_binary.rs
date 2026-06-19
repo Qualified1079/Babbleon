@@ -20,27 +20,33 @@ use babbleon_daemon_v2::{round_trip, Request, Response};
 /// Polls the socket file for up to 5 s before returning, so the
 /// caller doesn't race the bind.
 ///
+/// `wrapper_dir` is where the daemon will materialise wrappers;
+/// `tools` is the `(name, real_path)` set the daemon tracks.
+///
 /// Returns a `Child` that the caller MUST pass to [`shutdown`]
 /// before dropping; otherwise the daemon zombifies.  Clippy's
 /// `zombie_processes` lint flags this contract explicitly.
 #[allow(clippy::zombie_processes)]
-fn spawn_daemon(socket_path: &std::path::Path) -> Child {
+fn spawn_daemon(
+    socket_path: &std::path::Path,
+    wrapper_dir: &std::path::Path,
+    tools: &[(&str, &std::path::Path)],
+) -> Child {
     let bin = daemon_binary();
-    let mut child = Command::new(&bin)
-        .arg("--socket")
+    let mut cmd = Command::new(&bin);
+    cmd.arg("--socket")
         .arg(socket_path)
         .arg("run")
         .arg("--wrapper-dir")
-        .arg("/wrappers")
-        .arg("--tracked-tool")
-        .arg("curl")
-        .arg("--tracked-tool")
-        .arg("ssh")
-        .arg("--insecure-stub-secret")
+        .arg(wrapper_dir);
+    for (name, path) in tools {
+        cmd.arg("--tracked-tool")
+            .arg(format!("{name}={}", path.display()));
+    }
+    cmd.arg("--insecure-stub-secret")
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn babbleon-daemon");
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn babbleon-daemon");
 
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
@@ -80,12 +86,37 @@ fn shutdown(mut child: Child) {
     let _ = child.wait();
 }
 
+/// Create a placeholder real-binary the daemon can wrap.  Returns
+/// the absolute path; the file is left in `dir`.
+fn fake_real_binary(dir: &std::path::Path, name: &str) -> PathBuf {
+    let p = dir.join(format!("real-{name}"));
+    std::fs::write(&p, "#!/bin/sh\nexit 0\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            &p,
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+    }
+    p
+}
+
 #[test]
 fn binary_serves_status_emit_rotate_in_sequence() {
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("daemon.sock");
+    let wrapper_dir = dir.path().join("wrappers");
+    std::fs::create_dir_all(&wrapper_dir).unwrap();
+    let curl = fake_real_binary(dir.path(), "curl");
+    let ssh = fake_real_binary(dir.path(), "ssh");
 
-    let child = spawn_daemon(&sock);
+    let child = spawn_daemon(
+        &sock,
+        &wrapper_dir,
+        &[("curl", &curl), ("ssh", &ssh)],
+    );
 
     // status — expect epoch 0, tracked_count 2.
     let resp = round_trip(&sock, &Request::Status).expect("status");
@@ -118,8 +149,16 @@ fn binary_serves_status_emit_rotate_in_sequence() {
             assert_eq!(table.entries.len(), 2);
             for entry in &table.entries {
                 assert!(
-                    entry.wrapper_path.starts_with("/wrappers"),
-                    "wrapper_path {:?} should start with /wrappers",
+                    entry.wrapper_path.starts_with(&wrapper_dir),
+                    "wrapper_path {:?} should start with {:?}",
+                    entry.wrapper_path,
+                    wrapper_dir,
+                );
+                // The daemon must have actually written each wrapper
+                // to disk — this is the materialisation invariant.
+                assert!(
+                    entry.wrapper_path.exists(),
+                    "wrapper file missing on disk: {:?}",
                     entry.wrapper_path,
                 );
             }
@@ -176,13 +215,15 @@ fn binary_serves_status_emit_rotate_in_sequence() {
 fn binary_refuses_to_run_without_insecure_stub_secret_flag() {
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("daemon.sock");
+    let wrapper_dir = dir.path().join("wrappers");
+    std::fs::create_dir_all(&wrapper_dir).unwrap();
 
     let output = Command::new(daemon_binary())
         .arg("--socket")
         .arg(&sock)
         .arg("run")
         .arg("--wrapper-dir")
-        .arg("/wrappers")
+        .arg(&wrapper_dir)
         // NOTE: no --insecure-stub-secret.
         .output()
         .expect("run babbleon-daemon");
@@ -196,6 +237,102 @@ fn binary_refuses_to_run_without_insecure_stub_secret_flag() {
         stderr.contains("--insecure-stub-secret"),
         "stderr should explain the required flag.  Got: {stderr}",
     );
+}
+
+#[test]
+fn binary_writes_real_and_honey_wrappers_to_wrapper_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("daemon.sock");
+    let wrapper_dir = dir.path().join("wrappers");
+    std::fs::create_dir_all(&wrapper_dir).unwrap();
+    let curl = fake_real_binary(dir.path(), "curl");
+
+    let child = spawn_daemon(&sock, &wrapper_dir, &[("curl", &curl)]);
+
+    let resp = round_trip(&sock, &Request::EmitActivatedTable).expect("emit");
+    let table = match resp {
+        Response::ActivatedTable { jsonl, .. } => {
+            babbleon_core_v2::ActivatedTable::read_jsonl(
+                std::io::Cursor::new(&jsonl),
+            )
+            .expect("parse table")
+        }
+        other => {
+            shutdown(child);
+            panic!("expected ActivatedTable, got {other:?}");
+        }
+    };
+
+    // Every entry must have a wrapper file on disk.
+    for entry in &table.entries {
+        assert!(entry.wrapper_path.exists(), "missing {:?}", entry.wrapper_path);
+    }
+    // Honey wrappers must also exist on disk.
+    for honey in &table.honey_names {
+        let p = wrapper_dir.join(honey);
+        assert!(p.exists(), "honey wrapper missing: {p:?}");
+    }
+    shutdown(child);
+}
+
+#[test]
+fn binary_rotation_updates_wrappers_on_disk() {
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("daemon.sock");
+    let wrapper_dir = dir.path().join("wrappers");
+    std::fs::create_dir_all(&wrapper_dir).unwrap();
+    let curl = fake_real_binary(dir.path(), "curl");
+
+    let child = spawn_daemon(&sock, &wrapper_dir, &[("curl", &curl)]);
+
+    let pre = round_trip(&sock, &Request::EmitActivatedTable).expect("pre-emit");
+    let pre_table = match pre {
+        Response::ActivatedTable { jsonl, .. } => {
+            babbleon_core_v2::ActivatedTable::read_jsonl(
+                std::io::Cursor::new(&jsonl),
+            )
+            .unwrap()
+        }
+        other => {
+            shutdown(child);
+            panic!("expected ActivatedTable, got {other:?}");
+        }
+    };
+
+    let _ = round_trip(&sock, &Request::RotateMapping).expect("rotate");
+
+    let post = round_trip(&sock, &Request::EmitActivatedTable).expect("post-emit");
+    let post_table = match post {
+        Response::ActivatedTable { jsonl, .. } => {
+            babbleon_core_v2::ActivatedTable::read_jsonl(
+                std::io::Cursor::new(&jsonl),
+            )
+            .unwrap()
+        }
+        other => {
+            shutdown(child);
+            panic!("expected ActivatedTable post-rotate, got {other:?}");
+        }
+    };
+
+    // Post-rotation scrambled names must differ from pre-rotation.
+    let pre_names: std::collections::HashSet<_> =
+        pre_table.entries.iter().map(|e| &e.scrambled).collect();
+    let post_names: std::collections::HashSet<_> =
+        post_table.entries.iter().map(|e| &e.scrambled).collect();
+    assert!(
+        pre_names.is_disjoint(&post_names),
+        "scrambled names persisted across rotation",
+    );
+    // New wrappers must exist on disk.
+    for entry in &post_table.entries {
+        assert!(
+            entry.wrapper_path.exists(),
+            "post-rotation wrapper missing: {:?}",
+            entry.wrapper_path,
+        );
+    }
+    shutdown(child);
 }
 
 #[test]

@@ -58,7 +58,7 @@
 //!   Compensating control: wordlist is in the daemon binary's RSS
 //!   via `english_baseline`, not loaded at runtime.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use babbleon_core_v2::{
@@ -67,6 +67,9 @@ use babbleon_core_v2::{
 };
 
 use crate::errors::{Error, Result};
+use crate::materialization::{
+    materialize, stale_names_from, MaterializationConfig, TrackedTool,
+};
 
 /// In-memory daemon state.
 ///
@@ -80,62 +83,104 @@ use crate::errors::{Error, Result};
 pub struct DaemonState {
     secret: PerHostSecret,
     wordlist: &'static Wordlist,
-    tracked_tools: Vec<String>,
-    wrapper_dir: PathBuf,
+    tracked_tools: Vec<TrackedTool>,
+    materialization: MaterializationConfig,
     epoch: u64,
     cached_mapping: EpochMapping,
     last_rotation: SystemTime,
+    skip_materialization: bool,
 }
 
 impl DaemonState {
     /// Construct a daemon state from a freshly-loaded secret and a
-    /// tracked-tool list.
+    /// tracked-tool list.  Builds the epoch-0 mapping eagerly and
+    /// materialises the corresponding on-disk wrappers and tripwire
+    /// lists.
     ///
-    /// `wrapper_dir` MUST be an absolute path.  Every entry of
-    /// `tracked_tools` MUST be a non-empty string (canonical names
-    /// like `"curl"`); duplicates are not enforced here (the
-    /// downstream
-    /// [`babbleon_core_v2::build_activated_table_from_mapping`]
-    /// would catch them at table-build time).
-    ///
-    /// Builds the epoch-0 mapping eagerly so a `status` call right
-    /// after `new` returns a populated snapshot.
+    /// `materialization.wrapper_dir` MUST be an absolute path.
+    /// Every entry of `tracked_tools` MUST have a non-empty name and
+    /// an absolute `real_path`.
     ///
     /// # Errors
     ///
-    /// - [`Error::Cli`] if `wrapper_dir` is not absolute or if any
-    ///   tracked tool name is empty.
-    /// - [`Error::Mapping`] (via `From`) if mapping construction
-    ///   fails.
+    /// - [`Error::Cli`] if `wrapper_dir` or any `real_path` is not
+    ///   absolute, or if any tracked tool name is empty.
+    /// - [`Error::Mapping`] if mapping construction fails.
+    /// - [`Error::Wrapper`] if on-disk materialisation fails.
     pub fn new(
         secret: PerHostSecret,
         wordlist: &'static Wordlist,
-        tracked_tools: Vec<String>,
-        wrapper_dir: PathBuf,
+        tracked_tools: Vec<TrackedTool>,
+        materialization: MaterializationConfig,
     ) -> Result<Self> {
-        if !wrapper_dir.is_absolute() {
+        Self::construct(secret, wordlist, tracked_tools, materialization, false)
+    }
+
+    /// Like [`Self::new`] but skips on-disk materialisation.  Used
+    /// in unit tests that do not want wrapper files on the host
+    /// filesystem; production paths always go through `new`.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::new`] minus [`Error::Wrapper`].
+    pub fn new_without_materialization(
+        secret: PerHostSecret,
+        wordlist: &'static Wordlist,
+        tracked_tools: Vec<TrackedTool>,
+        materialization: MaterializationConfig,
+    ) -> Result<Self> {
+        Self::construct(secret, wordlist, tracked_tools, materialization, true)
+    }
+
+    fn construct(
+        secret: PerHostSecret,
+        wordlist: &'static Wordlist,
+        tracked_tools: Vec<TrackedTool>,
+        materialization: MaterializationConfig,
+        skip_materialization: bool,
+    ) -> Result<Self> {
+        if !materialization.wrapper_dir.is_absolute() {
             return Err(Error::Cli(format!(
                 "wrapper_dir must be absolute (got {})",
-                wrapper_dir.display()
+                materialization.wrapper_dir.display()
             )));
         }
         for t in &tracked_tools {
-            if t.is_empty() {
+            if t.name.is_empty() {
                 return Err(Error::Cli(
                     "tracked-tool list contains an empty name".into(),
                 ));
             }
+            if !t.real_path.is_absolute() {
+                return Err(Error::Cli(format!(
+                    "tracked-tool {:?}: real_path must be absolute (got {})",
+                    t.name,
+                    t.real_path.display(),
+                )));
+            }
         }
+        let names: Vec<String> =
+            tracked_tools.iter().map(|t| t.name.clone()).collect();
         let initial_mapping =
-            MappingBuilder::new(&secret, wordlist).build(&tracked_tools, 0)?;
+            MappingBuilder::new(&secret, wordlist).build(&names, 0)?;
+        if !skip_materialization {
+            materialize(
+                &materialization,
+                &secret,
+                &initial_mapping,
+                &[],
+                &tracked_tools,
+            )?;
+        }
         Ok(Self {
             secret,
             wordlist,
             tracked_tools,
-            wrapper_dir,
+            materialization,
             epoch: 0,
             cached_mapping: initial_mapping,
             last_rotation: SystemTime::now(),
+            skip_materialization,
         })
     }
 
@@ -177,7 +222,7 @@ impl DaemonState {
     pub fn activated_table_jsonl(&self) -> Result<Vec<u8>> {
         let table = build_activated_table_from_mapping(
             &self.cached_mapping,
-            &self.wrapper_dir,
+            &self.materialization.wrapper_dir,
         )
         .map_err(|e| Error::ActivatedTable(e.to_string()))?;
         let bytes = table
@@ -186,12 +231,22 @@ impl DaemonState {
         Ok(bytes)
     }
 
-    /// Bump the epoch and rebuild the cached mapping.  Returns the
+    /// Bump the epoch, rebuild the cached mapping, and re-materialise
+    /// the on-disk wrapper + tripwire-list artefacts.  Returns the
     /// new epoch number.
+    ///
+    /// The previous epoch's real and honey scrambled names become
+    /// the new stale list so a worm that cached a name from the
+    /// prior epoch trips a stale tripwire on its next invocation.
     ///
     /// # Errors
     ///
     /// - [`Error::Mapping`] if mapping construction fails.
+    /// - [`Error::Wrapper`] if on-disk materialisation fails.  When
+    ///   this fires the in-memory state still reflects the new
+    ///   epoch (the mapping has already been swapped) but the
+    ///   on-disk wrappers are in an inconsistent state; operator
+    ///   should re-issue `rotate-mapping`.
     pub fn rotate(&mut self) -> Result<u64> {
         let new_epoch = self.epoch.checked_add(1).ok_or_else(|| {
             Error::Mapping(
@@ -199,20 +254,33 @@ impl DaemonState {
                     .into(),
             )
         })?;
+        let names: Vec<String> =
+            self.tracked_tools.iter().map(|t| t.name.clone()).collect();
         let new_mapping = MappingBuilder::new(&self.secret, self.wordlist)
-            .build(&self.tracked_tools, new_epoch)?;
+            .build(&names, new_epoch)?;
+        let stale = stale_names_from(&self.cached_mapping);
         self.epoch = new_epoch;
         self.cached_mapping = new_mapping;
         self.last_rotation = SystemTime::now();
+        if !self.skip_materialization {
+            materialize(
+                &self.materialization,
+                &self.secret,
+                &self.cached_mapping,
+                &stale,
+                &self.tracked_tools,
+            )?;
+        }
         Ok(new_epoch)
     }
 
-    /// Read-only view of the wrapper directory.  Used by the daemon
-    /// for `write_all_wrappers`-side flows (filed for the next
-    /// commit; not yet wired in).
+    /// Read-only view of the wrapper directory.  This is the
+    /// directory the daemon materialises wrappers into on every
+    /// rotation, and the prefix that every activated-table
+    /// `wrapper_path` is rooted at.
     #[must_use]
     pub fn wrapper_dir(&self) -> &Path {
-        &self.wrapper_dir
+        &self.materialization.wrapper_dir
     }
 
     /// Read-only view of the cached mapping for the current epoch.
@@ -237,24 +305,44 @@ impl DaemonState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn fixed_secret() -> PerHostSecret {
         PerHostSecret::from_bytes(&[9u8; 32]).unwrap()
     }
 
-    fn tracked() -> Vec<String> {
-        ["curl", "ssh", "git"].iter().map(|s| (*s).to_string()).collect()
+    fn tracked() -> Vec<TrackedTool> {
+        ["curl", "ssh", "git"]
+            .iter()
+            .map(|n| TrackedTool {
+                name: (*n).to_string(),
+                real_path: PathBuf::from(format!("/usr/bin/{n}")),
+            })
+            .collect()
+    }
+
+    fn cfg(dir: impl Into<PathBuf>) -> MaterializationConfig {
+        MaterializationConfig {
+            wrapper_dir: dir.into(),
+            honey_list_path: None,
+            stale_list_path: None,
+            trusted_ns_inode: None,
+        }
+    }
+
+    fn build_state(tools: Vec<TrackedTool>, wrapper_dir: &str) -> DaemonState {
+        DaemonState::new_without_materialization(
+            fixed_secret(),
+            Wordlist::english_baseline(),
+            tools,
+            cfg(wrapper_dir),
+        )
+        .unwrap()
     }
 
     #[test]
     fn new_eagerly_builds_epoch_zero_mapping() {
-        let s = DaemonState::new(
-            fixed_secret(),
-            Wordlist::english_baseline(),
-            tracked(),
-            PathBuf::from("/var/lib/babbleon/wrappers"),
-        )
-        .unwrap();
+        let s = build_state(tracked(), "/var/lib/babbleon/wrappers");
         assert_eq!(s.epoch(), 0);
         assert_eq!(s.tracked_count(), 3);
         assert!(s.last_rotation_unix_secs().is_some());
@@ -262,13 +350,11 @@ mod tests {
 
     #[test]
     fn new_rejects_relative_wrapper_dir() {
-        // `DaemonState` deliberately omits `Debug` (rule 3), so we
-        // cannot `.unwrap_err()`; match the Result by hand.
-        let r = DaemonState::new(
+        let r = DaemonState::new_without_materialization(
             fixed_secret(),
             Wordlist::english_baseline(),
             tracked(),
-            PathBuf::from("relative/wrappers"),
+            cfg("relative/wrappers"),
         );
         match r {
             Ok(_) => panic!("expected Err for relative wrapper_dir"),
@@ -279,12 +365,15 @@ mod tests {
     #[test]
     fn new_rejects_empty_tracked_name() {
         let mut t = tracked();
-        t.push(String::new());
-        let r = DaemonState::new(
+        t.push(TrackedTool {
+            name: String::new(),
+            real_path: PathBuf::from("/usr/bin/zzz"),
+        });
+        let r = DaemonState::new_without_materialization(
             fixed_secret(),
             Wordlist::english_baseline(),
             t,
-            PathBuf::from("/x"),
+            cfg("/x"),
         );
         match r {
             Ok(_) => panic!("expected Err for empty tracked name"),
@@ -293,14 +382,28 @@ mod tests {
     }
 
     #[test]
-    fn activated_table_jsonl_contains_every_tracked_tool() {
-        let s = DaemonState::new(
+    fn new_rejects_relative_real_path() {
+        let r = DaemonState::new_without_materialization(
             fixed_secret(),
             Wordlist::english_baseline(),
-            tracked(),
-            PathBuf::from("/wrappers"),
-        )
-        .unwrap();
+            vec![TrackedTool {
+                name: "curl".into(),
+                real_path: PathBuf::from("bin/curl"),
+            }],
+            cfg("/x"),
+        );
+        match r {
+            Ok(_) => panic!("expected Err for relative real_path"),
+            Err(e) => {
+                let m = format!("{e}");
+                assert!(m.contains("real_path") && m.contains("absolute"), "{m}");
+            }
+        }
+    }
+
+    #[test]
+    fn activated_table_jsonl_contains_every_tracked_tool() {
+        let s = build_state(tracked(), "/wrappers");
         let jsonl = s.activated_table_jsonl().unwrap();
         let parsed = babbleon_core_v2::ActivatedTable::read_jsonl(
             std::io::Cursor::new(&jsonl),
@@ -308,7 +411,6 @@ mod tests {
         .unwrap();
         assert_eq!(parsed.epoch, 0);
         assert_eq!(parsed.entries.len(), 3);
-        // Each entry's scrambled name appears in the cached mapping.
         for e in &parsed.entries {
             assert!(s.current_mapping().reveal(&e.scrambled).is_some());
         }
@@ -316,13 +418,7 @@ mod tests {
 
     #[test]
     fn rotate_bumps_epoch_and_changes_scrambled_names() {
-        let mut s = DaemonState::new(
-            fixed_secret(),
-            Wordlist::english_baseline(),
-            tracked(),
-            PathBuf::from("/wrappers"),
-        )
-        .unwrap();
+        let mut s = build_state(tracked(), "/wrappers");
         let before: Vec<String> = s
             .current_mapping()
             .real_to_scrambled
@@ -338,7 +434,6 @@ mod tests {
             .values()
             .cloned()
             .collect();
-        // Every scrambled name should change across rotation.
         for b in &before {
             assert!(
                 !after.contains(b),
@@ -349,16 +444,8 @@ mod tests {
 
     #[test]
     fn rotate_updates_last_rotation_timestamp() {
-        let mut s = DaemonState::new(
-            fixed_secret(),
-            Wordlist::english_baseline(),
-            tracked(),
-            PathBuf::from("/wrappers"),
-        )
-        .unwrap();
+        let mut s = build_state(tracked(), "/wrappers");
         let before = s.last_rotation_unix_secs().unwrap();
-        // System clock has 1-second resolution on some platforms; sleep
-        // a hair so the after-stamp is strictly greater.
         std::thread::sleep(std::time::Duration::from_millis(1100));
         s.rotate().unwrap();
         let after = s.last_rotation_unix_secs().unwrap();
@@ -370,16 +457,7 @@ mod tests {
 
     #[test]
     fn repeated_activated_table_calls_yield_identical_bytes() {
-        // Property: emit-activated-table is pure over (state, epoch).
-        // A peer that retries the call within an epoch must observe
-        // the same bytes.
-        let s = DaemonState::new(
-            fixed_secret(),
-            Wordlist::english_baseline(),
-            tracked(),
-            PathBuf::from("/wrappers"),
-        )
-        .unwrap();
+        let s = build_state(tracked(), "/wrappers");
         let a = s.activated_table_jsonl().unwrap();
         let b = s.activated_table_jsonl().unwrap();
         assert_eq!(a, b);
@@ -387,17 +465,7 @@ mod tests {
 
     #[test]
     fn empty_tracked_list_is_accepted() {
-        // The launcher needs to be able to come up against a state
-        // with no tools yet enrolled (`babbleon init` shipped, no
-        // `babbleon track` yet).  The mapping is empty but honey
-        // names are still produced.
-        let s = DaemonState::new(
-            fixed_secret(),
-            Wordlist::english_baseline(),
-            Vec::new(),
-            PathBuf::from("/wrappers"),
-        )
-        .unwrap();
+        let s = build_state(Vec::new(), "/wrappers");
         assert_eq!(s.tracked_count(), 0);
         let jsonl = s.activated_table_jsonl().unwrap();
         let parsed = babbleon_core_v2::ActivatedTable::read_jsonl(
@@ -410,13 +478,7 @@ mod tests {
 
     #[test]
     fn current_mapping_is_for_current_epoch() {
-        let mut s = DaemonState::new(
-            fixed_secret(),
-            Wordlist::english_baseline(),
-            tracked(),
-            PathBuf::from("/wrappers"),
-        )
-        .unwrap();
+        let mut s = build_state(tracked(), "/wrappers");
         assert_eq!(s.current_mapping().epoch, 0);
         s.rotate().unwrap();
         assert_eq!(s.current_mapping().epoch, 1);
@@ -426,13 +488,7 @@ mod tests {
 
     #[test]
     fn wrapper_dir_round_trips_through_activated_table() {
-        let s = DaemonState::new(
-            fixed_secret(),
-            Wordlist::english_baseline(),
-            tracked(),
-            PathBuf::from("/usr/local/libexec/babbleon/wrappers"),
-        )
-        .unwrap();
+        let s = build_state(tracked(), "/usr/local/libexec/babbleon/wrappers");
         let jsonl = s.activated_table_jsonl().unwrap();
         let parsed = babbleon_core_v2::ActivatedTable::read_jsonl(
             std::io::Cursor::new(&jsonl),
@@ -446,5 +502,109 @@ mod tests {
                 e.wrapper_path
             );
         }
+    }
+
+    fn tracked_in(dir: &Path, names: &[&str]) -> Vec<TrackedTool> {
+        names
+            .iter()
+            .map(|n| {
+                let p = dir.join(format!("real-{n}"));
+                std::fs::write(&p, "#!/bin/sh\n").unwrap();
+                TrackedTool {
+                    name: (*n).to_string(),
+                    real_path: p,
+                }
+            })
+            .collect()
+    }
+
+    fn cfg_in_tmp(dir: &Path) -> MaterializationConfig {
+        MaterializationConfig {
+            wrapper_dir: dir.join("wrappers"),
+            honey_list_path: Some(dir.join("honey.list")),
+            stale_list_path: Some(dir.join("stale.list")),
+            trusted_ns_inode: None,
+        }
+    }
+
+    #[test]
+    fn new_materialises_real_and_honey_wrappers_on_disk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tools = tracked_in(tmp.path(), &["curl", "ssh"]);
+        let cfg = cfg_in_tmp(tmp.path());
+        let s = DaemonState::new(
+            fixed_secret(),
+            Wordlist::english_baseline(),
+            tools,
+            cfg.clone(),
+        )
+        .unwrap();
+        for scrambled in s.current_mapping().real_to_scrambled.values() {
+            assert!(
+                cfg.wrapper_dir.join(scrambled).exists(),
+                "missing real wrapper {scrambled}",
+            );
+        }
+        for honey in &s.current_mapping().honey_names {
+            assert!(
+                cfg.wrapper_dir.join(honey).exists(),
+                "missing honey wrapper {honey}",
+            );
+        }
+    }
+
+    #[test]
+    fn rotate_materialises_new_wrappers_and_writes_stale_list_from_previous_epoch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tools = tracked_in(tmp.path(), &["curl"]);
+        let cfg = cfg_in_tmp(tmp.path());
+        let mut s = DaemonState::new(
+            fixed_secret(),
+            Wordlist::english_baseline(),
+            tools,
+            cfg.clone(),
+        )
+        .unwrap();
+        let prev_real: Vec<String> = s
+            .current_mapping()
+            .real_to_scrambled
+            .values()
+            .cloned()
+            .collect();
+        let prev_honey: Vec<String> = s.current_mapping().honey_names.clone();
+
+        s.rotate().unwrap();
+
+        let stale_body =
+            std::fs::read_to_string(cfg.stale_list_path.as_ref().unwrap()).unwrap();
+        for name in prev_real.iter().chain(prev_honey.iter()) {
+            assert!(
+                stale_body.contains(&format!("{name}\n")),
+                "stale list missing {name}",
+            );
+        }
+        for scrambled in s.current_mapping().real_to_scrambled.values() {
+            assert!(
+                cfg.wrapper_dir.join(scrambled).exists(),
+                "missing new-epoch real wrapper {scrambled}",
+            );
+        }
+    }
+
+    #[test]
+    fn new_genesis_stale_list_is_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tools = tracked_in(tmp.path(), &["curl"]);
+        let cfg = cfg_in_tmp(tmp.path());
+        DaemonState::new(
+            fixed_secret(),
+            Wordlist::english_baseline(),
+            tools,
+            cfg.clone(),
+        )
+        .unwrap();
+        let body =
+            std::fs::read_to_string(cfg.stale_list_path.as_ref().unwrap()).unwrap();
+        assert!(body.is_empty(), "genesis stale list must be empty, got: {body}");
     }
 }

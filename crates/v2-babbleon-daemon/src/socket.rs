@@ -288,11 +288,26 @@ mod tests {
     use std::path::PathBuf;
 
     fn state() -> DaemonState {
-        DaemonState::new(
+        use crate::materialization::{MaterializationConfig, TrackedTool};
+        DaemonState::new_without_materialization(
             PerHostSecret::from_bytes(&[1u8; 32]).unwrap(),
             Wordlist::english_baseline(),
-            vec!["curl".into(), "ssh".into()],
-            PathBuf::from("/wrappers"),
+            vec![
+                TrackedTool {
+                    name: "curl".into(),
+                    real_path: PathBuf::from("/usr/bin/curl"),
+                },
+                TrackedTool {
+                    name: "ssh".into(),
+                    real_path: PathBuf::from("/usr/bin/ssh"),
+                },
+            ],
+            MaterializationConfig {
+                wrapper_dir: PathBuf::from("/wrappers"),
+                honey_list_path: None,
+                stale_list_path: None,
+                trusted_ns_inode: None,
+            },
         )
         .unwrap()
     }

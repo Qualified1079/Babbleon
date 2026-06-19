@@ -48,31 +48,51 @@ fn daemon_binary() -> PathBuf {
     candidate
 }
 
+/// Drop a placeholder real-binary in `dir` so the daemon has
+/// something to wrap.  The daemon writes wrappers that `exec` this
+/// path; the launcher test doesn't actually invoke the wrappers so
+/// the placeholder body is irrelevant.
+fn fake_real(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+    let p = dir.join(format!("real-{name}"));
+    std::fs::write(&p, "#!/bin/sh\nexit 0\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            &p,
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+    }
+    p
+}
+
 #[allow(clippy::zombie_processes)]
-fn spawn_daemon(socket_path: &std::path::Path) -> Child {
+fn spawn_daemon(
+    socket_path: &std::path::Path,
+    wrapper_dir: &std::path::Path,
+    tools: &[(&str, &std::path::Path)],
+) -> Child {
     let bin = daemon_binary();
-    let mut child = Command::new(&bin)
-        .arg("--socket")
+    let mut cmd = Command::new(&bin);
+    cmd.arg("--socket")
         .arg(socket_path)
         .arg("run")
         .arg("--wrapper-dir")
-        .arg("/usr/local/libexec/babbleon/wrappers")
-        .arg("--tracked-tool")
-        .arg("curl")
-        .arg("--tracked-tool")
-        .arg("ssh")
-        .arg("--tracked-tool")
-        .arg("git")
-        .arg("--insecure-stub-secret")
+        .arg(wrapper_dir);
+    for (name, path) in tools {
+        cmd.arg("--tracked-tool")
+            .arg(format!("{name}={}", path.display()));
+    }
+    cmd.arg("--insecure-stub-secret")
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap_or_else(|e| {
-            panic!(
-                "spawn {}: {e} (does the daemon bin exist?)",
-                bin.display()
-            )
-        });
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().unwrap_or_else(|e| {
+        panic!(
+            "spawn {}: {e} (does the daemon bin exist?)",
+            bin.display()
+        )
+    });
 
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
@@ -98,7 +118,16 @@ fn shutdown(mut child: Child) {
 fn launcher_reads_activated_table_from_daemon_socket() {
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("daemon.sock");
-    let child = spawn_daemon(&sock);
+    let wrapper_dir = dir.path().join("wrappers");
+    std::fs::create_dir_all(&wrapper_dir).unwrap();
+    let curl = fake_real(dir.path(), "curl");
+    let ssh = fake_real(dir.path(), "ssh");
+    let git = fake_real(dir.path(), "git");
+    let child = spawn_daemon(
+        &sock,
+        &wrapper_dir,
+        &[("curl", &curl), ("ssh", &ssh), ("git", &git)],
+    );
 
     let parsed = activated_table_input::read_if_present(
         None,
@@ -121,9 +150,16 @@ fn launcher_reads_activated_table_from_daemon_socket() {
     assert_eq!(table.entries.len(), 3, "three --tracked-tool args");
     for e in &table.entries {
         assert!(
-            e.wrapper_path
-                .starts_with("/usr/local/libexec/babbleon/wrappers"),
-            "wrapper_path {:?} should start with the daemon's --wrapper-dir",
+            e.wrapper_path.starts_with(&wrapper_dir),
+            "wrapper_path {:?} should start with the daemon's --wrapper-dir {:?}",
+            e.wrapper_path,
+            wrapper_dir,
+        );
+        // The daemon-side materialisation invariant: every
+        // advertised wrapper_path actually exists on disk.
+        assert!(
+            e.wrapper_path.exists(),
+            "wrapper file missing on disk: {:?}",
             e.wrapper_path,
         );
     }

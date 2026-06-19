@@ -1995,6 +1995,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "v2-babbleon-daemon"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "libc",
+ "nix",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tracing",
+ "tracing-subscriber",
+ "v2-babbleon-core",
+]
+
+[[package]]
 name = "v2-babbleon-launch-untrusted"
 version = "0.1.0"
 dependencies = [
@@ -2002,10 +2017,12 @@ dependencies = [
  "libc",
  "nix",
  "seccompiler",
+ "tempfile",
  "thiserror",
  "tracing",
  "tracing-subscriber",
  "v2-babbleon-core",
+ "v2-babbleon-daemon",
 ]
 
 [[package]]
