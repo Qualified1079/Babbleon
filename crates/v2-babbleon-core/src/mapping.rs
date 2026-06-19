@@ -247,7 +247,7 @@ mod tests {
         let m = MappingBuilder::new(&s, wl).build(&tracked(), 0).unwrap();
         let mut scrambled: Vec<&str> =
             m.real_to_scrambled.values().map(String::as_str).collect();
-        scrambled.sort();
+        scrambled.sort_unstable();
         let len = scrambled.len();
         scrambled.dedup();
         assert_eq!(scrambled.len(), len, "scrambled names must be unique");
