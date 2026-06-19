@@ -364,6 +364,83 @@ mod tests {
     }
 
     #[test]
+    fn collision_resistance_across_many_secrets_and_epochs() {
+        // Property: the per-host bijection is collision-free across
+        // every (real, scrambled) pair AND every honey name, for a
+        // wide sweep of (secret, epoch) inputs.  Catches a regression
+        // where the permutation or compound builder accidentally
+        // duplicates a slot — fatal for the obfuscation scheme.
+        let wl = Wordlist::english_baseline();
+        // Smaller sweep — each MappingBuilder::build runs a
+        // Fisher-Yates over the 370k-entry baseline wordlist, so
+        // we keep the matrix small enough to stay under a few
+        // seconds on CI hardware.  4 secrets x 4 epochs = 16
+        // builds is enough to surface a collision regression while
+        // leaving CI snappy.
+        for secret_byte in [1u8, 29, 53, 127] {
+            for epoch in 0..4u64 {
+                let secret =
+                    PerHostSecret::from_bytes(&[secret_byte; 32]).unwrap();
+                let m =
+                    MappingBuilder::new(&secret, wl).build(&tracked(), epoch).unwrap();
+
+                let mut all_names: std::collections::HashSet<&str> =
+                    std::collections::HashSet::new();
+                for v in m.real_to_scrambled.values() {
+                    assert!(
+                        all_names.insert(v.as_str()),
+                        "secret {secret_byte} epoch {epoch}: duplicate scrambled {v}",
+                    );
+                }
+                for h in &m.honey_names {
+                    assert!(
+                        all_names.insert(h.as_str()),
+                        "secret {secret_byte} epoch {epoch}: honey {h} collides with a real scrambled name",
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rotation_changes_honey_names_too() {
+        // Property: the honey set rotates with the epoch (else
+        // tripwires would become recognizable across rotations).
+        let secret = fixed_secret();
+        let wl = Wordlist::english_baseline();
+        let b = MappingBuilder::new(&secret, wl);
+        let a = b.build(&tracked(), 0).unwrap();
+        let c = b.build(&tracked(), 1).unwrap();
+        let a_set: std::collections::HashSet<&str> =
+            a.honey_names.iter().map(String::as_str).collect();
+        let overlap = c
+            .honey_names
+            .iter()
+            .filter(|h| a_set.contains(h.as_str()))
+            .count();
+        assert_eq!(
+            overlap, 0,
+            "honey list overlap between epochs leaks rotation timing",
+        );
+    }
+
+    #[test]
+    fn scramble_returns_none_for_unknown_real_name() {
+        let secret = fixed_secret();
+        let wl = Wordlist::english_baseline();
+        let m = MappingBuilder::new(&secret, wl).build(&tracked(), 0).unwrap();
+        assert!(m.scramble("nonexistent-tool-foo").is_none());
+    }
+
+    #[test]
+    fn reveal_returns_none_for_unknown_scrambled() {
+        let secret = fixed_secret();
+        let wl = Wordlist::english_baseline();
+        let m = MappingBuilder::new(&secret, wl).build(&tracked(), 0).unwrap();
+        assert!(m.reveal("not-a-real-compound").is_none());
+    }
+
+    #[test]
     fn empty_wordlist_rejected() {
         let s = fixed_secret();
         // Build a wordlist with one entry, then bypass via direct
