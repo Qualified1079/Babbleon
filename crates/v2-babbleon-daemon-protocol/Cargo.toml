@@ -21,3 +21,7 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# Property-based tests for the wire-format parsers.  Drives Request /
+# Response through arbitrary-input roundtrips and no-panic invariants
+# that would otherwise need a fuzz harness — see `tests/proptest_protocol.rs`.
+proptest = { workspace = true }
