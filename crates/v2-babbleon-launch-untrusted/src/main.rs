@@ -224,6 +224,23 @@ fn exec_child(cmd: &[String]) -> i32 {
     let program = &cmd[0];
     let mut command = std::process::Command::new(program);
     command.args(&cmd[1..]);
+
+    // Scrub credential-bearing env vars before exec.  Policy lives
+    // in v2-babbleon-core::credentials; this binary just enforces.
+    //
+    // `env_clear` + `envs(scrubbed)` is the only safe shape:
+    // Command::env_remove would leak any name we forgot to list,
+    // whereas env_clear forces a positive whitelist by construction.
+    let scrubbed_env = babbleon_core_v2::scrub_credential_env_vars(std::env::vars());
+    let scrubbed_count = std::env::vars().count() - scrubbed_env.len();
+    command.env_clear().envs(scrubbed_env);
+    if scrubbed_count > 0 {
+        tracing::info!(
+            scrubbed = scrubbed_count,
+            "stripped credential env vars before exec",
+        );
+    }
+
     let err = command.exec();
     eprintln!(
         "babbleon-launch-untrusted: step {} exec {}: {err}",
