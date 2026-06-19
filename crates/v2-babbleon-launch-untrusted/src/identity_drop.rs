@@ -47,6 +47,9 @@ use crate::errors::{Error, Result};
 /// `setgroups` failure usually indicates a kernel `userns` config
 /// mismatch; `setuid` / `setgid` failure indicates the working caps
 /// were dropped too eagerly (caller error).
+// See preflight::check for the rationale: `real_uid`/`real_gid` are
+// kernel terminology preserved across the entire lifecycle.
+#[allow(clippy::similar_names)]
 pub fn drop_to_real_user(real_uid: u32, real_gid: u32) -> Result<()> {
     // CAPABILITY: CAP_SETGID required for setgroups when removing
     // supplementary groups.  Dropped at step 10.

@@ -50,8 +50,8 @@ use std::collections::BTreeSet;
 use crate::errors::{Error, Result};
 use crate::syscall;
 
-/// Linux currently defines capabilities 0 through 40 (CAP_LAST_CAP
-/// on a recent mainline kernel is 40 = CAP_CHECKPOINT_RESTORE).  We
+/// Linux currently defines capabilities 0 through 40 (`CAP_LAST_CAP`
+/// on a recent mainline kernel is 40 = `CAP_CHECKPOINT_RESTORE`).  We
 /// iterate one beyond that so a future-added capability slot gets
 /// dropped too; the kernel returns EINVAL for unallocated slots
 /// which we silently ignore.

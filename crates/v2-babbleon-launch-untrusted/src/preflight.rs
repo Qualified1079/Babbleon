@@ -65,6 +65,11 @@ pub struct PreflightOutcome {
 /// - Any element of the child command contains a NUL byte (would be
 ///   rejected by `execvp` downstream; we fail early to avoid leaving
 ///   the process in a half-set-up state when that EINVAL fires).
+// `real_uid`/`real_gid` mirror the kernel terminology (getuid(2),
+// getgid(2)).  They are operator-facing identifiers carried through
+// the entire 11-step lifecycle; renaming for clippy::similar_names
+// would degrade auditability for a 3-character visual difference.
+#[allow(clippy::similar_names)]
 pub fn check(args: &Args, real_uid: u32, real_gid: u32) -> Result<PreflightOutcome> {
     if args.child_command.is_empty() {
         return Err(Error::Preflight(

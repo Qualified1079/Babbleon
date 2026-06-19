@@ -30,7 +30,10 @@ fn main() {
     std::process::exit(exit_code);
 }
 
+// `real_uid` / `real_gid` are kernel terminology preserved across the
+// entire 11-step lifecycle; see preflight::check for the rationale.
 #[cfg(target_os = "linux")]
+#[allow(clippy::similar_names)]
 fn run(args: &Args) -> i32 {
     use v2_babbleon_launch_untrusted::{
         bounding_set, identity_drop, mounts, namespaces, preflight,

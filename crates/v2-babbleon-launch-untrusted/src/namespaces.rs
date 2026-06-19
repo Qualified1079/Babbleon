@@ -68,7 +68,7 @@ pub fn enter_fresh_namespaces() -> Result<()> {
 /// Step 5 — recursively mark the new mount tree as `MS_PRIVATE` so
 /// subsequent mounts do not propagate back to the host's mount NS.
 ///
-/// CAPABILITY: `CAP_SYS_ADMIN` (mount(2) with MS_PRIVATE on /).
+/// CAPABILITY: `CAP_SYS_ADMIN` (mount(2) with `MS_PRIVATE` on /).
 ///
 /// # Errors
 ///

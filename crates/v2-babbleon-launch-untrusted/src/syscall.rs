@@ -76,14 +76,14 @@ pub fn prctl_capbset_drop(cap: i32) -> io::Result<()> {
 ///
 /// # CAPABILITY
 ///
-/// None.  `PR_SET_DUMPABLE` to 0 (SUID_DUMP_DISABLE) is always
+/// None.  `PR_SET_DUMPABLE` to 0 (`SUID_DUMP_DISABLE`) is always
 /// allowed for the calling process.
 ///
 /// # Errors
 ///
 /// Returns `io::Error::last_os_error()` if `prctl` returns non-zero
 /// (in practice this only happens if the kernel was compiled
-/// without CONFIG_COREDUMP, which is extremely rare).
+/// without `CONFIG_COREDUMP`, which is extremely rare).
 pub fn prctl_set_dumpable_off() -> io::Result<()> {
     // SAFETY: `PR_SET_DUMPABLE` with arg `SUID_DUMP_DISABLE` (== 0)
     // is documented as taking no further arguments; we pass zeros.

@@ -14,7 +14,7 @@
 //!   cannot leak to disk.
 //! - **Privilege re-acquisition by the child.**
 //!   `PR_SET_NO_NEW_PRIVS = 1` makes setuid bits, file caps, and
-//!   AppArmor profile transitions on subsequent `execve` no-ops.
+//!   `AppArmor` profile transitions on subsequent `execve` no-ops.
 //!   The child cannot gain capabilities the launcher dropped.
 //!
 //! # Mechanism

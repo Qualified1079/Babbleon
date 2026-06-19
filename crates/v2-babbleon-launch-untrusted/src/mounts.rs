@@ -19,7 +19,7 @@
 //!
 //! 1. A daemon-side IPC channel exists for the launcher to receive
 //!    the activated mapping table (the launcher must not hold the
-//!    per-host secret itself — see V2_PLAN.md compartmentalization).
+//!    per-host secret itself — see `V2_PLAN.md` compartmentalization).
 //! 2. The runtime-table read path (replacing v1's per-tool wrapper
 //!    bind-mount with a single unified wrapper + table file) lands
 //!    in `v2-babbleon-core::wrapper`.  The unified template is
