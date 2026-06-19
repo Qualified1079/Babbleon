@@ -61,7 +61,7 @@ pub enum Cmd {
     /// connections on `--socket` (default
     /// `/run/babbleon/daemon.sock`) and serves activated-table
     /// requests until SIGTERM.
-    Run,
+    Run(RunArgs),
 
     /// One-shot: connect to the running daemon and request an
     /// activated table for the current epoch.  Prints the JSONL to
@@ -80,6 +80,30 @@ pub enum Cmd {
     RotateMapping,
 }
 
+/// Arguments to the long-running `run` subcommand.
+///
+/// Phase 2 ships without a real vault unlock; the daemon refuses to
+/// start unless `--insecure-stub-secret` is passed explicitly.  The
+/// flag documents itself as development-only in `--help`.
+#[derive(Debug, clap::Args)]
+pub struct RunArgs {
+    /// Wrapper directory the daemon emits paths under in the
+    /// activated table.  Must be absolute.
+    #[arg(long = "wrapper-dir", value_name = "PATH")]
+    pub wrapper_dir: std::path::PathBuf,
+
+    /// Canonical tool name to track.  Repeat for each tool; the
+    /// activated table will contain one entry per `--tracked-tool`.
+    #[arg(long = "tracked-tool", value_name = "NAME")]
+    pub tracked_tools: Vec<String>,
+
+    /// Use a hardcoded development secret instead of loading from
+    /// the vault.  PHASE 2 STUB — required while real vault unlock
+    /// is not yet wired.  Refuses to start without this flag.
+    #[arg(long = "insecure-stub-secret")]
+    pub insecure_stub_secret: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::Args;
@@ -91,9 +115,61 @@ mod tests {
     }
 
     #[test]
-    fn run_subcommand_parses() {
-        let args = Args::try_parse_from(["babbleon-daemon", "run"]).unwrap();
-        assert!(matches!(args.cmd, super::Cmd::Run));
+    fn run_subcommand_parses_with_required_flags() {
+        let args = Args::try_parse_from([
+            "babbleon-daemon",
+            "run",
+            "--wrapper-dir",
+            "/wrappers",
+            "--insecure-stub-secret",
+        ])
+        .unwrap();
+        match args.cmd {
+            super::Cmd::Run(r) => {
+                assert_eq!(
+                    r.wrapper_dir,
+                    std::path::PathBuf::from("/wrappers")
+                );
+                assert!(r.insecure_stub_secret);
+                assert!(r.tracked_tools.is_empty());
+            }
+            other => panic!("expected Run, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_subcommand_accepts_repeated_tracked_tool() {
+        let args = Args::try_parse_from([
+            "babbleon-daemon",
+            "run",
+            "--wrapper-dir",
+            "/w",
+            "--tracked-tool",
+            "curl",
+            "--tracked-tool",
+            "ssh",
+            "--insecure-stub-secret",
+        ])
+        .unwrap();
+        match args.cmd {
+            super::Cmd::Run(r) => {
+                assert_eq!(r.tracked_tools, vec!["curl", "ssh"]);
+            }
+            other => panic!("expected Run, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_subcommand_requires_wrapper_dir() {
+        let result = Args::try_parse_from([
+            "babbleon-daemon",
+            "run",
+            "--insecure-stub-secret",
+        ]);
+        assert!(
+            result.is_err(),
+            "missing --wrapper-dir should be a parse error"
+        );
     }
 
     #[test]
