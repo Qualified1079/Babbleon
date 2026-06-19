@@ -68,6 +68,7 @@ pub mod cli;
 pub mod client;
 pub mod errors;
 pub mod handlers;
+pub mod hardening;
 pub mod protocol;
 pub mod socket;
 pub mod state;
@@ -76,6 +77,7 @@ pub use cli::Args;
 pub use client::round_trip;
 pub use errors::{Error, Result};
 pub use handlers::dispatch;
+pub use hardening::apply_secret_hygiene;
 pub use protocol::{ErrorKind, Request, Response, MAX_REQUEST_BYTES};
 pub use socket::{
     bind_socket, default_socket_path, handle_one_request, serve_blocking,

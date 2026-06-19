@@ -15,8 +15,8 @@ use clap::Parser;
 
 use babbleon_daemon_v2::cli::{Args, Cmd, RunArgs};
 use babbleon_daemon_v2::{
-    bind_socket, default_socket_path, round_trip, serve_blocking,
-    DaemonState, ErrorKind, Request, Response,
+    apply_secret_hygiene, bind_socket, default_socket_path, round_trip,
+    serve_blocking, DaemonState, ErrorKind, Request, Response,
 };
 use babbleon_core_v2::{PerHostSecret, Wordlist};
 
@@ -68,6 +68,12 @@ fn run_daemon(
                 .into(),
         );
     }
+
+    // Security-baseline rule 8: harden BEFORE any secret enters
+    // memory.  The next line builds a PerHostSecret; the hygiene
+    // call has to come first.
+    apply_secret_hygiene()
+        .map_err(|e| format!("secret-hygiene startup: {e}"))?;
 
     let secret = PerHostSecret::from_bytes(&INSECURE_STUB_SECRET)
         .map_err(|e| format!("constructing stub secret: {e}"))?;
