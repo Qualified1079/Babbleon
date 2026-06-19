@@ -11,6 +11,7 @@ members = [
     "crates/v2-babbleon-core",
     "crates/v2-babbleon",
     "crates/v2-babbleon-launch-untrusted",
+    "crates/v2-babbleon-daemon",
 ]
 exclude = [
     # cargo-fuzz harness — needs nightly + libfuzzer-sys; lives outside
