@@ -7,7 +7,7 @@
 //! 1. **Buffer-overflow / OOM via oversize request.**  An adversarial
 //!    peer that connects and writes gigabytes of bytes must not be
 //!    able to grow the daemon's heap.  [`handle_one_request`] caps
-//!    line read at [`crate::protocol::MAX_REQUEST_BYTES`] + 1 (the
+//!    line read at [`babbleon_daemon_protocol_v2::MAX_REQUEST_BYTES`] + 1 (the
 //!    `+ 1` is for the trailing newline) via [`BufReader`]'s
 //!    `take`-bounded reader.
 //! 2. **State leakage across connections.**  Each connection is
@@ -15,7 +15,7 @@
 //!    keep-alive, no shared parser state.  A panic on connection N
 //!    cannot smuggle internal data into connection N+1.
 //!
-//! Compartmentalizes I/O from the wire format ([`crate::protocol`])
+//! Compartmentalizes I/O from the wire format ([`babbleon_daemon_protocol_v2`])
 //! and from state mutation ([`crate::state`] +
 //! [`crate::handlers`]).  Test coverage is in-memory via
 //! [`std::io::Cursor`] readers and `Vec<u8>` writers; the
@@ -28,11 +28,11 @@
 //!
 //! 1. Read one line (up to `MAX_REQUEST_BYTES + 1` bytes including
 //!    the trailing `\n`).  Reject empty reads and oversize lines.
-//! 2. Parse with [`crate::protocol::Request::parse`].
+//! 2. Parse with [`babbleon_daemon_protocol_v2::Request::parse`].
 //! 3. Dispatch via [`crate::handlers::dispatch`].
 //! 4. Serialize and write the response.  Flush.
 //!
-//! Errors at any stage produce a wire [`crate::protocol::Response::Error`]
+//! Errors at any stage produce a wire [`babbleon_daemon_protocol_v2::Response::Error`]
 //! when the connection is still writable; if writing itself fails the
 //! error is surfaced upward and the connection is dropped.
 //!
@@ -62,11 +62,11 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::handlers::dispatch;
-use crate::protocol::{ErrorKind, Request, Response, MAX_REQUEST_BYTES};
 use crate::state::DaemonState;
+use babbleon_daemon_protocol_v2::{ErrorKind, Request, Response, MAX_REQUEST_BYTES};
 
 /// Socket file mode applied by [`bind_socket`].  `0o660` — owner
 /// read/write, group read/write, world: no access.  Group is the
@@ -270,14 +270,6 @@ fn write_response<W: Write>(
     writer.write_all(&bytes)?;
     writer.flush()?;
     Ok(())
-}
-
-/// Sentinel for the daemon's default socket path: `/run/babbleon/daemon.sock`.
-///
-/// Exposed so the CLI and the launcher reference the same constant.
-#[must_use]
-pub fn default_socket_path() -> PathBuf {
-    PathBuf::from("/run/babbleon/daemon.sock")
 }
 
 #[cfg(test)]

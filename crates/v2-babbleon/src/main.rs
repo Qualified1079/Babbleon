@@ -36,7 +36,7 @@ use std::process::ExitCode;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
-use babbleon_daemon_v2::{
+use babbleon_daemon_protocol_v2::{
     default_socket_path, round_trip, Request, Response,
 };
 

@@ -146,7 +146,7 @@ fn read_from_fd(fd: i32) -> Result<ActivatedTable> {
 /// bytes and feeds them through the same parser the FD / path paths
 /// use, so all three input modes converge on the same validation.
 fn read_from_daemon_socket(socket_path: &Path) -> Result<ActivatedTable> {
-    use babbleon_daemon_v2::{round_trip, ErrorKind, Request, Response};
+    use babbleon_daemon_protocol_v2::{round_trip, ErrorKind, Request, Response};
     let resp = round_trip(socket_path, &Request::EmitActivatedTable)
         .map_err(|e| {
             Error::ActivatedTable(format!(

@@ -49,5 +49,18 @@ impl From<babbleon_core_v2::Error> for Error {
     }
 }
 
+impl From<babbleon_daemon_protocol_v2::Error> for Error {
+    fn from(e: babbleon_daemon_protocol_v2::Error) -> Self {
+        // The protocol crate's error is a strict subset of this enum;
+        // bridge variant-for-variant so the message text is preserved.
+        match e {
+            babbleon_daemon_protocol_v2::Error::Ipc(m) => Self::Ipc(m),
+            babbleon_daemon_protocol_v2::Error::ActivatedTable(m) => {
+                Self::ActivatedTable(m)
+            }
+        }
+    }
+}
+
 /// Result alias used throughout the crate.
 pub type Result<T> = std::result::Result<T, Error>;

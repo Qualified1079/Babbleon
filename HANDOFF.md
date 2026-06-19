@@ -24,8 +24,66 @@ lands, push here)
 
 Date: 2026-06-19 (user-asleep session continued — claude-opus-4-7)
 
-Last commit before this handoff: `81f7bec` — feat(v2-babbleon):
-wire status + rotate-mapping through to the daemon.
+Last commit before this handoff: `6d983d2` — fix(v2-babbleon):
+replace anyhow's debug-backtrace with cause chain.
+
+## What landed THIS session (2026-06-19 late, user asleep — protocol carve-out)
+
+**Headline: open-items item 3 closed — protocol + client carved out
+into `v2-babbleon-daemon-protocol`.**
+
+The launcher and the user-facing CLI no longer depend on the full
+`v2-babbleon-daemon` crate.  Their production dependency graph
+includes only the new `v2-babbleon-daemon-protocol` crate, which
+contains exclusively:
+
+- `protocol.rs` — `Request`, `Response`, `ErrorKind`,
+  `MAX_REQUEST_BYTES`, the hand-validated JSON-per-line wire format.
+- `client.rs` — `round_trip(socket_path, request) -> Response`, the
+  stdlib-`UnixStream`-based one-shot connector.
+- `socket_path.rs` — `default_socket_path()` constant.
+- `errors.rs` — a minimal two-variant `Error` enum (`Ipc` /
+  `ActivatedTable`); the daemon's own broader `Error` enum bridges
+  via a new `From<protocol::Error>` impl.
+
+The daemon's `state`, `materialization`, `handlers`, `hardening`,
+`socket` serve-loop, and the `DaemonState`-owning `PerHostSecret`
+no longer appear in the launcher or CLI dependency graphs.  Audit
+surface tightened by exactly the amount item 3 promised:
+`cargo tree -p v2-babbleon --edges normal --depth 1` and
+`cargo tree -p v2-babbleon-launch-untrusted --edges normal --depth 1`
+now both list only `v2-babbleon-daemon-protocol`, never
+`v2-babbleon-daemon`.
+
+**Test deltas:**
+
+| Crate | Before | After |
+|---|---|---|
+| `v2-babbleon-core` | 103 unit + 1 doc | 103 unit + 1 doc |
+| `v2-babbleon` | 3 unit + 4 integ | 3 unit + 4 integ |
+| `v2-babbleon-launch-untrusted` | 38 unit + 5 integ + 2 daemon-sock + 3 rooted | 38 + 5 + 2 + 3 (no changes) |
+| `v2-babbleon-daemon` | 91 unit + 5 integ | 63 unit + 3 client_round_trip + 5 end_to_end |
+| `v2-babbleon-daemon-protocol` (new) | — | 27 unit |
+| **Total v2 (excl ignored)** | **252** | **254** (+2 socket_path tests) |
+
+Test counts moved with the modules: 22 protocol-parser tests + 1
+no-server client test = 23 unit tests now live in the protocol
+crate; the 3 client-vs-DaemonState round-trip tests became
+integration tests at `crates/v2-babbleon-daemon/tests/client_round_trip.rs`
+because they need the daemon's `DaemonState` constructor.  Net +2
+from the two new `default_socket_path` tests in the protocol crate.
+
+**`cargo clippy -p v2-babbleon-daemon-protocol -p v2-babbleon-daemon -p v2-babbleon -p v2-babbleon-launch-untrusted --all-targets -- -D warnings`
+is clean.**  The protocol crate carries the same security-baseline
+posture as the other v2 crates (`#![forbid(unsafe_code)]`,
+`#![deny(missing_docs)]`, `#![warn(clippy::pedantic)]`).
+
+**Dev-dep wiring kept for the launcher's daemon-socket integration
+test:** `crates/v2-babbleon-launch-untrusted/Cargo.toml` lists
+`v2-babbleon-daemon` only under `[dev-dependencies]` so cargo still
+builds `babbleon-daemon` alongside and sets
+`CARGO_BIN_EXE_babbleon-daemon` for the test harness without
+re-introducing the dep into the production graph.
 
 ## What landed AFTER the previous handoff refresh
 
@@ -185,11 +243,12 @@ mapping primitive.  Confirmed: epoch rotates; tracked count
 matches; wrappers paths align under `--wrapper-dir`; activated
 table re-parses through the core's reader without error.
 
-### Open / next-session items (priority order — refreshed 2026-06-19 late)
+### Open / next-session items (priority order — refreshed 2026-06-19 night)
 
-Items 1, 4, 4b, 5 from the prior list closed (`b7e80a0`,
+Items 1, 4, 4b, 5 from the original list closed (`b7e80a0`,
 `5b6f58e`, `ca2268e`, `bc0523f`).  CLI status/rotate wiring
-also landed (`81f7bec`).  Remaining work:
+landed (`81f7bec`).  Item 3 (protocol carve-out) closed this
+session — see "What landed THIS session" above.  Remaining work:
 
 1. **Real vault unlock.**  Phase 2 ships the
    `--insecure-stub-secret` flag.  Phase 3 replaces it with
@@ -199,28 +258,20 @@ also landed (`81f7bec`).  Remaining work:
    wrappers per security-baseline rule 11.  When this lands,
    wire `babbleon init` and `babbleon unlock` in the
    user-facing CLI (currently `not_yet_implemented` stubs;
-   regression-guarded).
+   regression-guarded).  Note: the new `Request::Unlock` and
+   `Response::Unlocked` variants land in
+   `crates/v2-babbleon-daemon-protocol/src/protocol.rs` (the
+   canonical wire schema home post-carve-out).
 2. **PAM module skeleton.**  `crates/v2-babbleon-pam/` —
    C shim invoking the launcher at session open with the
    daemon socket FD passed via SCM_RIGHTS.  v1's
    `crates/babbleon-pam/` is reference.
-3. **Extract `v2-babbleon-daemon-protocol` crate.**  Both
-   `v2-babbleon-launch-untrusted` (since `b7e80a0`) and
-   `v2-babbleon` (since `81f7bec`) now depend on the daemon
-   crate purely for the protocol+client surface.  This
-   inflates their audit surface with the daemon's state /
-   handlers / socket-server code that the linker drops but the
-   dependency graph still pulls.  Carve out
-   `crates/v2-babbleon-daemon-protocol/` containing only
-   `protocol.rs`, `client.rs`, and the subset of `errors.rs` /
-   `default_socket_path` they need.  Half a day, mostly
-   mechanical.
-4. **Daemon seccomp profile.**  Allowed-syscall list per
+3. **Daemon seccomp profile.**  Allowed-syscall list per
    `docs/v2/least-privilege.md` (daemon's expected envelope).
-   The envelope grew this session (materialise calls openat /
-   write / fchmod / unlinkat / read_dir); pin the profile only
-   once the operator confirms the envelope.
-5. **Atomic wrapper-dir swap.**  `materialize()` writes
+   The envelope grew with materialise (openat / write / fchmod /
+   unlinkat / read_dir); pin the profile only once the operator
+   confirms the envelope.
+4. **Atomic wrapper-dir swap.**  `materialize()` writes
    individual files; a mid-flight failure leaves disk and
    in-memory mapping out of sync.  Want
    write-to-`{wrapper_dir}.next` + `rename(2)` swap.  Touches
@@ -229,10 +280,8 @@ also landed (`81f7bec`).  Remaining work:
    lifecycle.
 
 Items 1 and 2 are roughly independent and can be tackled in
-either order.  Item 3 is the lightest-touch refactor and a
-prerequisite for tightening the launcher's audit surface for
-phase 3.  Items 4, 5 should land before any production
-deployment but don't block phase-2 progress.
+either order.  Items 3 and 4 should land before any production
+deployment but don't block phase-3 progress.
 
 ### Test counts AFTER 2026-06-19 late session
 

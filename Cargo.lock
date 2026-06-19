@@ -1971,7 +1971,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "v2-babbleon-core",
- "v2-babbleon-daemon",
+ "v2-babbleon-daemon-protocol",
 ]
 
 [[package]]
@@ -2009,6 +2009,16 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "v2-babbleon-core",
+ "v2-babbleon-daemon-protocol",
+]
+
+[[package]]
+name = "v2-babbleon-daemon-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tempfile",
+ "thiserror",
 ]
 
 [[package]]
@@ -2025,6 +2035,7 @@ dependencies = [
  "tracing-subscriber",
  "v2-babbleon-core",
  "v2-babbleon-daemon",
+ "v2-babbleon-daemon-protocol",
 ]
 
 [[package]]

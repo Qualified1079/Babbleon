@@ -65,24 +65,27 @@
 #![warn(clippy::pedantic)]
 
 pub mod cli;
-pub mod client;
 pub mod errors;
 pub mod handlers;
 pub mod hardening;
 pub mod materialization;
-pub mod protocol;
 pub mod socket;
 pub mod state;
 
 pub use cli::{Args, ParsedTrackedTool};
-pub use client::round_trip;
 pub use errors::{Error, Result};
 pub use handlers::dispatch;
 pub use hardening::apply_secret_hygiene;
 pub use materialization::{materialize, stale_names_from, MaterializationConfig, TrackedTool};
-pub use protocol::{ErrorKind, Request, Response, MAX_REQUEST_BYTES};
-pub use socket::{
-    bind_socket, default_socket_path, handle_one_request, serve_blocking,
-    SOCKET_MODE,
-};
+pub use socket::{bind_socket, handle_one_request, serve_blocking, SOCKET_MODE};
 pub use state::DaemonState;
+
+// Re-export the protocol surface so existing call sites in the daemon
+// binary's `main.rs` and the daemon's integration tests don't have to
+// pick between two paths to the same type.  External peers (launcher,
+// user CLI) link `v2-babbleon-daemon-protocol` directly instead, which
+// is the whole reason that crate exists.
+pub use babbleon_daemon_protocol_v2::{
+    default_socket_path, round_trip, ErrorKind, Request, Response,
+    MAX_REQUEST_BYTES,
+};

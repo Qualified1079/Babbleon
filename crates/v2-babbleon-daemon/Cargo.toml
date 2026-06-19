@@ -18,6 +18,11 @@ path = "src/main.rs"
 [dependencies]
 # Core: secret, mapping, wrapper, activated-table.
 v2-babbleon-core = { path = "../v2-babbleon-core" }
+# Wire protocol + operator-side client.  Carved out so daemon peers
+# (launcher, user CLI) can link only the small protocol surface.
+# The daemon itself still consumes Request / Response / ErrorKind from
+# the same crate so a single source of truth governs the wire schema.
+v2-babbleon-daemon-protocol = { path = "../v2-babbleon-daemon-protocol" }
 # Errors + logging.
 thiserror = { workspace = true }
 tracing = { workspace = true }

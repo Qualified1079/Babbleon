@@ -2,22 +2,23 @@
 //!
 //! # Infrastructure module
 //!
-//! Bridges [`crate::protocol::Request`] / [`crate::protocol::Response`]
-//! to [`crate::state::DaemonState`].  Pure function over its inputs;
+//! Bridges [`babbleon_daemon_protocol_v2::Request`] /
+//! [`babbleon_daemon_protocol_v2::Response`] to
+//! [`crate::state::DaemonState`].  Pure function over its inputs;
 //! holds no I/O.  The socket layer ([`crate::socket`]) reads a
 //! request off the wire, calls [`dispatch`], writes the resulting
 //! response back.  Separating dispatch from I/O lets dispatch be
 //! tested without spinning up a listener.
 //!
 //! Every error from [`DaemonState`] is converted to a
-//! [`crate::protocol::Response::Error`] carrying a coarse
-//! [`crate::protocol::ErrorKind`] and a redacted message — secret
-//! material never reaches a wire response (security-baseline
-//! rule 13).
+//! [`babbleon_daemon_protocol_v2::Response::Error`] carrying a coarse
+//! [`babbleon_daemon_protocol_v2::ErrorKind`] and a redacted
+//! message — secret material never reaches a wire response
+//! (security-baseline rule 13).
 
 use crate::errors::Error;
-use crate::protocol::{ErrorKind, Request, Response};
 use crate::state::DaemonState;
+use babbleon_daemon_protocol_v2::{ErrorKind, Request, Response};
 
 /// Dispatch one [`Request`] against [`DaemonState`].
 ///
