@@ -69,7 +69,8 @@ pub mod wordlist;
 pub mod wrapper;
 
 pub use activated_table::{
-    ActivatedEntry, ActivatedTable, ActivatedTableBuilder, MAX_TABLE_BYTES,
+    build_activated_table_from_mapping, ActivatedEntry, ActivatedTable,
+    ActivatedTableBuilder, MAX_TABLE_BYTES,
 };
 pub use errors::{Error, Result};
 pub use events::{

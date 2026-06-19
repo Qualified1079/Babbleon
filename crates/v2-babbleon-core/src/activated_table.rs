@@ -258,6 +258,49 @@ impl ActivatedTableBuilder {
     }
 }
 
+/// Build an [`ActivatedTable`] from a per-epoch
+/// [`crate::EpochMapping`] and a wrapper directory.
+///
+/// For each `(real, scrambled)` entry in the mapping, the wrapper
+/// path is `wrapper_dir/<scrambled>` — the daemon's wrapper
+/// generator (see [`crate::wrapper::write_all_wrappers`]) writes
+/// the per-name binaries under exactly that layout, so this
+/// function is the inverse-direction read.
+///
+/// `wrapper_dir` MUST be absolute; relative wrapper directories
+/// are rejected at validation time inside
+/// [`ActivatedTableBuilder::push_entry`].
+///
+/// The honey names from the mapping are forwarded verbatim.  The
+/// builder re-validates them so a future mapping-side bug cannot
+/// ship an invalid name through this path.
+///
+/// # Errors
+///
+/// - [`Error::Internal`] if `wrapper_dir` is relative, contains
+///   path-traversal components, or any scrambled/honey name fails
+///   the lowercase-ASCII check.
+pub fn build_activated_table_from_mapping(
+    mapping: &crate::EpochMapping,
+    wrapper_dir: &std::path::Path,
+) -> Result<ActivatedTable> {
+    let mut builder = ActivatedTableBuilder::new(mapping.epoch);
+    // Deterministic order: sort by real name so the JSONL output is
+    // reproducible across builds.  Bind-mount order is not
+    // security-relevant, but reproducibility helps audit.
+    let mut entries: Vec<(&String, &String)> =
+        mapping.real_to_scrambled.iter().collect();
+    entries.sort_by(|a, b| a.0.cmp(b.0));
+    for (_real, scrambled) in entries {
+        let wrapper_path = wrapper_dir.join(scrambled);
+        builder = builder.push_entry(scrambled.clone(), wrapper_path)?;
+    }
+    for honey in &mapping.honey_names {
+        builder = builder.push_honey(honey.clone())?;
+    }
+    builder.finish()
+}
+
 /// Validate a scrambled or honey name.
 ///
 /// Rules: non-empty, every byte is lowercase ASCII (`a..=z`).
@@ -602,6 +645,77 @@ not-json-at-all
         assert_eq!(t.epoch, 99);
         assert!(t.entries.is_empty());
         assert!(t.honey_names.is_empty());
+    }
+
+    #[test]
+    fn build_from_mapping_produces_table_for_every_tracked_tool() {
+        use crate::{MappingBuilder, PerHostSecret, Wordlist};
+        let secret = PerHostSecret::from_bytes(&[7u8; 32]).unwrap();
+        let wl = Wordlist::english_baseline();
+        let tracked = vec!["curl".to_string(), "git".to_string()];
+        let m = MappingBuilder::new(&secret, wl).build(&tracked, 5).unwrap();
+        let table = super::build_activated_table_from_mapping(
+            &m,
+            std::path::Path::new("/usr/local/libexec/babbleon/wrappers"),
+        )
+        .unwrap();
+        assert_eq!(table.epoch, 5);
+        assert_eq!(table.entries.len(), tracked.len());
+        for tool in &tracked {
+            let scrambled = m.scramble(tool).unwrap();
+            let expected_path = std::path::PathBuf::from(
+                "/usr/local/libexec/babbleon/wrappers",
+            )
+            .join(scrambled);
+            let entry = table
+                .entries
+                .iter()
+                .find(|e| e.scrambled == scrambled)
+                .unwrap();
+            assert_eq!(entry.wrapper_path, expected_path);
+        }
+        // Honey names round-trip.
+        assert_eq!(table.honey_names.len(), m.honey_names.len());
+    }
+
+    #[test]
+    fn build_from_mapping_rejects_relative_wrapper_dir() {
+        use crate::{MappingBuilder, PerHostSecret, Wordlist};
+        let secret = PerHostSecret::from_bytes(&[7u8; 32]).unwrap();
+        let wl = Wordlist::english_baseline();
+        let m = MappingBuilder::new(&secret, wl)
+            .build(&["curl".to_string()], 0)
+            .unwrap();
+        let err = super::build_activated_table_from_mapping(
+            &m,
+            std::path::Path::new("relative/wrappers"),
+        )
+        .unwrap_err();
+        assert!(format!("{err}").contains("not absolute"));
+    }
+
+    #[test]
+    fn build_from_mapping_is_deterministic_per_input() {
+        use crate::{MappingBuilder, PerHostSecret, Wordlist};
+        let secret = PerHostSecret::from_bytes(&[7u8; 32]).unwrap();
+        let wl = Wordlist::english_baseline();
+        let m = MappingBuilder::new(&secret, wl)
+            .build(
+                &["curl".to_string(), "git".to_string(), "ssh".to_string()],
+                0,
+            )
+            .unwrap();
+        let a = super::build_activated_table_from_mapping(
+            &m,
+            std::path::Path::new("/wrappers"),
+        )
+        .unwrap();
+        let b = super::build_activated_table_from_mapping(
+            &m,
+            std::path::Path::new("/wrappers"),
+        )
+        .unwrap();
+        assert_eq!(a, b);
     }
 
     #[test]
