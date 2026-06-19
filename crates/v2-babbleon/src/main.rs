@@ -31,6 +31,7 @@
 #![deny(missing_docs)]
 
 use std::path::PathBuf;
+use std::process::ExitCode;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -100,13 +101,13 @@ enum Cmd {
     MountScrambledView,
 }
 
-fn main() -> Result<()> {
+fn main() -> ExitCode {
     let cli = Cli::parse();
     install_tracing(cli.verbose);
 
     let socket_path = cli.socket.unwrap_or_else(default_socket_path);
 
-    match cli.cmd {
+    let result: Result<()> = match cli.cmd {
         // Phase 3 — need the vault-unlock protocol on the daemon socket.
         Cmd::Init => not_yet_implemented("init"),
         Cmd::Unlock => not_yet_implemented("unlock"),
@@ -116,6 +117,23 @@ fn main() -> Result<()> {
         // Phase 3 — needs the launcher binary to be on PATH and the
         // PAM module wired.
         Cmd::MountScrambledView => not_yet_implemented("mount-scrambled-view"),
+    };
+
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            // Print the error chain with no backtrace noise.  anyhow's
+            // default Debug-format for main()'s Result includes a
+            // backtrace; we want a one-line operator-readable message
+            // followed by the cause chain.
+            eprintln!("babbleon: {e}");
+            let mut source = e.source();
+            while let Some(s) = source {
+                eprintln!("  caused by: {s}");
+                source = s.source();
+            }
+            ExitCode::FAILURE
+        }
     }
 }
 
