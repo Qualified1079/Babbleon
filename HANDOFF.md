@@ -24,8 +24,8 @@ lands, push here)
 
 Date: 2026-06-19 (user-asleep session continued — claude-opus-4-7)
 
-Last commit before this handoff: `b138c27` — feat(v2-core): bridge
-EpochMapping -> ActivatedTable for daemon side
+Last commit before this handoff: `96c214b` — scaffold(v2-daemon):
+crate skeleton + CLI surface (phase-2 item 2 start)
 
 This session continued from the prior phase-2 step-1 landing.
 What's new since `1d0fa1d`:
@@ -59,13 +59,63 @@ What's new since `1d0fa1d`:
    in the launcher crate: builds mapping with core, bridges to
    activated-table, serialises, deserialises via the launcher's
    input path, asserts equivalence.  Also asserts epoch rotation
-   invalidates every entry.  4 tests, all green.
+   invalidates every entry.  4 tests, all green.  Commit `7bde9b4`.
+7. `v2-babbleon-core::credentials` — credential-bearing path list
+   + env-var deny list + suffix-pattern matcher, ported from v1
+   under v2's plain-English naming.  `discover_credential_dirs`,
+   `is_credential_env_var`, `scrub_credential_env_vars`.  11 unit
+   tests.  Commit `5dde58b`.
+8. `v2-babbleon-launch-untrusted::credential_gate` — the
+   mechanism side: `hide_credential_dirs_with_tmpfs(&[PathBuf])`.
+   Wired into the orchestrator at step 6 after `bind_mount_entries`.
+   Caller's home looked up via `getpwuid_r` (NOT `$HOME`).
+   `run_credential_gate` helper keeps the orchestrator under the
+   pedantic too_many_lines threshold.  Commit `5dde58b`.
+9. Launcher exec scrubs credential env vars.  `env_clear` +
+   `envs(scrubbed)` — a positive whitelist by construction.
+   Commit `5aa908f`.
+10. End-to-end daemon-pipeline test in
+    `tests/activated_table_roundtrip.rs`: writes wrappers via
+    `write_all_wrappers`, builds activated table, parses via
+    launcher input, asserts every wrapper path exists + is
+    executable.  Commit `1a5c7b8`.
+11. Rooted-test harness at
+    `tests/rooted_lifecycle.rs`: `run_in_forked_mount_ns()`
+    helper forks a child, enters NEWNS + MS_PRIVATE, runs the
+    body; parent waits and surfaces the exit code.
+    `bind_mount_entries_succeeds_in_fresh_namespace` exercises
+    the bind-mount loop end-to-end.
+    `credential_gate_overlays_empty_tmpfs_on_each_discovered_dir`
+    exercises the credential gate end-to-end.  Both pass live
+    in this session's sandbox (uid 0).  Commits `aca5c35`,
+    `7312235`.
+12. `v2-babbleon-daemon` crate skeleton.  CLI surface filed
+    (`run` / `emit-activated-table` / `status` / `rotate-mapping`).
+    Every subcommand returns "not yet implemented" so an
+    operator who wires the daemon prematurely fails loudly.
+    5 CLI tests.  Commit `96c214b`.
 
-Test counts after this session: **v2-babbleon-core 84** (was 41
-when the prior session ended at handoff, then 62 at the start of
-this one, +22 in this session); **v2-babbleon-launch-untrusted
-32 unit + 4 integration** (was 21 unit; +15 this session);
-**v2-babbleon 3** (unchanged).  All clippy clean.
+Test counts after this session: **v2-babbleon-core 95** (was 41
+at prior-session handoff; was 62 at this session's start; +33
+this session); **v2-babbleon-launch-untrusted 34 unit + 5
+integration + 3 rooted (ignored by default)** (was 21 unit;
++21 this session); **v2-babbleon 3** (unchanged);
+**v2-babbleon-daemon 5** (new crate).  All clippy clean across
+all four v2 crates.
+
+Phase-2 follow-up items from the original list, status after
+this session:
+
+| Item | Status | Where |
+|---|---|---|
+| 1. Rooted-test harness | ✅ scaffolded, 2 tests landed | `tests/rooted_lifecycle.rs` |
+| 2. Daemon-IPC channel for activated table | ✅ launcher side; ❌ daemon binary | `activated_table_input.rs`, `crates/v2-babbleon-daemon` |
+| 3. Unified runtime-table wrapper bind-mount | ✅ done | `mounts::bind_mount_entries` |
+| 4. Credential-dir tmpfs overlay | ✅ done | `credential_gate.rs`, `core::credentials` |
+| 5. PAM module | ❌ pending | `crates/v2-babbleon-pam` (TBD) |
+| 6. Clippy cleanup | ✅ done | (this session) |
+| 7. least-privilege.md update | ✅ done | `docs/v2/least-privilege.md` |
+| 8. Env-var scrub at exec | ✅ done | `main::exec_child` |
 
 ---
 
