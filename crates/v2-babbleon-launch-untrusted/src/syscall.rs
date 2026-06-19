@@ -22,6 +22,9 @@
 //!   elevation across `execve`.
 //! - `prctl(PR_SET_KEEPCAPS, 0, ...)` — discard caps across setuid
 //!   (paired with the explicit drop in step 10).
+//! - `File::from_raw_fd(N)` — adopt a parent-passed descriptor (used
+//!   only by `activated_table_input` when the daemon passes the
+//!   activated-table FD).
 //!
 //! Higher-level wrappers (`mount`, `unshare`, `setuid`, `setgid`,
 //! `mlockall`, `setrlimit`) live in `nix` which already audits its
@@ -202,6 +205,48 @@ pub fn capget_effective_bitmask() -> io::Result<u64> {
     let lower = u64::from(data[0].effective);
     let upper = u64::from(data[1].effective);
     Ok((upper << 32) | lower)
+}
+
+/// Adopt a parent-passed raw file descriptor as an owned `std::fs::File`.
+///
+/// The caller (typically the daemon) opened the descriptor and dup'd
+/// it into the launcher's FD table at exec time.  This wrapper takes
+/// ownership: on drop the underlying FD is closed exactly once.
+///
+/// # CAPABILITY
+///
+/// None.  Adopting a descriptor handed to us by our parent is
+/// unprivileged.
+///
+/// # Errors
+///
+/// Returns [`io::Error::from_raw_os_error(libc::EBADF)`] if `fd` is
+/// negative — the caller should reject this before calling.  An
+/// `EBADF` from the kernel at first read also surfaces as a normal
+/// `io::Error` through the returned `File`.
+///
+/// # Safety contract for callers
+///
+/// The caller MUST pass an FD that:
+///
+/// 1. Is open in this process at call time.
+/// 2. Refers to a regular file or a pipe — the launcher will
+///    `BufReader`-wrap it and read lines.
+/// 3. Is not held elsewhere in the launcher process — once this
+///    function returns the `File`, that `File` is the unique owner.
+pub fn adopt_raw_fd_as_file(fd: i32) -> io::Result<std::fs::File> {
+    use std::os::fd::{FromRawFd, OwnedFd};
+    if fd < 0 {
+        return Err(io::Error::from_raw_os_error(libc::EBADF));
+    }
+    // SAFETY: `OwnedFd::from_raw_fd` adopts the descriptor as the
+    // unique owner.  The caller contract above enumerates the
+    // pre-conditions; we additionally reject negative fds first so
+    // the libstd impl never receives one.  The kernel-level
+    // semantics (close on drop, dup behaviour) are well-defined
+    // for any valid FD.
+    let owned = unsafe { OwnedFd::from_raw_fd(fd) };
+    Ok(std::fs::File::from(owned))
 }
 
 #[cfg(test)]

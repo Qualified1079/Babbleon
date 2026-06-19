@@ -36,8 +36,8 @@ fn main() {
 #[allow(clippy::similar_names)]
 fn run(args: &Args) -> i32 {
     use v2_babbleon_launch_untrusted::{
-        bounding_set, identity_drop, mounts, namespaces, preflight,
-        process_hardening, seccomp_profile,
+        activated_table_input, bounding_set, identity_drop, mounts,
+        namespaces, preflight, process_hardening, seccomp_profile,
     };
 
     macro_rules! step {
@@ -62,6 +62,32 @@ fn run(args: &Args) -> i32 {
         "preflight ok"
     );
 
+    // Read the per-epoch activated table BEFORE any privileged step,
+    // so a malformed table never leaves the process in a half-set-up
+    // namespace.  The table contains no secret material; the launcher
+    // never derives keys.  Failure is attributed to Preflight because
+    // it precedes the first capability-consuming step.
+    let activated_table = step!(
+        Step::Preflight,
+        activated_table_input::read_if_present(
+            args.activated_table_fd,
+            args.activated_table_path.as_deref(),
+        )
+    );
+    if let Some(ref t) = activated_table {
+        tracing::info!(
+            epoch = t.epoch,
+            entries = t.entries.len(),
+            honey = t.honey_names.len(),
+            "activated-table loaded"
+        );
+    } else {
+        tracing::warn!(
+            "no activated table supplied; scrambled view will be empty \
+             (smoke-test mode only)"
+        );
+    }
+
     // ---- Step 2 — trim bounding set to 4-cap working set --------
     step!(Step::BoundingSetTrim, bounding_set::trim_to_working_set());
     tracing::info!(step = %Step::BoundingSetTrim, "bounding set trimmed");
@@ -79,10 +105,22 @@ fn run(args: &Args) -> i32 {
     tracing::info!(step = %Step::MakeRootPrivate, "/ marked MS_PRIVATE|MS_REC");
 
     // ---- Step 6 — mount scrambled view --------------------------
-    // PARTIAL (phase 2 in flight): tmpfs only; per-tool bind-mount
-    // loop deferred pending daemon-IPC channel (see mounts.rs).
     step!(Step::MountScrambledView, mounts::mount_scrambled_view_tmpfs());
     tracing::info!(step = %Step::MountScrambledView, "scrambled-view tmpfs mounted");
+    if let Some(ref table) = activated_table {
+        step!(
+            Step::MountScrambledView,
+            mounts::bind_mount_entries(
+                std::path::Path::new(mounts::SCRAMBLED_ROOT),
+                table,
+            )
+        );
+        tracing::info!(
+            step = %Step::MountScrambledView,
+            count = table.entries.len(),
+            "bind-mounted activated-table entries",
+        );
+    }
 
     // ---- Step 7 — PR_SET_NO_NEW_PRIVS ---------------------------
     step!(Step::SetNoNewPrivs, process_hardening::set_no_new_privs());

@@ -2,17 +2,23 @@
 //!
 //! # Infrastructure module
 //!
-//! The launcher takes one mandatory argument — the command to
+//! The launcher takes one mandatory positional — the command to
 //! execute inside the established untrusted-tier environment —
-//! plus its arguments.  No flags currently; the configuration
-//! (scrambled view paths, tracked-tool list, wordlist root) lives
-//! on disk under `/run/babbleon/` and is read at lifecycle step 6.
+//! plus its arguments.  Two optional flags select the source of
+//! the per-epoch activated table (see
+//! [`crate::activated_table_input`]):
 //!
-//! This module exists primarily to anchor the help text the
-//! operator sees on a bare `babbleon-launch-untrusted` invocation,
-//! and to validate that the caller passed AT LEAST one positional
-//! argument before the orchestrator drops any capabilities — a
-//! "no-args" failure should not leave the process half-set-up.
+//! - `--activated-table-fd N`: read the JSONL from inherited fd N.
+//!   The daemon uses this to pass the table without it touching
+//!   the filesystem.
+//! - `--activated-table-path P`: read the JSONL from file P.  Used
+//!   by the rooted-test harness and by operators who want to drive
+//!   the launcher without a daemon (e.g. CI smoke tests).
+//!
+//! If neither flag is given, the launcher establishes the
+//! scrambled-view tmpfs and exec()s the child with NO bind-mounts
+//! — useful for namespace+caps+seccomp smoke testing, NOT a
+//! functional obfuscation deployment.
 
 use clap::Parser;
 
@@ -39,6 +45,19 @@ cap_ipc_lock), NOT setuid-root.  See docs/v2/least-privilege.md.",
     allow_hyphen_values = true,
 )]
 pub struct Args {
+    /// File descriptor to read the activated-table JSONL from.
+    /// Mutually exclusive with `--activated-table-path`.  The daemon
+    /// passes the table this way so it never touches the launcher's
+    /// filesystem view.
+    #[arg(long = "activated-table-fd", value_name = "FD", conflicts_with = "activated_table_path")]
+    pub activated_table_fd: Option<i32>,
+
+    /// Path to a JSONL file holding the activated table.  Mutually
+    /// exclusive with `--activated-table-fd`.  Intended for the
+    /// rooted-test harness and for daemonless smoke tests.
+    #[arg(long = "activated-table-path", value_name = "PATH")]
+    pub activated_table_path: Option<std::path::PathBuf>,
+
     /// The child command and its arguments.  Required — at least
     /// one element.  Passed to `execvp(child_command[0],
     /// child_command)`.
@@ -92,6 +111,48 @@ mod tests {
                 "https://example.com".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn activated_table_path_flag_parses() {
+        let args = Args::try_parse_from([
+            "babbleon-launch-untrusted",
+            "--activated-table-path",
+            "/tmp/table.jsonl",
+            "/bin/bash",
+        ])
+        .unwrap();
+        assert_eq!(
+            args.activated_table_path,
+            Some(std::path::PathBuf::from("/tmp/table.jsonl"))
+        );
+        assert!(args.activated_table_fd.is_none());
+    }
+
+    #[test]
+    fn activated_table_fd_flag_parses() {
+        let args = Args::try_parse_from([
+            "babbleon-launch-untrusted",
+            "--activated-table-fd",
+            "7",
+            "/bin/bash",
+        ])
+        .unwrap();
+        assert_eq!(args.activated_table_fd, Some(7));
+        assert!(args.activated_table_path.is_none());
+    }
+
+    #[test]
+    fn activated_table_fd_and_path_are_mutually_exclusive() {
+        let result = Args::try_parse_from([
+            "babbleon-launch-untrusted",
+            "--activated-table-fd",
+            "7",
+            "--activated-table-path",
+            "/tmp/table.jsonl",
+            "/bin/bash",
+        ]);
+        assert!(result.is_err(), "both flags together must be rejected");
     }
 
     #[test]

@@ -148,6 +148,13 @@ pub enum Error {
         /// or directory"`).  Carries no secret material.
         kernel_message: String,
     },
+
+    /// Reading or parsing the per-epoch activated table failed.
+    /// Wraps the source identifier (fd N or path P) and the
+    /// underlying error.  Carries no secret material — the
+    /// activated table itself contains none.
+    #[error("activated-table input failed: {0}")]
+    ActivatedTable(String),
 }
 
 /// Result alias used throughout the crate.

@@ -101,6 +101,8 @@ mod tests {
 
     fn args(items: &[&str]) -> Args {
         Args {
+            activated_table_fd: None,
+            activated_table_path: None,
             child_command: items.iter().map(|s| (*s).to_string()).collect(),
         }
     }

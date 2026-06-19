@@ -25,7 +25,12 @@ libc = { workspace = true }
 nix = { workspace = true }
 # seccomp-bpf filter for the post-step-10 syscall lockdown.
 seccompiler = { workspace = true }
+# Shared types: the per-epoch ActivatedTable (no secret material).
+# We import the activated_table module only; the rest of core is
+# unused from the launcher and the linker drops it.  A future
+# refactor may extract activated_table into its own crate to
+# tighten the audit surface; tracked in HANDOFF.md.
+v2-babbleon-core = { path = "../v2-babbleon-core" }
 
 [dev-dependencies]
-# Used by the lifecycle-ordering unit test.
-v2-babbleon-core = { path = "../v2-babbleon-core" }
+tempfile = { workspace = true }

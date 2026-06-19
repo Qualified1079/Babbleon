@@ -12,24 +12,22 @@
 //!
 //! # Status (phase 2, in flight)
 //!
-//! Wiring of the `EpochMapping` from `v2-babbleon-core` into the
-//! bind-mount loop is NOT YET PORTED.  v1's reference
-//! implementation lives at `crates/babbleon/src/enforcement/linux_ns.rs::mount_scrambled_view`
-//! and ports forward verbatim under the v2 conventions once:
+//! The bind-mount loop lives in [`bind_mount_entries`].  It takes a
+//! pre-validated [`babbleon_core_v2::ActivatedTable`] (see
+//! [`crate::activated_table_input`] for the input path) and binds
+//! each `(scrambled, wrapper_path)` entry into the scrambled-view
+//! tmpfs.  When no table is supplied the orchestrator skips this
+//! call and exec()s into an empty view — useful for
+//! namespace+caps+seccomp smoke tests, NOT a functional deployment.
 //!
-//! 1. A daemon-side IPC channel exists for the launcher to receive
-//!    the activated mapping table (the launcher must not hold the
-//!    per-host secret itself — see `V2_PLAN.md` compartmentalization).
-//! 2. The runtime-table read path (replacing v1's per-tool wrapper
-//!    bind-mount with a single unified wrapper + table file) lands
-//!    in `v2-babbleon-core::wrapper`.  The unified template is
-//!    already filed at `wrapper.rs`; the table-file reader is
-//!    follow-up.
+//! Follow-ups still owed:
 //!
-//! Until those land, this module exposes only the tmpfs bring-up
-//! call that runs unconditionally — bind-mounting nothing produces
-//! an empty scrambled view, which the orchestrator detects and
-//! refuses to exec.  Safer than a half-set-up view.
+//! 1. Daemon-side socket-activation channel that hands the launcher
+//!    an FD instead of a path.  The CLI already accepts
+//!    `--activated-table-fd N`; what's missing is the daemon binary
+//!    that produces such a channel.
+//! 2. Credential-dir tmpfs overlay (port of v1's
+//!    `credentials::apply_untrusted_gate`).
 //!
 //! # Mechanism (planned)
 //!
@@ -56,8 +54,9 @@
 
 #![cfg(target_os = "linux")]
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use babbleon_core_v2::ActivatedTable;
 use nix::mount::{mount, MsFlags};
 
 use crate::errors::{Error, Result};
@@ -98,4 +97,132 @@ pub fn mount_scrambled_view_tmpfs() -> Result<()> {
         Some("mode=0555"),
     )
     .map_err(|e| Error::Mount(format!("tmpfs at {SCRAMBLED_ROOT}: {e}")))
+}
+
+/// Resolve the scrambled-view path for one entry.
+///
+/// Joins `scrambled_root` with the per-entry scrambled name.  Pure
+/// function; no syscalls.  Extracted so the unit tests can verify
+/// the path-construction logic without needing real mount privileges.
+#[must_use]
+pub fn scrambled_entry_path(scrambled_root: &Path, scrambled_name: &str) -> PathBuf {
+    scrambled_root.join(scrambled_name)
+}
+
+/// Bind-mount each entry of the activated table into the
+/// scrambled-view tmpfs.
+///
+/// Pre-conditions:
+///
+/// 1. The scrambled-view tmpfs is already mounted at `scrambled_root`
+///    (call [`mount_scrambled_view_tmpfs`] first).
+/// 2. Every `entry.wrapper_path` exists on the launcher's filesystem
+///    view at the moment of the call — the daemon places the
+///    wrapper binary there at install time.
+/// 3. Every `entry.scrambled` has already been validated by
+///    `ActivatedTable::read_jsonl` (lowercase ASCII, no path
+///    separators).
+///
+/// For each entry: create a zero-byte file at
+/// `{scrambled_root}/{scrambled}`, then bind-mount the wrapper over
+/// it.  The bind-mount is a regular (not recursive) bind so a
+/// later remount of `wrapper_path` on the host does not propagate
+/// into the launcher's namespace.
+///
+/// On failure of any entry the loop aborts and returns
+/// [`Error::Mount`] naming the offending scrambled name.  Earlier
+/// successful binds remain in place — they live in the launcher's
+/// new mount NS and tear down automatically when the process exits.
+///
+/// CAPABILITY: `CAP_SYS_ADMIN` for `mount(2)` (post-unshare).
+/// Dropped at step 10.
+///
+/// # Errors
+///
+/// - [`Error::Mount`] for any I/O or `mount(2)` failure.  The
+///   message names the scrambled entry and the underlying kernel
+///   error.
+pub fn bind_mount_entries(
+    scrambled_root: &Path,
+    table: &ActivatedTable,
+) -> Result<()> {
+    for entry in &table.entries {
+        let target = scrambled_entry_path(scrambled_root, &entry.scrambled);
+
+        // Create the bind target.  An existing file is treated as a
+        // hard error: the scrambled-view tmpfs is fresh in this
+        // namespace, so any pre-existing entry is a duplicate-name
+        // attack or a launcher bug.  Either way refuse.
+        match std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&target)
+        {
+            Ok(_) => {}
+            Err(e) => {
+                return Err(Error::Mount(format!(
+                    "create bind target {} for {:?}: {e}",
+                    target.display(),
+                    entry.scrambled,
+                )));
+            }
+        }
+
+        // CAPABILITY: CAP_SYS_ADMIN for mount(2).  Dropped at step 10.
+        mount(
+            Some(entry.wrapper_path.as_path()),
+            target.as_path(),
+            None::<&str>,
+            MsFlags::MS_BIND,
+            None::<&str>,
+        )
+        .map_err(|e| {
+            Error::Mount(format!(
+                "bind {} -> {} for {:?}: {e}",
+                entry.wrapper_path.display(),
+                target.display(),
+                entry.scrambled,
+            ))
+        })?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scrambled_entry_path;
+    use std::path::Path;
+
+    #[test]
+    fn scrambled_entry_path_joins_root_and_name() {
+        let p = scrambled_entry_path(
+            Path::new("/run/babbleon/scrambled"),
+            "flibsnortglarp",
+        );
+        assert_eq!(
+            p,
+            Path::new("/run/babbleon/scrambled/flibsnortglarp"),
+        );
+    }
+
+    #[test]
+    fn scrambled_entry_path_preserves_root_trailing_slash() {
+        // Path::join normalises trailing slashes; the result is the
+        // same whether the input ends with / or not.  We assert the
+        // normalised form so a future Path::join semantics change is
+        // caught.
+        let with_slash = scrambled_entry_path(
+            Path::new("/run/babbleon/scrambled/"),
+            "alpha",
+        );
+        let without_slash = scrambled_entry_path(
+            Path::new("/run/babbleon/scrambled"),
+            "alpha",
+        );
+        assert_eq!(with_slash, without_slash);
+    }
+
+    // bind_mount_entries needs CAP_SYS_ADMIN inside a fresh mount NS
+    // to exercise the real path.  The rooted-test harness
+    // (filed in HANDOFF.md "phase-2 next steps") covers it.
 }
