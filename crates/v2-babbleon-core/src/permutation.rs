@@ -238,6 +238,98 @@ mod tests {
     }
 
     #[test]
+    fn large_n_bijection_property() {
+        // Property: for a large permutation, every input in
+        // [0, n) maps to a unique output in [0, n).  Stronger
+        // than `bijective_small`: catches off-by-one or hash-
+        // collision regressions that only surface at scale.
+        const N: usize = 10_000;
+        let s = fixed_secret();
+        let p =
+            Permutation::build(&s, 42, b"v2-property-large", N).unwrap();
+        let mut seen = vec![false; N];
+        for i in 0..N {
+            let out = p.apply(i).unwrap();
+            assert!(out < N, "output {out} out of range for N={N}");
+            assert!(!seen[out], "duplicate output {out} from input {i}");
+            seen[out] = true;
+        }
+        assert!(
+            seen.iter().all(|&b| b),
+            "permutation is not surjective"
+        );
+    }
+
+    #[test]
+    fn distribution_is_well_spread() {
+        // Property: a random permutation over N should have its
+        // outputs roughly uniformly distributed.  We bucket
+        // outputs into 16 bins and assert no bin holds more than
+        // 2x the expected count — catches a regression where the
+        // permutation maps every input to the first 1/16 of
+        // outputs (a classic "off by one in mask" bug).
+        const N: usize = 16_000;
+        const BUCKETS: usize = 16;
+        let s = fixed_secret();
+        let p = Permutation::build(
+            &s,
+            7,
+            b"v2-property-distribution",
+            N,
+        )
+        .unwrap();
+        let mut bucket_counts = [0usize; BUCKETS];
+        for i in 0..N {
+            let out = p.apply(i).unwrap();
+            bucket_counts[out * BUCKETS / N] += 1;
+        }
+        let expected = N / BUCKETS;
+        for (idx, &count) in bucket_counts.iter().enumerate() {
+            assert!(
+                count <= 2 * expected,
+                "bucket {idx} has {count} entries, expected ~{expected}",
+            );
+        }
+    }
+
+    #[test]
+    fn reverse_is_inverse_for_large_n() {
+        // Property: reverse(apply(i)) == i for every i in [0, n).
+        // Together with `large_n_bijection_property` this fully
+        // pins down the bijection inverse.
+        const N: usize = 5_000;
+        let s = fixed_secret();
+        let p = Permutation::build(&s, 0, b"v2-property-inverse", N).unwrap();
+        for i in 0..N {
+            let out = p.apply(i).unwrap();
+            assert_eq!(p.reverse(out), Some(i));
+        }
+    }
+
+    #[test]
+    fn many_secrets_all_produce_distinct_permutations() {
+        // Property: distinct per-host secrets produce distinct
+        // permutations.  If they didn't, two hosts with different
+        // secrets would have the same scrambled names — fatal for
+        // the per-host obfuscation claim.  We test this by
+        // hashing the per-secret output at a fixed input.
+        const N: usize = 1_000;
+        let mut signatures = std::collections::HashSet::new();
+        for byte in 0u8..32 {
+            let s = PerHostSecret::from_bytes(&[byte; 32]).unwrap();
+            let p = Permutation::build(&s, 0, b"v2-property-host", N).unwrap();
+            // Use the output of input 0 + input 1 as a tiny
+            // signature; with N=1000 the chance of two distinct
+            // permutations colliding at both points is ~1/10^6.
+            let sig = (p.apply(0).unwrap(), p.apply(1).unwrap());
+            assert!(
+                signatures.insert(sig),
+                "two distinct secrets produced colliding signature {sig:?}",
+            );
+        }
+    }
+
+    #[test]
     fn zero_size_rejected() {
         let s = fixed_secret();
         let err = Permutation::build(&s, 0, b"v2-test", 0);
