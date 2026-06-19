@@ -24,11 +24,165 @@ lands, push here)
 
 Date: 2026-06-19 (user-asleep session continued — claude-opus-4-7)
 
-Last commit before this handoff: `96c214b` — scaffold(v2-daemon):
-crate skeleton + CLI surface (phase-2 item 2 start)
+Last commit before this handoff: `bf21356` — test(v2-daemon):
+integration test against the real binary (daemon now end-to-end
+functional in phase-2 stub mode).
 
-This session continued from the prior phase-2 step-1 landing.
-What's new since `1d0fa1d`:
+## What landed THIS session (2026-06-19 night, user asleep)
+
+Headline: **the daemon is end-to-end functional in phase-2 stub
+mode.**  Skeleton at session start (`96c214b`); shipping daemon
+at session end (`bf21356`).  Smoke-tested: spawn against a
+tempdir socket, run all three operator one-shots, observe a
+populated activated table.
+
+Five compartmentalized modules landed in
+`crates/v2-babbleon-daemon/src/`:
+
+1. **`protocol.rs`** (commit `b326107`) — request/response wire
+   format.  Hand-parsed via `serde_json::Value` against a
+   documented schema; no `#[derive(Deserialize)]` on operator-
+   influenceable surface (security-baseline rule 11).  29 unit
+   tests covering: roundtrip every variant; reject unknown
+   kind / missing fields / non-object top level / invalid
+   JSON / oversize input; tolerate trailing whitespace;
+   preserve JSONL byte-for-byte through the ActivatedTable
+   encoding; one-line wire format invariant.
+2. **`state.rs`** (commit `ac37d0f`) — `DaemonState`, the sole
+   owner of the per-host secret in process memory.  Holds the
+   `PerHostSecret` (zeroize-on-drop), wordlist, tracked-tool
+   list, wrapper dir, current epoch, cached `EpochMapping`.
+   Eagerly builds the epoch-0 mapping at construction.
+   `rotate()` bumps the epoch (with overflow check), rebuilds.
+   `activated_table_jsonl()` produces the per-epoch JSONL
+   product.  Intentionally NOT Clone / Copy / Debug (rule 3).
+   10 unit tests.
+3. **`handlers.rs`** (commit `9dd8e86`) — pure dispatch.
+   `dispatch(state, request) -> Response`, infallible at the
+   wire level (every error path folds into `Response::Error`).
+   Maps `Error::*` to `ErrorKind::*` in one auditable function.
+   7 unit tests.
+4. **`socket.rs`** (commit `60617cb`) — UnixListener I/O.
+   `bind_socket(path)` creates the listener at mode 0o660,
+   unlinks stale sockets first.  `serve_blocking(state,
+   listener, on_error)` accepts one connection at a time.
+   `handle_one_request<R: BufRead, W: Write>(...)` is generic
+   so it tests in-memory.  Byte-by-byte read with
+   `MAX_REQUEST_BYTES + 1` cap; oversize input drops the
+   connection cleanly.  17 unit tests including an end-to-end
+   smoke test that binds a real socket and serves a Status
+   request from a client thread.
+5. **`client.rs`** (commit `1a81b77`) — operator-side
+   `round_trip(socket_path, request) -> Response`.  Connects,
+   writes the request, shuts down write half (so the
+   daemon's line-capped reader returns EOF), reads one line of
+   response, parses.  4 unit tests against an inline server
+   thread.
+
+Plus:
+
+6. **`main.rs` wired end-to-end** (commit `1a81b77`).
+   - `Run(RunArgs)` now binds + serves with a `DaemonState`
+     constructed from `--wrapper-dir`, repeated
+     `--tracked-tool NAME`, and `--insecure-stub-secret`.
+   - The `--insecure-stub-secret` flag is REQUIRED in phase 2;
+     refusing to start without it gives operators a loud,
+     documented error rather than silently shipping a daemon
+     with a hardcoded development secret (`[0x42; 32]`).
+   - `Status` / `EmitActivatedTable` / `RotateMapping`
+     one-shots connect to the daemon, send the request, print
+     a human-readable result (or raw JSONL for the activated
+     table, so callers can pipe straight into the launcher's
+     `--activated-table-path`).
+7. **Integration test against the real binary** (commit
+   `bf21356`).  `tests/end_to_end_binary.rs`: spawns
+   `babbleon-daemon run` with `tempfile`-managed socket,
+   round-trips every operator subcommand, asserts epoch
+   advances + wrapper paths align + table re-parses through
+   the core reader.  Also covers: refuses to run without
+   --insecure-stub-secret; one-shots fail cleanly when daemon
+   absent.
+
+### Test counts AFTER this session
+
+| Crate | Before this session | After this session |
+|---|---|---|
+| `v2-babbleon-core` | 95 | 95 (no changes) |
+| `v2-babbleon-launch-untrusted` | 34 unit + 5 integ + 3 rooted | 34 + 5 + 3 (no changes) |
+| `v2-babbleon` | 3 | 3 |
+| `v2-babbleon-daemon` | 5 | **69 unit + 3 integration** |
+| **Total v2** | **148** | **212** |
+
+All clippy pedantic clean across all four v2 crates.
+
+### Smoke test (run end-to-end in this session's sandbox)
+
+```
+$ SOCK=$(mktemp -u --suffix=.sock /tmp/babbleon-XXXXXX)
+$ ./target/debug/babbleon-daemon --socket "$SOCK" run \
+    --wrapper-dir /wrappers \
+    --tracked-tool curl --tracked-tool ssh \
+    --insecure-stub-secret &
+$ ./target/debug/babbleon-daemon --socket "$SOCK" status
+  epoch: 0
+  tracked_count: 2
+  vault_locked: false
+  last_rotation_unix_secs: 1781859429
+$ ./target/debug/babbleon-daemon --socket "$SOCK" rotate-mapping
+  rotated to epoch: 1
+$ ./target/debug/babbleon-daemon --socket "$SOCK" emit-activated-table | head -c 200
+  {"epoch":1,"honey":["sarcomeremulticonstantmirrorspelves",...
+$ ./target/debug/babbleon-daemon --socket "$SOCK" status
+  epoch: 1
+  ...
+```
+
+The daemon serves real per-epoch mappings backed by the v2-core
+mapping primitive.  Confirmed: epoch rotates; tracked count
+matches; wrappers paths align under `--wrapper-dir`; activated
+table re-parses through the core's reader without error.
+
+### Open / next-session items (priority order)
+
+1. **Launcher `--daemon-socket` input mode.**  The launcher
+   already consumes activated tables via `--activated-table-fd`
+   and `--activated-table-path`.  The production flow needs a
+   third mode where the launcher connects to the daemon
+   itself, requests the table, and pipes it into the existing
+   `activated_table_input` reader.  Two days of work; closes
+   the PAM → launcher → daemon → mounts loop.
+2. **Real vault unlock.**  Phase 2 ships the
+   `--insecure-stub-secret` flag.  Phase 3 replaces it with
+   a vault-unlock protocol added to the socket
+   (`Request::Unlock { vault_payload }`).  Port v1's
+   `vault.rs` under v2 conventions; SecretBox / Zeroizing
+   wrappers per security-baseline rule 11.
+3. **PAM module skeleton.**  `crates/v2-babbleon-pam/` —
+   C shim invoking the launcher at session open with the
+   daemon socket FD passed via SCM_RIGHTS.  v1's
+   `crates/babbleon-pam/` is reference.
+4. **Daemon-side wrapper materialisation.**  The wrapper
+   generator (`v2-babbleon-core::wrapper::write_all_wrappers`)
+   already exists; what's missing is the daemon flow that
+   builds wrappers on every rotation and pipes paths into the
+   activated table.  Lives in the daemon's `Rotate` handler.
+5. **Daemon process hardening.**  Apply security-baseline
+   rule 8 at daemon startup: `PR_SET_DUMPABLE=0`,
+   `RLIMIT_CORE=0`, `mlockall(CURRENT|FUTURE)`.  Currently
+   missing; the launcher applies them but the daemon (which
+   holds the secret!) does not yet.  **This is a security
+   regression that should be fixed in the next commit.**
+6. **Daemon seccomp profile.**  Allowed-syscall list per
+   `docs/v2/least-privilege.md` (daemon's expected envelope).
+   Filed for after the daemon's privilege envelope settles.
+
+Items 1, 2, 3 are roughly independent and can be tackled in
+any order.  Items 5, 6 should land before any production
+deployment but don't block phase-2 progress.
+
+---
+
+## What landed earlier this session (prior phase-2 step-1)
 
 1. `docs/v2/least-privilege.md` — orchestrator step ordering
    documented (1..=7 → 9 → 10 → 8 → 11; was straight 1..=11).
@@ -109,13 +263,20 @@ this session:
 | Item | Status | Where |
 |---|---|---|
 | 1. Rooted-test harness | ✅ scaffolded, 2 tests landed | `tests/rooted_lifecycle.rs` |
-| 2. Daemon-IPC channel for activated table | ✅ launcher side; ❌ daemon binary | `activated_table_input.rs`, `crates/v2-babbleon-daemon` |
+| 2. Daemon-IPC channel for activated table | ✅ launcher side; ✅ daemon binary serving | `activated_table_input.rs`, `crates/v2-babbleon-daemon` |
 | 3. Unified runtime-table wrapper bind-mount | ✅ done | `mounts::bind_mount_entries` |
 | 4. Credential-dir tmpfs overlay | ✅ done | `credential_gate.rs`, `core::credentials` |
 | 5. PAM module | ❌ pending | `crates/v2-babbleon-pam` (TBD) |
 | 6. Clippy cleanup | ✅ done | (this session) |
 | 7. least-privilege.md update | ✅ done | `docs/v2/least-privilege.md` |
 | 8. Env-var scrub at exec | ✅ done | `main::exec_child` |
+
+Item 2 closed this session (2026-06-19 night): the daemon now
+binds a Unix socket and serves real per-epoch activated tables.
+What remains for production is real vault unlock (item B in the
+"open items" list at the top of this file) — until that lands,
+the daemon ships behind the `--insecure-stub-secret` gate and
+refuses to start without it.
 
 ---
 
