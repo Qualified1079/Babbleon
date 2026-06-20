@@ -161,6 +161,14 @@ fn one_shot(
         Response::Rotated { new_epoch } => {
             println!("rotated to epoch: {new_epoch}");
         }
+        Response::Unlocked { epoch } => {
+            // Operator-side daemon-binary one-shots never send Unlock
+            // (that's the user-CLI's responsibility).  An Unlocked
+            // reply here means we asked Status and the daemon mis-
+            // dispatched, or a future verb returns Unlocked too — so
+            // we print it rather than panic.
+            println!("unlocked at epoch: {epoch}");
+        }
         Response::Error { kind, message } => {
             return Err(format!("daemon error ({kind:?}): {message}"));
         }

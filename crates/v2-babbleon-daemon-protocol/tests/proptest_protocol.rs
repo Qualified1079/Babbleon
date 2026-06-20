@@ -21,20 +21,38 @@
 //!    `MAX_REQUEST_BYTES` is rejected by `Request::parse` without
 //!    consuming memory proportional to the input.
 
+// Pedantic relaxations for this test harness:
+// - `naive_bytecount` would pull in the `bytecount` crate to count
+//   newlines in a 100-byte buffer once per test case.  Not worth the
+//   dep.
+// - `doc_markdown` complains about identifiers in the module doc
+//   that intentionally read in plain English (`new_epoch`,
+//   `tracked_count`).
+#![allow(clippy::naive_bytecount, clippy::doc_markdown)]
+
 use babbleon_daemon_protocol_v2::{
-    ErrorKind, Request, Response, MAX_REQUEST_BYTES,
+    ErrorKind, Request, Response, UnlockSecret, MAX_REQUEST_BYTES,
+    UNLOCK_SECRET_LEN,
 };
+use proptest::array::uniform32;
 use proptest::collection::vec;
 use proptest::option;
 use proptest::prelude::*;
 
 // ----- Strategies -----
 
+fn arb_unlock_secret() -> impl Strategy<Value = UnlockSecret> {
+    uniform32(any::<u8>()).prop_map(|bytes: [u8; UNLOCK_SECRET_LEN]| {
+        UnlockSecret::from_bytes(&bytes).expect("array length matches")
+    })
+}
+
 fn arb_request() -> impl Strategy<Value = Request> {
     prop_oneof![
         Just(Request::Status),
         Just(Request::EmitActivatedTable),
         Just(Request::RotateMapping),
+        arb_unlock_secret().prop_map(Request::Unlock),
     ]
 }
 
@@ -79,6 +97,7 @@ fn arb_response() -> impl Strategy<Value = Response> {
             Response::ActivatedTable { epoch, jsonl }
         }),
         any::<u64>().prop_map(|new_epoch| Response::Rotated { new_epoch }),
+        any::<u64>().prop_map(|epoch| Response::Unlocked { epoch }),
         (arb_error_kind(), ".{0,256}").prop_map(|(kind, message)| {
             Response::Error { kind, message }
         }),

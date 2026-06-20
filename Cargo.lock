@@ -2017,10 +2017,12 @@ dependencies = [
 name = "v2-babbleon-daemon-protocol"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "proptest",
  "serde_json",
  "tempfile",
  "thiserror",
+ "zeroize",
 ]
 
 [[package]]

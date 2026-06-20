@@ -48,6 +48,7 @@
 //!   socket layer; this module assumes a valid peer.
 
 use crate::errors::{Error, Result};
+use crate::unlock_secret::{UnlockSecret, UNLOCK_SECRET_HEX_LEN};
 
 /// Hard cap on request size on the wire.  Any legitimate request is
 /// JSON with a small object, well under 1 KiB; the cap exists to
@@ -55,16 +56,32 @@ use crate::errors::{Error, Result};
 pub const MAX_REQUEST_BYTES: usize = 8 * 1024;
 
 /// Inbound request from a peer.
+///
+/// `Clone` is derived because the proptest harness requires it
+/// (see [`UnlockSecret`] module docs).  Production paths do not
+/// clone requests.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
     /// Read-only state report.  Daemon answers with [`Response::Status`].
     Status,
     /// Build the per-epoch activated table and send it back inline.
-    /// Daemon answers with [`Response::ActivatedTable`].
+    /// Daemon answers with [`Response::ActivatedTable`].  Requires
+    /// the vault to be unlocked; the daemon answers
+    /// `Response::Error { kind: ErrorKind::Vault, ... }` otherwise.
     EmitActivatedTable,
     /// Bump the epoch counter and rebuild the cached mapping.
-    /// Daemon answers with [`Response::Rotated`].
+    /// Daemon answers with [`Response::Rotated`].  Requires the vault
+    /// to be unlocked.
     RotateMapping,
+    /// Transition the daemon from the `Locked` to the `Unlocked`
+    /// state by installing the supplied per-host secret.
+    ///
+    /// The user-CLI has already performed the at-rest unwrap (age
+    /// decrypt + Argon2id KDF, see `v2-babbleon-vault`) before issuing
+    /// this request.  The daemon answers with [`Response::Unlocked`]
+    /// on success or [`Response::Error`] (`ErrorKind::Vault`) if the
+    /// daemon is already unlocked or the secret install failed.
+    Unlock(UnlockSecret),
 }
 
 /// Outbound response from the daemon.
@@ -98,6 +115,14 @@ pub enum Response {
     Rotated {
         /// Epoch number the daemon advanced to.
         new_epoch: u64,
+    },
+    /// Unlock succeeded; the daemon now holds the per-host secret in
+    /// memory and the cached mapping is built for the returned
+    /// `epoch`.  Read-only and mutator requests work after this
+    /// point.
+    Unlocked {
+        /// Epoch number the daemon is now holding a mapping for.
+        epoch: u64,
     },
     /// Daemon-side error.  Message does not leak secret material
     /// (security-baseline rule 13).
@@ -192,6 +217,7 @@ impl Request {
             "status" => Ok(Self::Status),
             "emit-activated-table" => Ok(Self::EmitActivatedTable),
             "rotate-mapping" => Ok(Self::RotateMapping),
+            "unlock" => parse_unlock(obj),
             other => Err(Error::Ipc(format!("request: unknown kind {other:?}"))),
         }
     }
@@ -207,21 +233,54 @@ impl Request {
     ///
     /// Does not panic in practice.  `serde_json::to_vec` only fails
     /// on serializer errors (non-stringifiable map keys, custom
-    /// serializer abort); the JSON value built here is a fixed
-    /// `{"kind": <static str>}` object that always serializes.
+    /// serializer abort); the JSON values built here are fixed
+    /// `{"kind": <static str>, ...}` objects that always serialize.
     #[must_use]
     pub fn to_wire(&self) -> Vec<u8> {
-        let kind = match self {
-            Self::Status => "status",
-            Self::EmitActivatedTable => "emit-activated-table",
-            Self::RotateMapping => "rotate-mapping",
+        let v = match self {
+            Self::Status => serde_json::json!({ "kind": "status" }),
+            Self::EmitActivatedTable => {
+                serde_json::json!({ "kind": "emit-activated-table" })
+            }
+            Self::RotateMapping => {
+                serde_json::json!({ "kind": "rotate-mapping" })
+            }
+            Self::Unlock(secret) => serde_json::json!({
+                "kind": "unlock",
+                "host_secret_hex": secret.to_hex_wire(),
+            }),
         };
-        let v = serde_json::json!({ "kind": kind });
         let mut out = serde_json::to_vec(&v)
             .expect("serializing a JSON object cannot fail");
         out.push(b'\n');
         out
     }
+}
+
+/// Parse an `unlock` request's `host_secret_hex` field into an
+/// [`UnlockSecret`].
+fn parse_unlock(
+    obj: &serde_json::Map<String, serde_json::Value>,
+) -> Result<Request> {
+    let hex_str = obj
+        .get("host_secret_hex")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            Error::Ipc(
+                "unlock request: missing or non-string host_secret_hex".into(),
+            )
+        })?;
+    // Defensive length guard: the cap is already enforced by
+    // `MAX_REQUEST_BYTES`, but this gives a clean error message
+    // distinct from the catch-all if a peer sends the wrong size.
+    if hex_str.len() != UNLOCK_SECRET_HEX_LEN {
+        return Err(Error::Ipc(format!(
+            "unlock request: host_secret_hex length {} != required {UNLOCK_SECRET_HEX_LEN}",
+            hex_str.len(),
+        )));
+    }
+    let secret = UnlockSecret::from_hex_wire(hex_str)?;
+    Ok(Request::Unlock(secret))
 }
 
 impl Response {
@@ -276,6 +335,11 @@ impl Response {
                 "ok": true,
                 "kind": "rotated",
                 "new_epoch": new_epoch,
+            }),
+            Self::Unlocked { epoch } => serde_json::json!({
+                "ok": true,
+                "kind": "unlocked",
+                "epoch": epoch,
             }),
             Self::Error { kind, message } => serde_json::json!({
                 "ok": false,
@@ -338,6 +402,7 @@ impl Response {
             "status" => parse_status(obj),
             "activated-table" => parse_activated_table(obj),
             "rotated" => parse_rotated(obj),
+            "unlocked" => parse_unlocked(obj),
             other => Err(Error::Ipc(format!(
                 "response: unknown kind {other:?}"
             ))),
@@ -426,6 +491,20 @@ fn parse_rotated(
     Ok(Response::Rotated { new_epoch })
 }
 
+fn parse_unlocked(
+    obj: &serde_json::Map<String, serde_json::Value>,
+) -> Result<Response> {
+    let epoch = obj
+        .get("epoch")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| {
+            Error::Ipc(
+                "unlocked response: missing/non-u64 epoch".into(),
+            )
+        })?;
+    Ok(Response::Unlocked { epoch })
+}
+
 #[cfg(test)]
 mod tests {
     // `naive_bytecount` would have us pull in the `bytecount` crate
@@ -509,10 +588,14 @@ mod tests {
 
     #[test]
     fn request_wire_format_is_one_line() {
+        let unlock = Request::Unlock(
+            UnlockSecret::from_bytes(&[0x33; 32]).unwrap(),
+        );
         for r in [
             Request::Status,
             Request::EmitActivatedTable,
             Request::RotateMapping,
+            unlock,
         ] {
             let wire = r.to_wire();
             assert_eq!(
@@ -522,6 +605,82 @@ mod tests {
             );
             assert_eq!(*wire.last().unwrap(), b'\n');
         }
+    }
+
+    // ----- Unlock request -----
+
+    #[test]
+    fn unlock_request_roundtrips() {
+        let secret = UnlockSecret::from_bytes(&[0x77; 32]).unwrap();
+        let req = Request::Unlock(secret);
+        let wire = req.to_wire();
+        let parsed = Request::parse(&wire).unwrap();
+        assert_eq!(parsed, req);
+    }
+
+    #[test]
+    fn unlock_request_with_distinct_bytes_does_not_collide() {
+        // Distinct secrets must serialise to distinct wires (and
+        // round-trip back to distinct values).  Belt-and-braces
+        // against an encoder that "helpfully" normalised the hex.
+        let a = Request::Unlock(
+            UnlockSecret::from_bytes(&[0x11; 32]).unwrap(),
+        );
+        let b = Request::Unlock(
+            UnlockSecret::from_bytes(&[0x22; 32]).unwrap(),
+        );
+        let wa = a.to_wire();
+        let wb = b.to_wire();
+        assert_ne!(wa, wb);
+        assert_eq!(Request::parse(&wa).unwrap(), a);
+        assert_eq!(Request::parse(&wb).unwrap(), b);
+    }
+
+    #[test]
+    fn unlock_request_rejects_missing_secret_field() {
+        let bytes = br#"{"kind":"unlock"}"#;
+        let err = Request::parse(bytes).unwrap_err();
+        assert!(
+            format!("{err}").contains("host_secret_hex"),
+            "{err}",
+        );
+    }
+
+    #[test]
+    fn unlock_request_rejects_short_secret() {
+        let short_hex = "00".repeat(16);
+        let body = format!(
+            r#"{{"kind":"unlock","host_secret_hex":"{short_hex}"}}"#,
+        );
+        let err = Request::parse(body.as_bytes()).unwrap_err();
+        assert!(
+            format!("{err}").contains("length"),
+            "{err}",
+        );
+    }
+
+    #[test]
+    fn unlock_request_rejects_non_hex_secret() {
+        let body = format!(
+            r#"{{"kind":"unlock","host_secret_hex":"{}"}}"#,
+            "zz".repeat(32),
+        );
+        let err = Request::parse(body.as_bytes()).unwrap_err();
+        assert!(
+            format!("{err}").contains("hex"),
+            "{err}",
+        );
+    }
+
+    #[test]
+    fn unlock_request_debug_does_not_expose_bytes() {
+        let req = Request::Unlock(
+            UnlockSecret::from_bytes(&[0xAB; 32]).unwrap(),
+        );
+        let dbg = format!("{req:?}");
+        assert!(dbg.contains("redacted"), "{dbg}");
+        // Hex of the secret should not appear.
+        assert!(!dbg.contains(&"ab".repeat(8)), "{dbg}");
     }
 
     // ----- Response side -----
@@ -595,6 +754,32 @@ mod tests {
         let wire = r.to_wire().unwrap();
         let parsed = Response::parse(&wire).unwrap();
         assert_eq!(parsed, r);
+    }
+
+    #[test]
+    fn unlocked_response_roundtrips() {
+        let r = Response::Unlocked { epoch: 0 };
+        let wire = r.to_wire().unwrap();
+        let parsed = Response::parse(&wire).unwrap();
+        assert_eq!(parsed, r);
+    }
+
+    #[test]
+    fn unlocked_response_carries_distinct_epoch() {
+        let a = Response::Unlocked { epoch: 0 };
+        let b = Response::Unlocked { epoch: u64::MAX };
+        let wa = a.to_wire().unwrap();
+        let wb = b.to_wire().unwrap();
+        assert_ne!(wa, wb);
+        assert_eq!(Response::parse(&wa).unwrap(), a);
+        assert_eq!(Response::parse(&wb).unwrap(), b);
+    }
+
+    #[test]
+    fn unlocked_response_rejects_missing_epoch() {
+        let bytes = br#"{"ok":true,"kind":"unlocked"}"#;
+        let err = Response::parse(bytes).unwrap_err();
+        assert!(format!("{err}").contains("epoch"));
     }
 
     #[test]

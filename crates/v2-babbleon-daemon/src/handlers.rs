@@ -38,6 +38,17 @@ pub fn dispatch(state: &mut DaemonState, request: Request) -> Response {
         Request::Status => status(state),
         Request::EmitActivatedTable => emit_activated_table(state),
         Request::RotateMapping => rotate_mapping(state),
+        // Phase-3 stub: Unlock wire variant exists in the protocol
+        // crate but DaemonState's Locked/Unlocked refactor has not
+        // landed yet.  Returning ErrorKind::Vault keeps the daemon
+        // honest — an operator who sends Unlock today gets a clear
+        // "not wired" reply instead of a silent no-op.
+        Request::Unlock(_) => Response::Error {
+            kind: ErrorKind::Vault,
+            message: "Unlock request received but daemon's Locked/Unlocked \
+                      state machine is not yet wired (see HANDOFF item 2)"
+                .into(),
+        },
     }
 }
 

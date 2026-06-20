@@ -18,6 +18,12 @@ path = "src/lib.rs"
 serde_json = { workspace = true }
 # Error type.
 thiserror = { workspace = true }
+# Unlock request carries the per-host secret in
+# `Zeroizing<[u8;32]>` so the bytes are wiped from memory on drop.
+zeroize = { workspace = true }
+# 64-hex-chars on the wire (the JSON text form must be a string;
+# this is the least-attack-surface stringification of 32 bytes).
+hex = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
