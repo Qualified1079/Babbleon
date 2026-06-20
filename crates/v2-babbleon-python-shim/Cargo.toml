@@ -1,0 +1,53 @@
+[package]
+name = "v2-babbleon-python-shim"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Babbleon v2 — `babbleon-python` shim that unscrambles a layer-3 scrambled Python file and execs python3 with the unscrambled source via pipe(2).  Phase-3 MVP runtime entry point."
+publish = false
+
+[[bin]]
+name = "babbleon-python"
+path = "src/main.rs"
+
+[lib]
+# Workspace convention: every v2 crate's import name uses
+# `babbleon_<thing>_v2`.
+name = "babbleon_python_shim_v2"
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "deny"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+
+[dependencies]
+# Wire protocol + operator-side client.  Same surface the user CLI
+# uses for daemon round-trips.  The shim does NOT depend on the
+# daemon's full crate or on v2-babbleon-core's secret surface.
+v2-babbleon-daemon-protocol = { path = "../v2-babbleon-daemon-protocol" }
+# Preprocessor: token IR + tokenizer + scrambler + unscrambler.
+# The shim only uses the unscramble path; tokenize and scramble are
+# linked but unused (dead-code-eliminated by LTO in release builds).
+v2-babbleon-preprocessor = { path = "../v2-babbleon-preprocessor" }
+
+# CLI parsing.
+clap = { workspace = true }
+# Error chaining.
+anyhow = { workspace = true }
+# Tracing.
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+# Process-hardening syscalls (PR_SET_DUMPABLE, RLIMIT_CORE,
+# mlockall).  Same crate the daemon's hardening module uses.
+nix = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+# Core: secret + wordlist for unit-test scrambling.  Production
+# graph does NOT include v2-babbleon-core (the shim never derives
+# from the secret); dev path needs it to build a WhitespaceWordlist
+# locally so tests do not require a daemon round-trip.
+v2-babbleon-core = { path = "../v2-babbleon-core" }

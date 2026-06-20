@@ -2078,6 +2078,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "v2-babbleon-python-shim"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "nix",
+ "tempfile",
+ "tracing",
+ "tracing-subscriber",
+ "v2-babbleon-core",
+ "v2-babbleon-daemon-protocol",
+ "v2-babbleon-preprocessor",
+]
+
+[[package]]
 name = "v2-babbleon-vault"
 version = "0.1.0"
 dependencies = [
