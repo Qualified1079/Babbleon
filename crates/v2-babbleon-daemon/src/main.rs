@@ -86,7 +86,12 @@ fn run_daemon(
         stale_list_path: None,
         trusted_ns_inode: None,
     };
-    let mut state = DaemonState::new(
+    // Phase 2: `--insecure-stub-secret` is the only path into the
+    // daemon today.  Constructs the state directly in Unlocked so the
+    // daemon serves immediately.  When the user-CLI's `babbleon
+    // unlock` lands (HANDOFF item 2), production startup will switch
+    // to `new_locked` and wait for the operator's Unlock request.
+    let mut state = DaemonState::new_unlocked(
         secret,
         Wordlist::english_baseline(),
         tracked,

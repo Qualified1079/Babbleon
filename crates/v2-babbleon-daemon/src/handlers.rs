@@ -38,25 +38,19 @@ pub fn dispatch(state: &mut DaemonState, request: Request) -> Response {
         Request::Status => status(state),
         Request::EmitActivatedTable => emit_activated_table(state),
         Request::RotateMapping => rotate_mapping(state),
-        // Phase-3 stub: Unlock wire variant exists in the protocol
-        // crate but DaemonState's Locked/Unlocked refactor has not
-        // landed yet.  Returning ErrorKind::Vault keeps the daemon
-        // honest — an operator who sends Unlock today gets a clear
-        // "not wired" reply instead of a silent no-op.
-        Request::Unlock(_) => Response::Error {
-            kind: ErrorKind::Vault,
-            message: "Unlock request received but daemon's Locked/Unlocked \
-                      state machine is not yet wired (see HANDOFF item 2)"
-                .into(),
-        },
+        Request::Unlock(secret) => unlock(state, &secret),
     }
 }
 
 fn status(state: &DaemonState) -> Response {
     Response::Status {
-        epoch: state.epoch(),
+        // In Locked state, surface epoch as 0 on the wire (the field
+        // is not nullable in the response schema).  Callers gate on
+        // `vault_locked` for correctness; the `epoch` value is
+        // meaningful only when `vault_locked = false`.
+        epoch: state.epoch().unwrap_or(0),
         tracked_count: state.tracked_count() as u64,
-        vault_locked: false, // phase 2 stub: vault unlock not yet wired in.
+        vault_locked: state.vault_locked(),
         last_rotation_unix_secs: state.last_rotation_unix_secs(),
     }
 }
@@ -64,9 +58,36 @@ fn status(state: &DaemonState) -> Response {
 fn emit_activated_table(state: &DaemonState) -> Response {
     match state.activated_table_jsonl() {
         Ok(jsonl) => Response::ActivatedTable {
-            epoch: state.epoch(),
+            // Safe: `activated_table_jsonl` returns Err when Locked,
+            // so we are guaranteed to be in the Unlocked state here.
+            epoch: state.epoch().unwrap_or(0),
             jsonl,
         },
+        Err(e) => error_response(&e),
+    }
+}
+
+/// Install the supplied per-host secret and transition the daemon to
+/// Unlocked.  Carries the
+/// [`babbleon_daemon_protocol_v2::UnlockSecret`]'s bytes through
+/// `PerHostSecret::from_bytes` so the daemon's downstream consumers
+/// see only the secret-bearing wrapper type, never a bare slice.
+fn unlock(
+    state: &mut DaemonState,
+    secret: &babbleon_daemon_protocol_v2::UnlockSecret,
+) -> Response {
+    let per_host = match babbleon_core_v2::PerHostSecret::from_bytes(
+        secret.expose(),
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            return error_response(&Error::Vault(format!(
+                "unlock secret invalid: {e}"
+            )));
+        }
+    };
+    match state.unlock(per_host) {
+        Ok(epoch) => Response::Unlocked { epoch },
         Err(e) => error_response(&e),
     }
 }
@@ -179,7 +200,7 @@ mod tests {
             Response::Rotated { new_epoch } => assert_eq!(new_epoch, 1),
             other => panic!("expected Rotated response, got {other:?}"),
         }
-        assert_eq!(s.epoch(), 1);
+        assert_eq!(s.epoch(), Some(1));
     }
 
     #[test]
@@ -251,6 +272,160 @@ mod tests {
                 }
                 other => panic!("expected Error response, got {other:?}"),
             }
+        }
+    }
+
+    // ----- Locked-state dispatch -----
+
+    fn locked_state() -> DaemonState {
+        DaemonState::new_locked(
+            Wordlist::english_baseline(),
+            vec![
+                TrackedTool {
+                    name: "curl".into(),
+                    real_path: PathBuf::from("/usr/bin/curl"),
+                },
+                TrackedTool {
+                    name: "ssh".into(),
+                    real_path: PathBuf::from("/usr/bin/ssh"),
+                },
+            ],
+            MaterializationConfig {
+                wrapper_dir: PathBuf::from("/wrappers"),
+                honey_list_path: None,
+                stale_list_path: None,
+                trusted_ns_inode: None,
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn locked_status_reports_vault_locked_true() {
+        let mut s = locked_state();
+        let r = dispatch(&mut s, Request::Status);
+        match r {
+            Response::Status {
+                vault_locked,
+                tracked_count,
+                last_rotation_unix_secs,
+                ..
+            } => {
+                assert!(vault_locked);
+                assert_eq!(tracked_count, 2);
+                assert!(last_rotation_unix_secs.is_none());
+            }
+            other => panic!("expected Status, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn locked_emit_returns_vault_error() {
+        let mut s = locked_state();
+        let r = dispatch(&mut s, Request::EmitActivatedTable);
+        match r {
+            Response::Error { kind, message } => {
+                assert_eq!(kind, ErrorKind::Vault);
+                assert!(message.contains("locked"), "{message}");
+            }
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn locked_rotate_returns_vault_error() {
+        let mut s = locked_state();
+        let r = dispatch(&mut s, Request::RotateMapping);
+        match r {
+            Response::Error { kind, message } => {
+                assert_eq!(kind, ErrorKind::Vault);
+                assert!(message.contains("locked"), "{message}");
+            }
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    // ----- Unlock dispatch -----
+
+    #[test]
+    fn unlock_transitions_to_unlocked_and_returns_epoch() {
+        let mut s = locked_state();
+        let secret =
+            babbleon_daemon_protocol_v2::UnlockSecret::from_bytes(&[5u8; 32])
+                .unwrap();
+        // Pre-condition: vault is locked.
+        match dispatch(&mut s, Request::Status) {
+            Response::Status { vault_locked, .. } => assert!(vault_locked),
+            other => panic!("expected Status, got {other:?}"),
+        }
+        // Send the Unlock; daemon answers Unlocked.
+        // NB: production paths don't materialise into `/wrappers` —
+        // this test relies on the locked_state helper which uses a
+        // wrapper_dir under root.  We skip the materialisation by
+        // having no tracked tools that would write there?  Actually
+        // we DO have tracked tools, so this test will fail at the
+        // write_all_wrappers step.  Use a tempdir-based fixture.
+        drop(s);
+        let tmp = tempfile::tempdir().unwrap();
+        let mut s = DaemonState::new_locked(
+            Wordlist::english_baseline(),
+            vec![TrackedTool {
+                name: "curl".into(),
+                real_path: PathBuf::from("/usr/bin/sh"), // any extant file
+            }],
+            MaterializationConfig {
+                wrapper_dir: tmp.path().join("wrappers"),
+                honey_list_path: Some(tmp.path().join("honey.list")),
+                stale_list_path: Some(tmp.path().join("stale.list")),
+                trusted_ns_inode: None,
+            },
+        )
+        .unwrap();
+        match dispatch(&mut s, Request::Unlock(secret)) {
+            Response::Unlocked { epoch } => assert_eq!(epoch, 0),
+            other => panic!("expected Unlocked, got {other:?}"),
+        }
+        match dispatch(&mut s, Request::Status) {
+            Response::Status { vault_locked, .. } => assert!(!vault_locked),
+            other => panic!("expected Status, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn double_unlock_returns_vault_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut s = DaemonState::new_locked(
+            Wordlist::english_baseline(),
+            vec![TrackedTool {
+                name: "curl".into(),
+                real_path: PathBuf::from("/usr/bin/sh"),
+            }],
+            MaterializationConfig {
+                wrapper_dir: tmp.path().join("wrappers"),
+                honey_list_path: Some(tmp.path().join("honey.list")),
+                stale_list_path: Some(tmp.path().join("stale.list")),
+                trusted_ns_inode: None,
+            },
+        )
+        .unwrap();
+        // First unlock succeeds.
+        let s1 =
+            babbleon_daemon_protocol_v2::UnlockSecret::from_bytes(&[5u8; 32])
+                .unwrap();
+        assert!(matches!(
+            dispatch(&mut s, Request::Unlock(s1)),
+            Response::Unlocked { .. }
+        ));
+        // Second unlock is rejected.
+        let s2 =
+            babbleon_daemon_protocol_v2::UnlockSecret::from_bytes(&[6u8; 32])
+                .unwrap();
+        match dispatch(&mut s, Request::Unlock(s2)) {
+            Response::Error { kind, message } => {
+                assert_eq!(kind, ErrorKind::Vault);
+                assert!(message.contains("already"), "{message}");
+            }
+            other => panic!("expected Error, got {other:?}"),
         }
     }
 }

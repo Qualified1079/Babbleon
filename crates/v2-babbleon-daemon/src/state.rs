@@ -12,13 +12,23 @@
 //! had with `host_secret_hex: String` lingering in deserialized
 //! payloads.
 //!
-//! [`DaemonState`] is that owner.  Construction requires a
-//! [`PerHostSecret`] by move; the secret is held in
-//! `PerHostSecret`'s `Zeroizing<[u8; 32]>` and is never re-exposed
-//! through the public API.  All mapping construction happens inside
-//! this module; callers receive the secret-free
-//! [`babbleon_core_v2::EpochMapping`] / [`babbleon_core_v2::ActivatedTable`]
-//! products.
+//! [`DaemonState`] is that owner.  It has two life-cycle states:
+//!
+//! - **Locked.**  Daemon has started but no operator has unlocked
+//!   the vault.  State carries only the static configuration
+//!   (wordlist, tracked-tool list, materialisation paths); no secret
+//!   bytes are in memory.  `Status` works (returns
+//!   `vault_locked = true`); every mutator and every secret-derived
+//!   read (`EmitActivatedTable`, `RotateMapping`) errors with
+//!   `Error::Vault("vault locked")`.
+//! - **Unlocked.**  Operator has sent `Request::Unlock`; the daemon
+//!   has installed a `PerHostSecret` and built the epoch-0 mapping.
+//!   All operations work.
+//!
+//! Transitions are one-way for now: Locked -> Unlocked.  A future
+//! `Lock` request (operator-driven re-sealing) can transition the
+//! other direction, but it is filed for phase 4+ and is not yet on
+//! the wire schema.
 //!
 //! # Mechanism
 //!
@@ -28,19 +38,38 @@
 //! `&DaemonState` for read-only queries and serializes mutations
 //! through a single owner.
 //!
+//! Internal layout splits configuration from secret-bearing state so
+//! the unlock transition is one local mutation, not a struct rebuild:
+//!
+//! - `DaemonConfig` — wordlist, tracked tools, materialisation
+//!   config, test-only `skip_materialization` flag.  Shared across
+//!   both lifecycle states.
+//! - `SecretState::Locked` — empty.
+//! - `SecretState::Unlocked` — secret, epoch counter, cached
+//!   mapping, last-rotation timestamp.
+//!
 //! Methods:
 //!
-//! - [`DaemonState::new`] — construct with the secret, wordlist,
-//!   tracked-tool list, and wrapper directory.  Builds the epoch-0
-//!   mapping eagerly.
-//! - [`DaemonState::epoch`] / [`DaemonState::tracked_count`] /
-//!   [`DaemonState::last_rotation_unix_secs`] — read-only snapshot
-//!   accessors used by the `Status` handler.
+//! - [`DaemonState::new_locked`] — construct in the Locked state.
+//!   Used by the production daemon startup path; the operator must
+//!   subsequently issue an `Unlock` request to install a secret.
+//! - [`DaemonState::new_unlocked`] — construct directly in the
+//!   Unlocked state (eagerly builds the epoch-0 mapping).  Used by
+//!   tests and by the `--insecure-stub-secret` startup path until it
+//!   retires in a later phase.
+//! - [`DaemonState::unlock`] — Locked -> Unlocked transition.
+//!   Returns `Error::Vault` if the daemon is already Unlocked
+//!   (re-unlock would re-mlock the new bytes without zeroizing the
+//!   old; operators must restart the daemon to load a different
+//!   secret).
+//! - [`DaemonState::epoch`] / [`DaemonState::vault_locked`] /
+//!   [`DaemonState::tracked_count`] /
+//!   [`DaemonState::last_rotation_unix_secs`] — accessors used by
+//!   the `Status` handler.
 //! - [`DaemonState::activated_table_jsonl`] — serialize the cached
-//!   mapping as JSONL (validated through
-//!   [`babbleon_core_v2::build_activated_table_from_mapping`]).
+//!   mapping as JSONL.  Errors with `Error::Vault` when Locked.
 //! - [`DaemonState::rotate`] — bump the epoch counter and rebuild
-//!   the cached mapping.
+//!   the cached mapping.  Errors with `Error::Vault` when Locked.
 //!
 //! # Threat model boundaries
 //!
@@ -48,7 +77,9 @@
 //!   (nothing public exposes secret bytes); secret leakage via Drop
 //!   (`PerHostSecret`'s zeroize); stale-mapping race (cached
 //!   mapping is a `Clone` of the last build, never a live reference
-//!   into the builder's transient state).
+//!   into the builder's transient state); pre-unlock mutator
+//!   surface (the Locked state refuses every mutator with a single
+//!   error variant, no half-success paths).
 //! - **Does NOT defeat:** in-process memory disclosure
 //!   (`ptrace_scope`, kernel CVE, side channel).  Compensating
 //!   controls: process hardening (rule 8); seccomp profile pinning
@@ -73,31 +104,47 @@ use crate::materialization::{
     materialize, stale_names_from, MaterializationConfig, TrackedTool,
 };
 
+/// Static configuration shared across both lifecycle states.
+struct DaemonConfig {
+    wordlist: &'static Wordlist,
+    tracked_tools: Vec<TrackedTool>,
+    materialization: MaterializationConfig,
+    /// Test-only knob: skip on-disk materialisation.  Production
+    /// paths always set this to false.
+    skip_materialization: bool,
+}
+
+/// Lifecycle state of the per-host secret.
+enum SecretState {
+    /// No secret in memory.  Daemon waits for an `Unlock` request.
+    Locked,
+    /// Secret installed; mapping built.
+    Unlocked {
+        secret: PerHostSecret,
+        epoch: u64,
+        cached_mapping: EpochMapping,
+        last_rotation: SystemTime,
+    },
+}
+
 /// In-memory daemon state.
-///
-/// Holds the per-host secret, the current epoch, the tracked-tool
-/// list, and the cached [`EpochMapping`] for the current epoch.
 ///
 /// Single-owner, mutate through `&mut self`.  Send-safe (every
 /// member is `Send`) so a future worker-pool can move it across
 /// threads if needed, but no Sync — the state machine is not lock-
 /// free.
+///
+/// `DaemonState` is intentionally NOT Clone, NOT Copy, NOT Debug
+/// (security-baseline rule 3).
 pub struct DaemonState {
-    secret: PerHostSecret,
-    wordlist: &'static Wordlist,
-    tracked_tools: Vec<TrackedTool>,
-    materialization: MaterializationConfig,
-    epoch: u64,
-    cached_mapping: EpochMapping,
-    last_rotation: SystemTime,
-    skip_materialization: bool,
+    config: DaemonConfig,
+    secret_state: SecretState,
 }
 
 impl DaemonState {
-    /// Construct a daemon state from a freshly-loaded secret and a
-    /// tracked-tool list.  Builds the epoch-0 mapping eagerly and
-    /// materialises the corresponding on-disk wrappers and tripwire
-    /// lists.
+    /// Construct a daemon in the Locked state.  No secret in memory
+    /// yet; the operator must issue an `Unlock` request to install
+    /// one.
     ///
     /// `materialization.wrapper_dir` MUST be an absolute path.
     /// Every entry of `tracked_tools` MUST have a non-empty name and
@@ -107,106 +154,140 @@ impl DaemonState {
     ///
     /// - [`Error::Cli`] if `wrapper_dir` or any `real_path` is not
     ///   absolute, or if any tracked tool name is empty.
+    pub fn new_locked(
+        wordlist: &'static Wordlist,
+        tracked_tools: Vec<TrackedTool>,
+        materialization: MaterializationConfig,
+    ) -> Result<Self> {
+        let config = build_config(
+            wordlist,
+            tracked_tools,
+            materialization,
+            false,
+        )?;
+        Ok(Self {
+            config,
+            secret_state: SecretState::Locked,
+        })
+    }
+
+    /// Construct a daemon directly in the Unlocked state with the
+    /// supplied secret.  Eagerly builds the epoch-0 mapping and
+    /// materialises wrappers on disk.
+    ///
+    /// Used by tests and by the `--insecure-stub-secret` startup
+    /// path; production restarts go Locked first, then receive an
+    /// Unlock request.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::Cli`] for the same reasons as [`Self::new_locked`].
     /// - [`Error::Mapping`] if mapping construction fails.
     /// - [`Error::Wrapper`] if on-disk materialisation fails.
-    pub fn new(
+    pub fn new_unlocked(
         secret: PerHostSecret,
         wordlist: &'static Wordlist,
         tracked_tools: Vec<TrackedTool>,
         materialization: MaterializationConfig,
     ) -> Result<Self> {
-        Self::construct(secret, wordlist, tracked_tools, materialization, false)
+        let config = build_config(
+            wordlist,
+            tracked_tools,
+            materialization,
+            false,
+        )?;
+        let unlocked = build_unlocked_state(&config, secret, 0)?;
+        Ok(Self {
+            config,
+            secret_state: unlocked,
+        })
     }
 
-    /// Like [`Self::new`] but skips on-disk materialisation.  Used
-    /// in unit tests that do not want wrapper files on the host
-    /// filesystem; production paths always go through `new`.
+    /// Like [`Self::new_unlocked`] but skips on-disk materialisation.
+    /// Used in unit tests that do not want wrapper files on the host
+    /// filesystem.
     ///
     /// # Errors
     ///
-    /// Same as [`Self::new`] minus [`Error::Wrapper`].
+    /// Same as [`Self::new_unlocked`] minus [`Error::Wrapper`].
     pub fn new_without_materialization(
         secret: PerHostSecret,
         wordlist: &'static Wordlist,
         tracked_tools: Vec<TrackedTool>,
         materialization: MaterializationConfig,
     ) -> Result<Self> {
-        Self::construct(secret, wordlist, tracked_tools, materialization, true)
-    }
-
-    fn construct(
-        secret: PerHostSecret,
-        wordlist: &'static Wordlist,
-        tracked_tools: Vec<TrackedTool>,
-        materialization: MaterializationConfig,
-        skip_materialization: bool,
-    ) -> Result<Self> {
-        if !materialization.wrapper_dir.is_absolute() {
-            return Err(Error::Cli(format!(
-                "wrapper_dir must be absolute (got {})",
-                materialization.wrapper_dir.display()
-            )));
-        }
-        for t in &tracked_tools {
-            if t.name.is_empty() {
-                return Err(Error::Cli(
-                    "tracked-tool list contains an empty name".into(),
-                ));
-            }
-            if !t.real_path.is_absolute() {
-                return Err(Error::Cli(format!(
-                    "tracked-tool {:?}: real_path must be absolute (got {})",
-                    t.name,
-                    t.real_path.display(),
-                )));
-            }
-        }
-        let names: Vec<String> =
-            tracked_tools.iter().map(|t| t.name.clone()).collect();
-        let initial_mapping =
-            MappingBuilder::new(&secret, wordlist).build(&names, 0)?;
-        if !skip_materialization {
-            materialize(
-                &materialization,
-                &secret,
-                &initial_mapping,
-                &[],
-                &tracked_tools,
-            )?;
-        }
-        Ok(Self {
-            secret,
+        let config = build_config(
             wordlist,
             tracked_tools,
             materialization,
-            epoch: 0,
-            cached_mapping: initial_mapping,
-            last_rotation: SystemTime::now(),
-            skip_materialization,
+            true,
+        )?;
+        let unlocked = build_unlocked_state(&config, secret, 0)?;
+        Ok(Self {
+            config,
+            secret_state: unlocked,
         })
     }
 
-    /// Current epoch number.
+    /// Locked -> Unlocked transition.  Installs `secret`, builds the
+    /// epoch-0 mapping, materialises wrappers on disk.  Returns the
+    /// epoch the daemon is now serving (always 0 today; phase 4+
+    /// will accept an epoch hint from the vault payload).
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::Vault`] if the daemon is already Unlocked.  Re-
+    ///   unlocking would risk leaving the prior secret's mapping
+    ///   live alongside the new one; operators must restart the
+    ///   daemon to swap secrets.
+    /// - [`Error::Mapping`] / [`Error::Wrapper`] from mapping build
+    ///   or materialisation.
+    pub fn unlock(&mut self, secret: PerHostSecret) -> Result<u64> {
+        if matches!(self.secret_state, SecretState::Unlocked { .. }) {
+            return Err(Error::Vault(
+                "vault is already unlocked; restart the daemon to install \
+                 a different secret"
+                    .into(),
+            ));
+        }
+        let unlocked = build_unlocked_state(&self.config, secret, 0)?;
+        self.secret_state = unlocked;
+        Ok(self.epoch().unwrap_or(0))
+    }
+
+    /// Current epoch number, or `None` when the vault is locked.
     #[must_use]
-    pub fn epoch(&self) -> u64 {
-        self.epoch
+    pub fn epoch(&self) -> Option<u64> {
+        match &self.secret_state {
+            SecretState::Locked => None,
+            SecretState::Unlocked { epoch, .. } => Some(*epoch),
+        }
+    }
+
+    /// Whether the per-host secret is loaded.
+    #[must_use]
+    pub fn vault_locked(&self) -> bool {
+        matches!(self.secret_state, SecretState::Locked)
     }
 
     /// Number of currently tracked tools.
     #[must_use]
     pub fn tracked_count(&self) -> usize {
-        self.tracked_tools.len()
+        self.config.tracked_tools.len()
     }
 
-    /// `UNIX_EPOCH`-relative seconds of the last successful rotation.
-    /// Returns `None` if the system clock is set before `UNIX_EPOCH`
-    /// (catastrophe state; not a hard error).
+    /// `UNIX_EPOCH`-relative seconds of the last successful rotation,
+    /// or `None` when the vault is locked or the system clock is set
+    /// before `UNIX_EPOCH` (catastrophe state; not a hard error).
     #[must_use]
     pub fn last_rotation_unix_secs(&self) -> Option<u64> {
-        self.last_rotation
-            .duration_since(UNIX_EPOCH)
-            .ok()
-            .map(|d| d.as_secs())
+        match &self.secret_state {
+            SecretState::Locked => None,
+            SecretState::Unlocked { last_rotation, .. } => last_rotation
+                .duration_since(UNIX_EPOCH)
+                .ok()
+                .map(|d| d.as_secs()),
+        }
     }
 
     /// Build the activated table JSONL for the current epoch.
@@ -217,14 +298,23 @@ impl DaemonState {
     ///
     /// # Errors
     ///
+    /// - [`Error::Vault`] when the daemon is Locked.
     /// - [`Error::ActivatedTable`] (via `From`) if table construction
     ///   or JSONL serialization fails (cannot happen in practice for
     ///   a well-formed mapping; the validators only reject malformed
     ///   names or relative paths).
     pub fn activated_table_jsonl(&self) -> Result<Vec<u8>> {
+        let SecretState::Unlocked { cached_mapping, .. } = &self.secret_state
+        else {
+            return Err(Error::Vault(
+                "activated-table requires an unlocked vault; \
+                 send Unlock first"
+                    .into(),
+            ));
+        };
         let table = build_activated_table_from_mapping(
-            &self.cached_mapping,
-            &self.materialization.wrapper_dir,
+            cached_mapping,
+            &self.config.materialization.wrapper_dir,
         )
         .map_err(|e| Error::ActivatedTable(e.to_string()))?;
         let bytes = table
@@ -243,6 +333,7 @@ impl DaemonState {
     ///
     /// # Errors
     ///
+    /// - [`Error::Vault`] when the daemon is Locked.
     /// - [`Error::Mapping`] if mapping construction fails.
     /// - [`Error::Wrapper`] if on-disk materialisation fails.  When
     ///   this fires the in-memory state still reflects the new
@@ -250,27 +341,44 @@ impl DaemonState {
     ///   on-disk wrappers are in an inconsistent state; operator
     ///   should re-issue `rotate-mapping`.
     pub fn rotate(&mut self) -> Result<u64> {
-        let new_epoch = self.epoch.checked_add(1).ok_or_else(|| {
+        let SecretState::Unlocked {
+            secret,
+            epoch,
+            cached_mapping,
+            last_rotation,
+        } = &mut self.secret_state
+        else {
+            return Err(Error::Vault(
+                "rotate-mapping requires an unlocked vault; \
+                 send Unlock first"
+                    .into(),
+            ));
+        };
+        let new_epoch = epoch.checked_add(1).ok_or_else(|| {
             Error::Mapping(
                 "epoch counter overflow; daemon refuses to wrap u64::MAX"
                     .into(),
             )
         })?;
-        let names: Vec<String> =
-            self.tracked_tools.iter().map(|t| t.name.clone()).collect();
-        let new_mapping = MappingBuilder::new(&self.secret, self.wordlist)
-            .build(&names, new_epoch)?;
-        let stale = stale_names_from(&self.cached_mapping);
-        self.epoch = new_epoch;
-        self.cached_mapping = new_mapping;
-        self.last_rotation = SystemTime::now();
-        if !self.skip_materialization {
+        let names: Vec<String> = self
+            .config
+            .tracked_tools
+            .iter()
+            .map(|t| t.name.clone())
+            .collect();
+        let new_mapping =
+            MappingBuilder::new(secret, self.config.wordlist).build(&names, new_epoch)?;
+        let stale = stale_names_from(cached_mapping);
+        *epoch = new_epoch;
+        *cached_mapping = new_mapping;
+        *last_rotation = SystemTime::now();
+        if !self.config.skip_materialization {
             materialize(
-                &self.materialization,
-                &self.secret,
-                &self.cached_mapping,
+                &self.config.materialization,
+                secret,
+                cached_mapping,
                 &stale,
-                &self.tracked_tools,
+                &self.config.tracked_tools,
             )?;
         }
         Ok(new_epoch)
@@ -282,10 +390,11 @@ impl DaemonState {
     /// `wrapper_path` is rooted at.
     #[must_use]
     pub fn wrapper_dir(&self) -> &Path {
-        &self.materialization.wrapper_dir
+        &self.config.materialization.wrapper_dir
     }
 
     /// Read-only view of the cached mapping for the current epoch.
+    /// Returns `None` when the daemon is Locked.
     ///
     /// Exposed for diagnostic / test use; the
     /// [`Self::activated_table_jsonl`] path is the production
@@ -293,9 +402,82 @@ impl DaemonState {
     /// secret bytes — `EpochMapping` only holds names and honey
     /// strings.
     #[must_use]
-    pub fn current_mapping(&self) -> &EpochMapping {
-        &self.cached_mapping
+    pub fn current_mapping(&self) -> Option<&EpochMapping> {
+        match &self.secret_state {
+            SecretState::Locked => None,
+            SecretState::Unlocked { cached_mapping, .. } => Some(cached_mapping),
+        }
     }
+}
+
+/// Validate and pack the static configuration shared across lifecycle
+/// states.  Mirrors v1's `DaemonState::new`'s validation pass.
+fn build_config(
+    wordlist: &'static Wordlist,
+    tracked_tools: Vec<TrackedTool>,
+    materialization: MaterializationConfig,
+    skip_materialization: bool,
+) -> Result<DaemonConfig> {
+    if !materialization.wrapper_dir.is_absolute() {
+        return Err(Error::Cli(format!(
+            "wrapper_dir must be absolute (got {})",
+            materialization.wrapper_dir.display()
+        )));
+    }
+    for t in &tracked_tools {
+        if t.name.is_empty() {
+            return Err(Error::Cli(
+                "tracked-tool list contains an empty name".into(),
+            ));
+        }
+        if !t.real_path.is_absolute() {
+            return Err(Error::Cli(format!(
+                "tracked-tool {:?}: real_path must be absolute (got {})",
+                t.name,
+                t.real_path.display(),
+            )));
+        }
+    }
+    Ok(DaemonConfig {
+        wordlist,
+        tracked_tools,
+        materialization,
+        skip_materialization,
+    })
+}
+
+/// Build the epoch-N Unlocked state (mapping + cached metadata) and
+/// materialise on-disk artefacts if the config permits.  Used by
+/// `new_unlocked` (genesis at boot for the stub-secret path), by
+/// `new_without_materialization` (test path), and by `unlock` (real
+/// unlock path).
+fn build_unlocked_state(
+    config: &DaemonConfig,
+    secret: PerHostSecret,
+    epoch: u64,
+) -> Result<SecretState> {
+    let names: Vec<String> = config
+        .tracked_tools
+        .iter()
+        .map(|t| t.name.clone())
+        .collect();
+    let cached_mapping =
+        MappingBuilder::new(&secret, config.wordlist).build(&names, epoch)?;
+    if !config.skip_materialization {
+        materialize(
+            &config.materialization,
+            &secret,
+            &cached_mapping,
+            &[],
+            &config.tracked_tools,
+        )?;
+    }
+    Ok(SecretState::Unlocked {
+        secret,
+        epoch,
+        cached_mapping,
+        last_rotation: SystemTime::now(),
+    })
 }
 
 // `DaemonState` is intentionally not `Clone`, not `Copy`, not
@@ -342,18 +524,54 @@ mod tests {
         .unwrap()
     }
 
+    fn build_locked(tools: Vec<TrackedTool>, wrapper_dir: &str) -> DaemonState {
+        DaemonState::new_locked(
+            Wordlist::english_baseline(),
+            tools,
+            cfg(wrapper_dir),
+        )
+        .unwrap()
+    }
+
+    // ----- new_locked / new_unlocked invariants -----
+
     #[test]
-    fn new_eagerly_builds_epoch_zero_mapping() {
+    fn new_locked_reports_locked_state() {
+        let s = build_locked(tracked(), "/wrappers");
+        assert!(s.vault_locked());
+        assert_eq!(s.epoch(), None);
+        assert_eq!(s.tracked_count(), 3);
+        assert!(s.last_rotation_unix_secs().is_none());
+        assert!(s.current_mapping().is_none());
+    }
+
+    #[test]
+    fn new_unlocked_eagerly_builds_epoch_zero_mapping() {
         let s = build_state(tracked(), "/var/lib/babbleon/wrappers");
-        assert_eq!(s.epoch(), 0);
+        assert!(!s.vault_locked());
+        assert_eq!(s.epoch(), Some(0));
         assert_eq!(s.tracked_count(), 3);
         assert!(s.last_rotation_unix_secs().is_some());
+        assert!(s.current_mapping().is_some());
     }
 
     #[test]
     fn new_rejects_relative_wrapper_dir() {
         let r = DaemonState::new_without_materialization(
             fixed_secret(),
+            Wordlist::english_baseline(),
+            tracked(),
+            cfg("relative/wrappers"),
+        );
+        match r {
+            Ok(_) => panic!("expected Err for relative wrapper_dir"),
+            Err(e) => assert!(format!("{e}").contains("absolute")),
+        }
+    }
+
+    #[test]
+    fn new_locked_rejects_relative_wrapper_dir() {
+        let r = DaemonState::new_locked(
             Wordlist::english_baseline(),
             tracked(),
             cfg("relative/wrappers"),
@@ -403,6 +621,109 @@ mod tests {
         }
     }
 
+    // ----- Locked-state mutator rejection -----
+
+    #[test]
+    fn locked_emit_activated_table_returns_vault_error() {
+        let s = build_locked(tracked(), "/wrappers");
+        let r = s.activated_table_jsonl();
+        match r {
+            Err(Error::Vault(m)) => assert!(m.contains("locked"), "{m}"),
+            Err(other) => panic!("expected Error::Vault, got {other:?}"),
+            Ok(_) => panic!("locked state must refuse activated-table"),
+        }
+    }
+
+    #[test]
+    fn locked_rotate_returns_vault_error() {
+        let mut s = build_locked(tracked(), "/wrappers");
+        let r = s.rotate();
+        match r {
+            Err(Error::Vault(m)) => assert!(m.contains("locked"), "{m}"),
+            Err(other) => panic!("expected Error::Vault, got {other:?}"),
+            Ok(_) => panic!("locked state must refuse rotate"),
+        }
+    }
+
+    // ----- unlock transition -----
+
+    #[test]
+    fn unlock_transitions_locked_to_unlocked() {
+        let mut s = build_locked(tracked(), "/wrappers");
+        let mut s = with_skip_materialization(&mut s);
+        let epoch = s.unlock(fixed_secret()).unwrap();
+        assert_eq!(epoch, 0);
+        assert!(!s.vault_locked());
+        assert_eq!(s.epoch(), Some(0));
+        assert!(s.current_mapping().is_some());
+    }
+
+    #[test]
+    fn unlock_then_emit_returns_jsonl_for_epoch_zero() {
+        let mut s = build_locked(tracked(), "/wrappers");
+        let mut s = with_skip_materialization(&mut s);
+        s.unlock(fixed_secret()).unwrap();
+        let jsonl = s.activated_table_jsonl().unwrap();
+        let parsed = babbleon_core_v2::ActivatedTable::read_jsonl(
+            std::io::Cursor::new(&jsonl),
+        )
+        .unwrap();
+        assert_eq!(parsed.epoch, 0);
+        assert_eq!(parsed.entries.len(), 3);
+    }
+
+    #[test]
+    fn unlock_then_rotate_bumps_epoch() {
+        let mut s = build_locked(tracked(), "/wrappers");
+        let mut s = with_skip_materialization(&mut s);
+        s.unlock(fixed_secret()).unwrap();
+        assert_eq!(s.rotate().unwrap(), 1);
+        assert_eq!(s.epoch(), Some(1));
+    }
+
+    #[test]
+    fn double_unlock_is_rejected() {
+        let mut s = build_locked(tracked(), "/wrappers");
+        let mut s = with_skip_materialization(&mut s);
+        s.unlock(fixed_secret()).unwrap();
+        match s.unlock(PerHostSecret::from_bytes(&[7u8; 32]).unwrap()) {
+            Err(Error::Vault(m)) => assert!(m.contains("already"), "{m}"),
+            Err(other) => panic!("expected Error::Vault, got {other:?}"),
+            Ok(_) => panic!("double unlock must be rejected"),
+        }
+    }
+
+    #[test]
+    fn unlock_distinct_secret_yields_distinct_mapping() {
+        // Build two Locked states, unlock each with a different
+        // secret, confirm the cached mappings disagree.
+        let mut a = build_locked(tracked(), "/wrappers");
+        let mut a = with_skip_materialization(&mut a);
+        a.unlock(PerHostSecret::from_bytes(&[1u8; 32]).unwrap())
+            .unwrap();
+        let mut b = build_locked(tracked(), "/wrappers");
+        let mut b = with_skip_materialization(&mut b);
+        b.unlock(PerHostSecret::from_bytes(&[2u8; 32]).unwrap())
+            .unwrap();
+        let names_a: Vec<String> = a
+            .current_mapping()
+            .unwrap()
+            .real_to_scrambled
+            .values()
+            .cloned()
+            .collect();
+        let names_b: Vec<String> = b
+            .current_mapping()
+            .unwrap()
+            .real_to_scrambled
+            .values()
+            .cloned()
+            .collect();
+        assert_ne!(names_a, names_b);
+    }
+
+    // ----- existing Unlocked-state invariants (regression) -----
+
     #[test]
     fn activated_table_jsonl_contains_every_tracked_tool() {
         let s = build_state(tracked(), "/wrappers");
@@ -414,7 +735,7 @@ mod tests {
         assert_eq!(parsed.epoch, 0);
         assert_eq!(parsed.entries.len(), 3);
         for e in &parsed.entries {
-            assert!(s.current_mapping().reveal(&e.scrambled).is_some());
+            assert!(s.current_mapping().unwrap().reveal(&e.scrambled).is_some());
         }
     }
 
@@ -423,15 +744,17 @@ mod tests {
         let mut s = build_state(tracked(), "/wrappers");
         let before: Vec<String> = s
             .current_mapping()
+            .unwrap()
             .real_to_scrambled
             .values()
             .cloned()
             .collect();
         let new_epoch = s.rotate().unwrap();
         assert_eq!(new_epoch, 1);
-        assert_eq!(s.epoch(), 1);
+        assert_eq!(s.epoch(), Some(1));
         let after: Vec<String> = s
             .current_mapping()
+            .unwrap()
             .real_to_scrambled
             .values()
             .cloned()
@@ -481,11 +804,11 @@ mod tests {
     #[test]
     fn current_mapping_is_for_current_epoch() {
         let mut s = build_state(tracked(), "/wrappers");
-        assert_eq!(s.current_mapping().epoch, 0);
+        assert_eq!(s.current_mapping().unwrap().epoch, 0);
         s.rotate().unwrap();
-        assert_eq!(s.current_mapping().epoch, 1);
+        assert_eq!(s.current_mapping().unwrap().epoch, 1);
         s.rotate().unwrap();
-        assert_eq!(s.current_mapping().epoch, 2);
+        assert_eq!(s.current_mapping().unwrap().epoch, 2);
     }
 
     #[test]
@@ -505,6 +828,41 @@ mod tests {
             );
         }
     }
+
+    /// Replace the [`DaemonState`] with a fresh Locked state whose
+    /// config's `skip_materialization = true`, so unit tests can
+    /// exercise unlock without touching the host filesystem.
+    /// Returns a brand-new state because we cannot mutate the
+    /// private `config` field directly from outside `super`.
+    fn with_skip_materialization(s: &mut DaemonState) -> DaemonState {
+        let tools = s.config.tracked_tools.clone();
+        let mat = s.config.materialization.clone();
+        DaemonState::new_locked_skip_for_tests(s.config.wordlist, tools, mat)
+            .unwrap()
+    }
+
+    // ----- private test-only constructor surfaced via super::DaemonState -----
+
+    impl DaemonState {
+        fn new_locked_skip_for_tests(
+            wordlist: &'static Wordlist,
+            tracked_tools: Vec<TrackedTool>,
+            materialization: MaterializationConfig,
+        ) -> Result<Self> {
+            let config = build_config(
+                wordlist,
+                tracked_tools,
+                materialization,
+                true,
+            )?;
+            Ok(Self {
+                config,
+                secret_state: SecretState::Locked,
+            })
+        }
+    }
+
+    // ----- on-disk materialization (Unlocked path) -----
 
     fn tracked_in(dir: &Path, names: &[&str]) -> Vec<TrackedTool> {
         names
@@ -530,24 +888,25 @@ mod tests {
     }
 
     #[test]
-    fn new_materialises_real_and_honey_wrappers_on_disk() {
+    fn new_unlocked_materialises_real_and_honey_wrappers_on_disk() {
         let tmp = tempfile::tempdir().unwrap();
         let tools = tracked_in(tmp.path(), &["curl", "ssh"]);
         let cfg = cfg_in_tmp(tmp.path());
-        let s = DaemonState::new(
+        let s = DaemonState::new_unlocked(
             fixed_secret(),
             Wordlist::english_baseline(),
             tools,
             cfg.clone(),
         )
         .unwrap();
-        for scrambled in s.current_mapping().real_to_scrambled.values() {
+        let mapping = s.current_mapping().unwrap();
+        for scrambled in mapping.real_to_scrambled.values() {
             assert!(
                 cfg.wrapper_dir.join(scrambled).exists(),
                 "missing real wrapper {scrambled}",
             );
         }
-        for honey in &s.current_mapping().honey_names {
+        for honey in &mapping.honey_names {
             assert!(
                 cfg.wrapper_dir.join(honey).exists(),
                 "missing honey wrapper {honey}",
@@ -560,7 +919,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let tools = tracked_in(tmp.path(), &["curl"]);
         let cfg = cfg_in_tmp(tmp.path());
-        let mut s = DaemonState::new(
+        let mut s = DaemonState::new_unlocked(
             fixed_secret(),
             Wordlist::english_baseline(),
             tools,
@@ -569,11 +928,13 @@ mod tests {
         .unwrap();
         let prev_real: Vec<String> = s
             .current_mapping()
+            .unwrap()
             .real_to_scrambled
             .values()
             .cloned()
             .collect();
-        let prev_honey: Vec<String> = s.current_mapping().honey_names.clone();
+        let prev_honey: Vec<String> =
+            s.current_mapping().unwrap().honey_names.clone();
 
         s.rotate().unwrap();
 
@@ -585,7 +946,7 @@ mod tests {
                 "stale list missing {name}",
             );
         }
-        for scrambled in s.current_mapping().real_to_scrambled.values() {
+        for scrambled in s.current_mapping().unwrap().real_to_scrambled.values() {
             assert!(
                 cfg.wrapper_dir.join(scrambled).exists(),
                 "missing new-epoch real wrapper {scrambled}",
@@ -594,11 +955,11 @@ mod tests {
     }
 
     #[test]
-    fn new_genesis_stale_list_is_empty() {
+    fn new_unlocked_genesis_stale_list_is_empty() {
         let tmp = tempfile::tempdir().unwrap();
         let tools = tracked_in(tmp.path(), &["curl"]);
         let cfg = cfg_in_tmp(tmp.path());
-        DaemonState::new(
+        DaemonState::new_unlocked(
             fixed_secret(),
             Wordlist::english_baseline(),
             tools,
@@ -610,3 +971,4 @@ mod tests {
         assert!(body.is_empty(), "genesis stale list must be empty, got: {body}");
     }
 }
+
