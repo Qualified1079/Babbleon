@@ -1,0 +1,35 @@
+[package]
+name = "v2-babbleon-vault"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Babbleon v2 vault: at-rest encryption for the per-host secret.  Soft-tier (Argon2id passphrase) backend ships in v2.0; the KekBackend trait keeps TPM/FIDO2/USB add-ons out of band.  Linked by the user-facing CLI (babbleon init / unlock); NOT linked by the daemon (the daemon only receives 32 unwrapped bytes over the socket)."
+publish = false
+
+[lib]
+name = "babbleon_vault_v2"
+path = "src/lib.rs"
+
+[dependencies]
+# Vault file format: age passphrase encryption.
+age = { workspace = true }
+# KEK derivation: Argon2id (RFC 9106).
+argon2 = { workspace = true }
+# Secret hygiene — every secret bears Zeroizing on drop.
+zeroize = { workspace = true }
+# Hex encoding for the wire transcript (32-byte secret -> 64 hex chars).
+hex = { workspace = true }
+# Vault payload serialization (NO `String` secret field — see security-baseline
+# rule 11; the secret field uses a custom (de)serializer to `Zeroizing<Vec<u8>>`).
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Errors.
+thiserror = { workspace = true }
+# Default vault-path resolver — `dirs::config_dir()`.
+dirs = { workspace = true }
+# RNG for fresh-vault generation (per-host secret bytes).
+rand = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
