@@ -150,22 +150,76 @@ the carve-out's purpose.
 
 ---
 
+## Crate: `v2-babbleon-pam`  (PAM session module SKELETON, 2026-06-20)
+
+Skeleton-only.  Compiles `pam_babbleon.so` from a C source via
+`build.rs`+`cc`; does NOT yet wrap the user's login shell.  The
+three candidate architectures for the wrap are filed in
+`docs/v2/pam-architecture.md` for operator pick.  Rust scaffolding
+exposes `Readiness::SkeletonOnly` which flips to `Wired` in the
+same PR that lands one of those architectures.
+
+The shipped artifact is the C `.so` — the Rust crate's role is
+scaffolding (build.rs + path constants + readiness gate +
+artifact integrity tests).  Most v2 rules apply trivially because
+the Rust code holds no secrets, makes no syscalls, and has no
+runtime logic.
+
+| # | Rule | Status | Evidence |
+|---|---|---|---|
+| 1 | `forbid(unsafe_code)` | ✅ PASS | `src/lib.rs:106` |
+| 2 | `deny(missing_docs)` + pedantic | ✅ PASS | `src/lib.rs:107-108`; `cargo clippy -p v2-babbleon-pam --all-targets -- -D warnings -W clippy::pedantic` clean |
+| 3 | Secrets wear `Zeroizing`, no `Clone/Copy/Debug` | ✅ PASS (vacuous) | crate holds no secret material |
+| 4 | Constant-time compares | N/A | no secret material |
+| 5 | HKDF for domain separation | N/A | no key derivation |
+| 6 | Plain-English names | ✅ PASS | `Readiness`, `launch_untrusted_install_path`, `daemon_socket_path` — every public item names what it does |
+| 7 | "What this defeats" module docs | ✅ PASS | `lib.rs` opens with the template; the C source mirrors the template in its top-of-file comment |
+| 8 | Process hardening at startup | N/A | no `main()`; the C shim runs inside PAM's caller |
+| 9 | `SAFETY:` comment on every `unsafe` block | ✅ PASS (vacuous) | `forbid(unsafe_code)` at the Rust crate root.  The C shim does no inline assembly and no pointer arithmetic; its only unusual primitives are `socket(2)`/`connect(2)`/`close(2)` with documented invariants in the source comments |
+| 10 | Capability annotation per syscall site | ✅ PASS | the C shim makes no privileged syscalls — `socket(AF_UNIX)` + `connect` to the daemon's socket path is unprivileged.  Will need re-audit when the architecture lands (PAM wrap may add `setns` or similar) |
+| 11 | No long-lived secrets in serde-deserialized types | N/A | no deserializers |
+| 12 | RFC-recognisable primitives | N/A | no crypto |
+| 13 | Errors do not leak secrets | ✅ PASS | the C shim only logs errno + path strings via `pam_syslog`; no secret material on its call paths |
+| 14 | Secret-bearing args are `&` references | N/A | no secret args |
+| 15 | Tests cover unit + property invariants | ✅ PASS | 9 Rust unit + 4 integration (artifact existence, ELF magic, BIND_NOW dynamic tag, GNU_STACK non-exec) + 1 cross-crate (`DEFAULT_DAEMON_SOCKET_PATH` agreement with `v2-babbleon-daemon-protocol::default_socket_path()`) |
+
+**Verdict:** passes all applicable rules at the SKELETON level.
+Re-audit when one of the three architectures in
+`docs/v2/pam-architecture.md` lands and the `.so` actually
+invokes the launcher; that PR likely opens rules 8 (the launcher
+invocation must apply hardening from the caller's side) and 10
+(the wrap may call `setns(2)` or otherwise expand the C shim's
+capability envelope).
+
+**Build hardening (defense-in-depth, not a baseline rule):** the
+build.rs passes `-fstack-protector-strong`, `-D_FORTIFY_SOURCE=2`,
+`-Wl,-z,relro,-z,now`, and `-Wl,-z,noexecstack`.  Two
+regression-guard tests in `tests/built_artifact.rs` verify the
+produced `.so` carries `BIND_NOW` and non-executable
+`GNU_STACK`.
+
+---
+
 ## Aggregate
 
-Across the five v2 crates:
+Across the six v2 crates:
 
-- 2 PASS, 2 PASS-with-noted-exception, 1 PASS-vacuous: every rule
-  passes in the crate where it applies; the protocol-crate row
-  passes 8 rules outright and is N/A on the 7 that don't apply
-  to a library with no secrets / no syscalls / no crypto.
-- 0 DEFER (every rule applicable to the daemon now lands; the
-  previous 8 DEFERs against the daemon-as-skeleton closed across
-  `b326107` / `ac37d0f` / `9dd8e86` / `60617cb` / `1a81b77` /
-  `ca2268e` / `5b6f58e` / `9574c23`).
-- 0 FAIL.
+- v2-babbleon-core: PASS (every applicable rule)
+- v2-babbleon-launch-untrusted: PASS-with-noted-exception (unsafe quarantine per rule-1 exception policy)
+- v2-babbleon: PASS (subset applicable to the user CLI)
+- v2-babbleon-daemon: PASS (every applicable rule)
+- v2-babbleon-daemon-protocol: PASS (every applicable rule; library scope)
+- v2-babbleon-pam: PASS (subset applicable to the skeleton; re-audit when architecture lands)
+- 0 DEFER
+- 0 FAIL
 
 Phase 3 will introduce vault unlock and re-open three rules for
 re-audit (3, 11, 14) on the new code path.
+
+The daemon's seccomp profile (`v2-babbleon-daemon/src/seccomp_profile.rs`,
+landed 2026-06-20) is opt-in behind `--enable-seccomp`; once
+the operator flips its default to ON it counts as defense-in-depth
+on top of rule 8 (hardening) and rule 10 (capability discipline).
 
 ## Open audit items
 
