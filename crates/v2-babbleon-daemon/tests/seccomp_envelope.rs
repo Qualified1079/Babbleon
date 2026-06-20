@@ -163,6 +163,33 @@ fn daemon_serves_full_operator_sequence_under_seccomp() {
         }
     }
 
+    // get-whitespace-compounds — exercises HKDF + Permutation + string
+    // concatenation for the whitespace mapping; pure compute, no new
+    // syscalls beyond the read/write/close envelope already covered.
+    // If this fails with a transport error, the daemon was killed by
+    // SIGSYS — diff strace against the envelope in
+    // docs/v2/daemon-seccomp-envelope.md.
+    match round_trip(&sock, &Request::GetWhitespaceCompounds) {
+        Ok(Response::WhitespaceCompounds { epoch, compounds }) => {
+            assert_eq!(epoch, 1);
+            assert_eq!(compounds.len(), 5);
+            for c in &compounds {
+                assert!(!c.is_empty(), "whitespace compound is empty");
+                assert!(
+                    c.bytes().all(|b| b.is_ascii_lowercase()),
+                    "whitespace compound contains non-lowercase byte: {c:?}",
+                );
+            }
+        }
+        other => {
+            shutdown(child);
+            panic!(
+                "get-whitespace-compounds under seccomp: expected \
+                 Ok(WhitespaceCompounds), got {other:?}",
+            );
+        }
+    }
+
     // Final liveness check.
     match round_trip(&sock, &Request::Status) {
         Ok(Response::Status { epoch, .. }) => assert_eq!(epoch, 1),

@@ -29,7 +29,7 @@ use std::path::PathBuf;
 
 use babbleon_core_v2::per_host_secret::PerHostSecret;
 use babbleon_core_v2::wordlist::Wordlist;
-use v2_babbleon_preprocessor::{
+use babbleon_preprocessor_v2::{
     python_tokenizer::tokenize, scrambler::scramble, unscrambler::unscramble,
     whitespace_wordlist::WhitespaceWordlist,
 };

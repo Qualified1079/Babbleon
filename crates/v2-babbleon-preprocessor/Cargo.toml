@@ -8,6 +8,13 @@ repository.workspace = true
 description = "Babbleon v2 — runtime preprocessor for structural scrambling (phase 3, layer 3: whitespace-as-words)."
 publish = false
 
+[lib]
+# Crate-import name follows the `babbleon_<thing>_v2` convention every
+# other v2 crate uses (core, daemon-protocol, vault, ...).  Disk-name
+# carries the `v2-` prefix so the v1/v2 split is visible in the crate
+# listing; import-name reads naturally in downstream `use` lines.
+name = "babbleon_preprocessor_v2"
+
 [lints.rust]
 unsafe_code = "forbid"
 missing_docs = "deny"

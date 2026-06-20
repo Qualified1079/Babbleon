@@ -23,6 +23,13 @@ v2-babbleon-core = { path = "../v2-babbleon-core" }
 # The daemon itself still consumes Request / Response / ErrorKind from
 # the same crate so a single source of truth governs the wire schema.
 v2-babbleon-daemon-protocol = { path = "../v2-babbleon-daemon-protocol" }
+# Preprocessor: source of the WhitespaceWordlist derivation the
+# daemon serves over the wire (Request::GetWhitespaceCompounds).
+# Kept off the launcher and user-CLI graphs because peers do not
+# need the tokenizer / scrambler surface; only the daemon (which
+# already holds the secret) computes derivations and ships
+# results.
+v2-babbleon-preprocessor = { path = "../v2-babbleon-preprocessor" }
 # Errors + logging.
 thiserror = { workspace = true }
 tracing = { workspace = true }

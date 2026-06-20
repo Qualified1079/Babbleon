@@ -408,6 +408,54 @@ impl DaemonState {
             SecretState::Unlocked { cached_mapping, .. } => Some(cached_mapping),
         }
     }
+
+    /// Derive the five per-epoch whitespace compounds the operator
+    /// CLI's `scramble` / `unscramble` subcommands consume.
+    ///
+    /// Returns the current epoch and the compound array in
+    /// `WhitespaceKind::ALL` slot order
+    /// (`Newline`, `Space`, `Tab`, `IndentOpen`, `IndentClose`).  The
+    /// daemon's `PerHostSecret` stays inside this `DaemonState` for
+    /// the call; only the HKDF-derived output crosses the wire to
+    /// the trust-tier CLI peer.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::Vault`] when the daemon is Locked (the secret
+    ///   needed to derive the whitespace permutation is not in
+    ///   memory).
+    /// - [`Error::Mapping`] if the whitespace derivation fails.  In
+    ///   practice unreachable: the v2 baseline wordlist is 369 652
+    ///   entries (well above the 20-entry minimum the derivation
+    ///   needs) and HKDF/Permutation only fail at zero-size or
+    ///   `u32::MAX`; the error path exists so a future smaller
+    ///   wordlist swap surfaces loudly rather than panicking.
+    pub fn whitespace_compounds(
+        &self,
+    ) -> Result<(
+        u64,
+        [String; babbleon_preprocessor_v2::whitespace_wordlist::WHITESPACE_COMPOUND_COUNT],
+    )> {
+        let SecretState::Unlocked { secret, epoch, .. } = &self.secret_state else {
+            return Err(Error::Vault(
+                "whitespace-compounds requires an unlocked vault; \
+                 send Unlock first"
+                    .into(),
+            ));
+        };
+        let wl = babbleon_preprocessor_v2::WhitespaceWordlist::build(
+            secret,
+            self.config.wordlist,
+            *epoch,
+        )
+        .map_err(|e| Error::Mapping(e.to_string()))?;
+        // Take ownership of the compounds array by cloning out of
+        // the builder's owned strings (the builder is borrow-only
+        // after construction).  The 5×~25-byte string clone is
+        // microseconds; the cost is negligible against the HKDF +
+        // Fisher-Yates above.
+        Ok((*epoch, wl.all_compounds().clone()))
+    }
 }
 
 /// Validate and pack the static configuration shared across lifecycle
@@ -969,6 +1017,99 @@ mod tests {
         let body =
             std::fs::read_to_string(cfg.stale_list_path.as_ref().unwrap()).unwrap();
         assert!(body.is_empty(), "genesis stale list must be empty, got: {body}");
+    }
+
+    // ----- whitespace_compounds (preprocessor-bridge) -----
+
+    #[test]
+    fn whitespace_compounds_returns_five_distinct_lowercase_strings() {
+        let s = build_state(tracked(), "/wrappers");
+        let (epoch, compounds) = s.whitespace_compounds().unwrap();
+        assert_eq!(epoch, 0);
+        // Five compounds, all non-empty, all ASCII lowercase.
+        for c in &compounds {
+            assert!(!c.is_empty(), "compound is empty");
+            assert!(
+                c.bytes().all(|b| b.is_ascii_lowercase()),
+                "compound contains non-lowercase byte: {c:?}",
+            );
+        }
+        // Pairwise distinct.
+        let mut sorted: Vec<&str> = compounds.iter().map(String::as_str).collect();
+        sorted.sort_unstable();
+        let len = sorted.len();
+        sorted.dedup();
+        assert_eq!(sorted.len(), len, "compounds must be pairwise distinct");
+    }
+
+    #[test]
+    fn whitespace_compounds_locked_returns_vault_error() {
+        let s = build_locked(tracked(), "/wrappers");
+        match s.whitespace_compounds() {
+            Err(Error::Vault(m)) => assert!(m.contains("locked"), "{m}"),
+            Err(other) => panic!("expected Error::Vault, got {other:?}"),
+            Ok(_) => panic!("locked state must refuse whitespace-compounds"),
+        }
+    }
+
+    #[test]
+    fn whitespace_compounds_after_unlock_returns_compounds_for_epoch_zero() {
+        let mut s = build_locked(tracked(), "/wrappers");
+        let mut s = with_skip_materialization(&mut s);
+        s.unlock(fixed_secret()).unwrap();
+        let (epoch, compounds) = s.whitespace_compounds().unwrap();
+        assert_eq!(epoch, 0);
+        assert_eq!(compounds.len(), 5);
+    }
+
+    #[test]
+    fn whitespace_compounds_change_across_rotation() {
+        let mut s = build_state(tracked(), "/wrappers");
+        let (e0, c0) = s.whitespace_compounds().unwrap();
+        assert_eq!(e0, 0);
+        s.rotate().unwrap();
+        let (e1, c1) = s.whitespace_compounds().unwrap();
+        assert_eq!(e1, 1);
+        // Every compound moves across rotation.
+        for (i, (a, b)) in c0.iter().zip(c1.iter()).enumerate() {
+            assert_ne!(a, b, "compound at slot {i} did not move across rotation");
+        }
+    }
+
+    #[test]
+    fn whitespace_compounds_are_deterministic_for_same_secret_and_epoch() {
+        let a = build_state(tracked(), "/wrappers");
+        let b = build_state(tracked(), "/wrappers");
+        let (_, ca) = a.whitespace_compounds().unwrap();
+        let (_, cb) = b.whitespace_compounds().unwrap();
+        assert_eq!(ca, cb);
+    }
+
+    #[test]
+    fn whitespace_compounds_round_trip_through_preprocessor() {
+        // End-to-end seam test: take the daemon's compounds, feed
+        // them into the preprocessor's from_compounds, and assert
+        // the resulting wordlist's match_prefix recognises each
+        // compound at its slot.  This is what the CLI does on the
+        // wire side.
+        use babbleon_preprocessor_v2::tokens::WhitespaceKind;
+        use babbleon_preprocessor_v2::WhitespaceWordlist;
+        let s = build_state(tracked(), "/wrappers");
+        let (epoch, compounds) = s.whitespace_compounds().unwrap();
+        let reconstructed =
+            WhitespaceWordlist::from_compounds(epoch, compounds.clone())
+                .unwrap();
+        for kind in WhitespaceKind::ALL {
+            assert_eq!(
+                reconstructed.compound_for(kind),
+                compounds[kind.slot()].as_str(),
+            );
+            let with_trailer = format!("{}xyz", compounds[kind.slot()]);
+            let (matched, len) =
+                reconstructed.match_prefix(&with_trailer).unwrap();
+            assert_eq!(matched, kind);
+            assert_eq!(len, compounds[kind.slot()].len());
+        }
     }
 }
 
