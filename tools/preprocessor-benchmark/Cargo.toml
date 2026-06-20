@@ -1,0 +1,17 @@
+[package]
+name = "preprocessor-benchmark"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Per-file latency microbenchmark for the v2 layer-3 preprocessor (tokenize + scramble + unscramble).  Phase-3 spec target: sub-50ms per file."
+
+# Standalone — NOT part of the Babbleon workspace.  Same pattern as
+# tools/rotation-benchmark/.  Keeping benchmarks out of the workspace
+# means workspace-level `cargo test` does not drag the benchmark
+# binary's deps into the regular CI compile graph.
+[workspace]
+
+[dependencies]
+v2-babbleon-core = { path = "../../crates/v2-babbleon-core" }
+v2-babbleon-preprocessor = { path = "../../crates/v2-babbleon-preprocessor" }
+clap = { version = "4", features = ["derive"] }

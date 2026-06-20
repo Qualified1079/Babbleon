@@ -1974,6 +1974,7 @@ dependencies = [
  "tracing-subscriber",
  "v2-babbleon-core",
  "v2-babbleon-daemon-protocol",
+ "v2-babbleon-preprocessor",
  "v2-babbleon-vault",
  "zeroize",
 ]
@@ -2016,6 +2017,7 @@ dependencies = [
  "tracing-subscriber",
  "v2-babbleon-core",
  "v2-babbleon-daemon-protocol",
+ "v2-babbleon-preprocessor",
 ]
 
 [[package]]
