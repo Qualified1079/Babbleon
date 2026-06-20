@@ -42,6 +42,19 @@
 # over the socket).  Every line is secret-bearing.
 /crates/v2-babbleon-vault/              @qualified1079
 
+# v2 preprocessor — phase-3 layer-3 (whitespace-as-words)
+# library.  Owns the Token IR, Python tokenizer, scrambler,
+# unscrambler, and per-epoch WhitespaceWordlist derivation.
+# Holds plain-String compounds (secret-derived but not
+# secret-equivalent); rule 13 enforcement on the error path.
+/crates/v2-babbleon-preprocessor/       @qualified1079
+
+# v2 python-shim — phase-3 runtime entry point.  Bridges a
+# layer-3 scrambled .py to a child python3 via pipe(2).  Applies
+# the same PR_SET_DUMPABLE=0 / RLIMIT_CORE=0 / mlockall triad as
+# the daemon; transient secret-adjacent bytes in memory.
+/crates/v2-babbleon-python-shim/        @qualified1079
+
 # Setuid binary — every line in here is privilege-bearing.
 /crates/babbleon-ns-helper/             @qualified1079
 

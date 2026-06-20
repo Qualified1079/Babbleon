@@ -87,6 +87,14 @@ name = "v2-babbleon-pam"
 allow = ["LicenseRef-PolyForm-Noncommercial-1.0.0"]
 name = "v2-babbleon-vault"
 
+[[licenses.exceptions]]
+allow = ["LicenseRef-PolyForm-Noncommercial-1.0.0"]
+name = "v2-babbleon-preprocessor"
+
+[[licenses.exceptions]]
+allow = ["LicenseRef-PolyForm-Noncommercial-1.0.0"]
+name = "v2-babbleon-python-shim"
+
 [bans]
 multiple-versions = "warn"
 wildcards = "warn"

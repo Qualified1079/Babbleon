@@ -75,3 +75,9 @@ audit-as-crates-io = false
 
 [policy.v2-babbleon-vault]
 audit-as-crates-io = false
+
+[policy.v2-babbleon-preprocessor]
+audit-as-crates-io = false
+
+[policy.v2-babbleon-python-shim]
+audit-as-crates-io = false
