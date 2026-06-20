@@ -5,7 +5,7 @@
 //!
 //! The launcher must NOT hold the per-host secret.  The daemon
 //! (which does) builds the per-epoch
-//! [`babbleon_core_v2::ActivatedTable`] and ships only the
+//! [`babbleon_launch_artefacts_v2::ActivatedTable`] and ships only the
 //! scrambled→wrapper-path mapping plus the honey list.  This
 //! module is the launcher's intake point for that artefact.
 //!
@@ -35,7 +35,7 @@
 //!
 //! # Compartmentalization
 //!
-//! Parsing and validation live in [`babbleon_core_v2::activated_table`].
+//! Parsing and validation live in [`babbleon_launch_artefacts_v2::activated_table`].
 //! This module's only job is **source selection** + **FD ownership
 //! transfer** — keeping those two concerns out of the parser
 //! preserves the parser's testability and keeps the FD-handling
@@ -47,7 +47,7 @@
 //!   it — the parser refuses every malformed shape.
 //! - Defeats: launcher consuming a table larger than memory — the
 //!   parser caps total bytes at
-//!   [`babbleon_core_v2::MAX_TABLE_BYTES`].
+//!   [`babbleon_launch_artefacts_v2::MAX_TABLE_BYTES`].
 //! - Does NOT defeat: a daemon that ships a *valid* but malicious
 //!   table (e.g. honey-list lying about which names are honey).
 //!   Compensating control: daemon-side audit logging; out of scope
@@ -59,7 +59,7 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
 
-use babbleon_core_v2::ActivatedTable;
+use babbleon_launch_artefacts_v2::ActivatedTable;
 
 use crate::errors::{Error, Result};
 
@@ -208,7 +208,7 @@ fn read_from_path(path: &Path) -> Result<ActivatedTable> {
 #[cfg(test)]
 mod tests {
     use super::{read_from_path, read_if_present};
-    use babbleon_core_v2::ActivatedTableBuilder;
+    use babbleon_launch_artefacts_v2::ActivatedTableBuilder;
     use std::io::Write;
 
     fn write_sample_table(path: &std::path::Path) {

@@ -25,12 +25,12 @@ libc = { workspace = true }
 nix = { workspace = true }
 # seccomp-bpf filter for the post-step-10 syscall lockdown.
 seccompiler = { workspace = true }
-# Shared types: the per-epoch ActivatedTable (no secret material).
-# We import the activated_table module only; the rest of core is
-# unused from the launcher and the linker drops it.  A future
-# refactor may extract activated_table into its own crate to
-# tighten the audit surface; tracked in HANDOFF.md.
-v2-babbleon-core = { path = "../v2-babbleon-core" }
+# Secret-free per-host artefacts: ActivatedTable + credential
+# discovery / env-var policy.  This crate carries NO crypto
+# dependencies — HKDF / Ed25519 / Argon2 / SHA-2 do NOT appear
+# in the launcher's `cargo tree --edges normal`.  Companion
+# carve-out to v2-babbleon-daemon-protocol below.
+v2-babbleon-launch-artefacts = { path = "../v2-babbleon-launch-artefacts" }
 # Daemon-socket protocol + client (Request, Response, round_trip).
 # We link only the carve-out leaf crate so the launcher's audit
 # surface excludes the daemon's state, materialisation pipeline,
@@ -49,3 +49,7 @@ tempfile = { workspace = true }
 # `v2-babbleon-daemon-protocol`, keeping the launcher binary's audit
 # surface tight.
 v2-babbleon-daemon = { path = "../v2-babbleon-daemon" }
+# Core is dev-dep only: integration tests use MappingBuilder,
+# PerHostSecret, Wordlist, and wrapper::write_all_wrappers to
+# exercise the full daemon pipeline at the library level.
+v2-babbleon-core = { path = "../v2-babbleon-core" }

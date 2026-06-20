@@ -1,0 +1,26 @@
+[package]
+name = "v2-babbleon-launch-artefacts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Babbleon v2: the secret-free per-host artefacts the daemon hands the launcher.  Carries no crypto deps so the launcher's audit surface stays minimal.  Companion to v2-babbleon-daemon-protocol (wire schema)."
+publish = false
+
+[lib]
+name = "babbleon_launch_artefacts_v2"
+path = "src/lib.rs"
+
+[dependencies]
+# Errors + logging.  Deliberately NO HKDF / Ed25519 / Argon2 /
+# sha2 / rand — every type here is secret-free by construction.
+thiserror = { workspace = true }
+tracing = { workspace = true }
+# JSON parsing for the activated-table wire format.  Used in a
+# constrained way: parse to serde_json::Value, then validate
+# explicitly.  No serde::Deserialize derive on operator-
+# influenceable input (security-baseline rule 11).
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

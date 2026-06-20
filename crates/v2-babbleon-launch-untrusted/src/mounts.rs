@@ -13,7 +13,7 @@
 //! # Status (phase 2, in flight)
 //!
 //! The bind-mount loop lives in [`bind_mount_entries`].  It takes a
-//! pre-validated [`babbleon_core_v2::ActivatedTable`] (see
+//! pre-validated [`babbleon_launch_artefacts_v2::ActivatedTable`] (see
 //! [`crate::activated_table_input`] for the input path) and binds
 //! each `(scrambled, wrapper_path)` entry into the scrambled-view
 //! tmpfs.  When no table is supplied the orchestrator skips this
@@ -56,7 +56,7 @@
 
 use std::path::{Path, PathBuf};
 
-use babbleon_core_v2::ActivatedTable;
+use babbleon_launch_artefacts_v2::ActivatedTable;
 use nix::mount::{mount, MsFlags};
 
 use crate::errors::{Error, Result};

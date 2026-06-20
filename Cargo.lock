@@ -1997,6 +1997,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tracing",
+ "v2-babbleon-launch-artefacts",
  "zeroize",
 ]
 
@@ -2030,6 +2031,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "v2-babbleon-launch-artefacts"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
 name = "v2-babbleon-launch-untrusted"
 version = "0.1.0"
 dependencies = [
@@ -2044,6 +2055,7 @@ dependencies = [
  "v2-babbleon-core",
  "v2-babbleon-daemon",
  "v2-babbleon-daemon-protocol",
+ "v2-babbleon-launch-artefacts",
 ]
 
 [[package]]

@@ -91,13 +91,13 @@ impl ActivatedTable {
     ///
     /// Reads up to [`MAX_TABLE_BYTES`] from `reader`; any further
     /// bytes (or a stream that lies about its length) yield
-    /// [`Error::Internal`].  Every field is validated; the first
+    /// [`Error::ActivatedTable`].  Every field is validated; the first
     /// rejection short-circuits and the partially-constructed
     /// table is dropped.
     ///
     /// # Errors
     ///
-    /// - [`Error::Internal`] for I/O, oversize input, JSON parse
+    /// - [`Error::ActivatedTable`] for I/O, oversize input, JSON parse
     ///   errors, schema mismatches, and validation failures.
     pub fn read_jsonl<R: BufRead>(reader: R) -> Result<Self> {
         let mut bytes_read: usize = 0;
@@ -106,14 +106,14 @@ impl ActivatedTable {
 
         for (line_no, line) in reader.lines().enumerate() {
             let line = line.map_err(|e| {
-                Error::Internal(format!(
+                Error::ActivatedTable(format!(
                     "activated-table read at line {}: {e}",
                     line_no + 1
                 ))
             })?;
             bytes_read = bytes_read.saturating_add(line.len()).saturating_add(1);
             if bytes_read > MAX_TABLE_BYTES {
-                return Err(Error::Internal(format!(
+                return Err(Error::ActivatedTable(format!(
                     "activated-table exceeds {MAX_TABLE_BYTES}-byte cap"
                 )));
             }
@@ -131,7 +131,7 @@ impl ActivatedTable {
         }
 
         let header = header.ok_or_else(|| {
-            Error::Internal("activated-table missing header line".into())
+            Error::ActivatedTable("activated-table missing header line".into())
         })?;
 
         for h in &header.honey_names {
@@ -144,7 +144,7 @@ impl ActivatedTable {
         let mut seen = std::collections::HashSet::new();
         for e in &entries {
             if !seen.insert(e.scrambled.as_str()) {
-                return Err(Error::Internal(format!(
+                return Err(Error::ActivatedTable(format!(
                     "activated-table contains duplicate scrambled name {:?}",
                     e.scrambled
                 )));
@@ -204,7 +204,7 @@ impl ActivatedTableBuilder {
     ///
     /// # Errors
     ///
-    /// - [`Error::Internal`] if `scrambled` or `wrapper_path`
+    /// - [`Error::ActivatedTable`] if `scrambled` or `wrapper_path`
     ///   fails validation.
     pub fn push_entry(
         mut self,
@@ -227,7 +227,7 @@ impl ActivatedTableBuilder {
     ///
     /// # Errors
     ///
-    /// - [`Error::Internal`] if the name fails validation.
+    /// - [`Error::ActivatedTable`] if the name fails validation.
     pub fn push_honey(mut self, name: impl Into<String>) -> Result<Self> {
         let name = name.into();
         validate_scrambled(&name, "honey-name")?;
@@ -239,12 +239,12 @@ impl ActivatedTableBuilder {
     ///
     /// # Errors
     ///
-    /// - [`Error::Internal`] on duplicate scrambled names.
+    /// - [`Error::ActivatedTable`] on duplicate scrambled names.
     pub fn finish(self) -> Result<ActivatedTable> {
         let mut seen = std::collections::HashSet::new();
         for e in &self.entries {
             if !seen.insert(e.scrambled.as_str()) {
-                return Err(Error::Internal(format!(
+                return Err(Error::ActivatedTable(format!(
                     "activated-table builder: duplicate scrambled name {:?}",
                     e.scrambled
                 )));
@@ -258,48 +258,6 @@ impl ActivatedTableBuilder {
     }
 }
 
-/// Build an [`ActivatedTable`] from a per-epoch
-/// [`crate::EpochMapping`] and a wrapper directory.
-///
-/// For each `(real, scrambled)` entry in the mapping, the wrapper
-/// path is `wrapper_dir/<scrambled>` — the daemon's wrapper
-/// generator (see [`crate::wrapper::write_all_wrappers`]) writes
-/// the per-name binaries under exactly that layout, so this
-/// function is the inverse-direction read.
-///
-/// `wrapper_dir` MUST be absolute; relative wrapper directories
-/// are rejected at validation time inside
-/// [`ActivatedTableBuilder::push_entry`].
-///
-/// The honey names from the mapping are forwarded verbatim.  The
-/// builder re-validates them so a future mapping-side bug cannot
-/// ship an invalid name through this path.
-///
-/// # Errors
-///
-/// - [`Error::Internal`] if `wrapper_dir` is relative, contains
-///   path-traversal components, or any scrambled/honey name fails
-///   the lowercase-ASCII check.
-pub fn build_activated_table_from_mapping(
-    mapping: &crate::EpochMapping,
-    wrapper_dir: &std::path::Path,
-) -> Result<ActivatedTable> {
-    let mut builder = ActivatedTableBuilder::new(mapping.epoch);
-    // Deterministic order: sort by real name so the JSONL output is
-    // reproducible across builds.  Bind-mount order is not
-    // security-relevant, but reproducibility helps audit.
-    let mut entries: Vec<(&String, &String)> =
-        mapping.real_to_scrambled.iter().collect();
-    entries.sort_by(|a, b| a.0.cmp(b.0));
-    for (_real, scrambled) in entries {
-        let wrapper_path = wrapper_dir.join(scrambled);
-        builder = builder.push_entry(scrambled.clone(), wrapper_path)?;
-    }
-    for honey in &mapping.honey_names {
-        builder = builder.push_honey(honey.clone())?;
-    }
-    builder.finish()
-}
 
 /// Validate a scrambled or honey name.
 ///
@@ -310,12 +268,12 @@ pub fn build_activated_table_from_mapping(
 /// either a daemon bug or an injection attempt.
 fn validate_scrambled(s: &str, kind: &str) -> Result<()> {
     if s.is_empty() {
-        return Err(Error::Internal(format!(
+        return Err(Error::ActivatedTable(format!(
             "activated-table: empty {kind}"
         )));
     }
     if !s.bytes().all(|b| b.is_ascii_lowercase()) {
-        return Err(Error::Internal(format!(
+        return Err(Error::ActivatedTable(format!(
             "activated-table: {kind} {s:?} contains non-[a-z] bytes"
         )));
     }
@@ -329,26 +287,26 @@ fn validate_scrambled(s: &str, kind: &str) -> Result<()> {
 /// even after JSON encoding — defense in depth).
 fn validate_wrapper_path(p: &std::path::Path) -> Result<()> {
     let s = p.to_str().ok_or_else(|| {
-        Error::Internal("activated-table: wrapper_path is not UTF-8".into())
+        Error::ActivatedTable("activated-table: wrapper_path is not UTF-8".into())
     })?;
     if !p.is_absolute() {
-        return Err(Error::Internal(format!(
+        return Err(Error::ActivatedTable(format!(
             "activated-table: wrapper_path {s:?} is not absolute"
         )));
     }
     if s.as_bytes().contains(&0) {
-        return Err(Error::Internal(
+        return Err(Error::ActivatedTable(
             "activated-table: wrapper_path contains a NUL byte".into(),
         ));
     }
     if s.contains('\n') || s.contains('\r') {
-        return Err(Error::Internal(
+        return Err(Error::ActivatedTable(
             "activated-table: wrapper_path contains a newline".into(),
         ));
     }
     for comp in p.components() {
         if let std::path::Component::ParentDir = comp {
-            return Err(Error::Internal(format!(
+            return Err(Error::ActivatedTable(format!(
                 "activated-table: wrapper_path {s:?} contains '..' \
                  component (path traversal)"
             )));
@@ -364,12 +322,12 @@ struct HeaderRaw {
 
 fn parse_header(line: &str, line_no: usize) -> Result<HeaderRaw> {
     let v: serde_json::Value = serde_json::from_str(line).map_err(|e| {
-        Error::Internal(format!(
+        Error::ActivatedTable(format!(
             "activated-table header at line {line_no}: parse: {e}"
         ))
     })?;
     let obj = v.as_object().ok_or_else(|| {
-        Error::Internal(format!(
+        Error::ActivatedTable(format!(
             "activated-table header at line {line_no}: not a JSON object"
         ))
     })?;
@@ -378,7 +336,7 @@ fn parse_header(line: &str, line_no: usize) -> Result<HeaderRaw> {
         .get("epoch")
         .and_then(serde_json::Value::as_u64)
         .ok_or_else(|| {
-            Error::Internal(format!(
+            Error::ActivatedTable(format!(
                 "activated-table header at line {line_no}: missing or non-u64 epoch"
             ))
         })?;
@@ -387,7 +345,7 @@ fn parse_header(line: &str, line_no: usize) -> Result<HeaderRaw> {
         .get("honey")
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| {
-            Error::Internal(format!(
+            Error::ActivatedTable(format!(
                 "activated-table header at line {line_no}: missing or non-array honey"
             ))
         })?;
@@ -395,7 +353,7 @@ fn parse_header(line: &str, line_no: usize) -> Result<HeaderRaw> {
     let mut honey_names = Vec::with_capacity(honey_array.len());
     for h in honey_array {
         let s = h.as_str().ok_or_else(|| {
-            Error::Internal(format!(
+            Error::ActivatedTable(format!(
                 "activated-table header at line {line_no}: honey entry is not a string"
             ))
         })?;
@@ -407,12 +365,12 @@ fn parse_header(line: &str, line_no: usize) -> Result<HeaderRaw> {
 
 fn parse_entry(line: &str, line_no: usize) -> Result<ActivatedEntry> {
     let v: serde_json::Value = serde_json::from_str(line).map_err(|e| {
-        Error::Internal(format!(
+        Error::ActivatedTable(format!(
             "activated-table entry at line {line_no}: parse: {e}"
         ))
     })?;
     let obj = v.as_object().ok_or_else(|| {
-        Error::Internal(format!(
+        Error::ActivatedTable(format!(
             "activated-table entry at line {line_no}: not a JSON object"
         ))
     })?;
@@ -420,7 +378,7 @@ fn parse_entry(line: &str, line_no: usize) -> Result<ActivatedEntry> {
         .get("scrambled")
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| {
-            Error::Internal(format!(
+            Error::ActivatedTable(format!(
                 "activated-table entry at line {line_no}: missing scrambled"
             ))
         })?
@@ -430,7 +388,7 @@ fn parse_entry(line: &str, line_no: usize) -> Result<ActivatedEntry> {
         .get("wrapper_path")
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| {
-            Error::Internal(format!(
+            Error::ActivatedTable(format!(
                 "activated-table entry at line {line_no}: missing wrapper_path"
             ))
         })?;
@@ -645,77 +603,6 @@ not-json-at-all
         assert_eq!(t.epoch, 99);
         assert!(t.entries.is_empty());
         assert!(t.honey_names.is_empty());
-    }
-
-    #[test]
-    fn build_from_mapping_produces_table_for_every_tracked_tool() {
-        use crate::{MappingBuilder, PerHostSecret, Wordlist};
-        let secret = PerHostSecret::from_bytes(&[7u8; 32]).unwrap();
-        let wl = Wordlist::english_baseline();
-        let tracked = vec!["curl".to_string(), "git".to_string()];
-        let m = MappingBuilder::new(&secret, wl).build(&tracked, 5).unwrap();
-        let table = super::build_activated_table_from_mapping(
-            &m,
-            std::path::Path::new("/usr/local/libexec/babbleon/wrappers"),
-        )
-        .unwrap();
-        assert_eq!(table.epoch, 5);
-        assert_eq!(table.entries.len(), tracked.len());
-        for tool in &tracked {
-            let scrambled = m.scramble(tool).unwrap();
-            let expected_path = std::path::PathBuf::from(
-                "/usr/local/libexec/babbleon/wrappers",
-            )
-            .join(scrambled);
-            let entry = table
-                .entries
-                .iter()
-                .find(|e| e.scrambled == scrambled)
-                .unwrap();
-            assert_eq!(entry.wrapper_path, expected_path);
-        }
-        // Honey names round-trip.
-        assert_eq!(table.honey_names.len(), m.honey_names.len());
-    }
-
-    #[test]
-    fn build_from_mapping_rejects_relative_wrapper_dir() {
-        use crate::{MappingBuilder, PerHostSecret, Wordlist};
-        let secret = PerHostSecret::from_bytes(&[7u8; 32]).unwrap();
-        let wl = Wordlist::english_baseline();
-        let m = MappingBuilder::new(&secret, wl)
-            .build(&["curl".to_string()], 0)
-            .unwrap();
-        let err = super::build_activated_table_from_mapping(
-            &m,
-            std::path::Path::new("relative/wrappers"),
-        )
-        .unwrap_err();
-        assert!(format!("{err}").contains("not absolute"));
-    }
-
-    #[test]
-    fn build_from_mapping_is_deterministic_per_input() {
-        use crate::{MappingBuilder, PerHostSecret, Wordlist};
-        let secret = PerHostSecret::from_bytes(&[7u8; 32]).unwrap();
-        let wl = Wordlist::english_baseline();
-        let m = MappingBuilder::new(&secret, wl)
-            .build(
-                &["curl".to_string(), "git".to_string(), "ssh".to_string()],
-                0,
-            )
-            .unwrap();
-        let a = super::build_activated_table_from_mapping(
-            &m,
-            std::path::Path::new("/wrappers"),
-        )
-        .unwrap();
-        let b = super::build_activated_table_from_mapping(
-            &m,
-            std::path::Path::new("/wrappers"),
-        )
-        .unwrap();
-        assert_eq!(a, b);
     }
 
     #[test]

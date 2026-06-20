@@ -205,7 +205,7 @@ fn run_credential_gate(real_uid: u32) -> v2_babbleon_launch_untrusted::Result<()
             return Ok(());
         }
     };
-    let cred_dirs = babbleon_core_v2::discover_credential_dirs(&user.dir);
+    let cred_dirs = babbleon_launch_artefacts_v2::discover_credential_dirs(&user.dir);
     if cred_dirs.is_empty() {
         tracing::info!(
             home = %user.dir.display(),
@@ -232,7 +232,7 @@ fn exec_child(cmd: &[String]) -> i32 {
     // `env_clear` + `envs(scrubbed)` is the only safe shape:
     // Command::env_remove would leak any name we forgot to list,
     // whereas env_clear forces a positive whitelist by construction.
-    let scrubbed_env = babbleon_core_v2::scrub_credential_env_vars(std::env::vars());
+    let scrubbed_env = babbleon_launch_artefacts_v2::scrub_credential_env_vars(std::env::vars());
     let scrubbed_count = std::env::vars().count() - scrubbed_env.len();
     command.env_clear().envs(scrubbed_env);
     if scrubbed_count > 0 {

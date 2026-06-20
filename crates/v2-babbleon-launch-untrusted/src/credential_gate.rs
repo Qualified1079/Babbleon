@@ -17,13 +17,13 @@
 //! Live trust handles that leak via *environment* variables
 //! (`SSH_AUTH_SOCK`, `KUBECONFIG`, `ANTHROPIC_API_KEY`) are
 //! handled by env scrubbing in the launcher's exec path; see
-//! `babbleon_core_v2::credentials::scrub_credential_env_vars`.
+//! `babbleon_launch_artefacts_v2::credentials::scrub_credential_env_vars`.
 //!
 //! # Mechanism
 //!
 //! [`hide_credential_dirs_with_tmpfs`] takes a list of absolute
 //! paths produced by
-//! `babbleon_core_v2::discover_credential_dirs`, and for each:
+//! `babbleon_launch_artefacts_v2::discover_credential_dirs`, and for each:
 //!
 //! 1. Mounts an empty tmpfs over the path with `mode=0700,size=64k`.
 //! 2. On `EPERM` / `EACCES` returns a hard error (we are
@@ -41,7 +41,7 @@
 //! # Compartmentalization
 //!
 //! Discovery (which paths) lives in
-//! `babbleon_core_v2::credentials` (no syscalls).  This module
+//! `babbleon_launch_artefacts_v2::credentials` (no syscalls).  This module
 //! handles only the privileged mount step.  Tests for the path
 //! list run in core; tests for the mount semantics need root and
 //! belong in the rooted-test harness filed in HANDOFF.md.

@@ -12,6 +12,9 @@ name = "babbleon_core_v2"
 path = "src/lib.rs"
 
 [dependencies]
+# Secret-free launch artefacts (re-exported for back-compat with
+# existing `babbleon_core_v2::ActivatedTable` etc. consumers).
+v2-babbleon-launch-artefacts = { path = "../v2-babbleon-launch-artefacts" }
 # Crypto stack (all RustCrypto, audit-friendly).
 hkdf = { workspace = true }
 hmac = { workspace = true }

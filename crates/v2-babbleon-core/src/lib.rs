@@ -56,8 +56,7 @@
 // Pedantic lints we explicitly relax — none yet; reconsider per file
 // as the crate grows.
 
-pub mod activated_table;
-pub mod credentials;
+pub mod activated_table_bridge;
 pub mod crypto_compare;
 pub mod errors;
 pub mod events;
@@ -69,14 +68,19 @@ pub mod tripwire;
 pub mod wordlist;
 pub mod wrapper;
 
-pub use activated_table::{
-    build_activated_table_from_mapping, ActivatedEntry, ActivatedTable,
-    ActivatedTableBuilder, MAX_TABLE_BYTES,
-};
-pub use credentials::{
+// The `activated_table` and `credentials` modules were extracted
+// to `v2-babbleon-launch-artefacts` so the launcher and PAM can
+// consume them without pulling in the crypto stack.  Core
+// re-exports the same public surface so existing
+// `babbleon_core_v2::ActivatedTable` / `babbleon_core_v2::discover_credential_dirs`
+// call sites keep working.  New code should prefer the artefacts
+// crate directly when it does not need core's primitives.
+pub use activated_table_bridge::build_activated_table_from_mapping;
+pub use babbleon_launch_artefacts_v2::{
     discover_credential_dirs, is_credential_env_var,
-    scrub_credential_env_vars, CREDENTIAL_DIRS_RELATIVE_TO_HOME,
-    SCRUB_ENV_SUFFIXES, SCRUB_ENV_VAR_NAMES,
+    scrub_credential_env_vars, ActivatedEntry, ActivatedTable,
+    ActivatedTableBuilder, CREDENTIAL_DIRS_RELATIVE_TO_HOME,
+    MAX_TABLE_BYTES, SCRUB_ENV_SUFFIXES, SCRUB_ENV_VAR_NAMES,
 };
 pub use errors::{Error, Result};
 pub use events::{
