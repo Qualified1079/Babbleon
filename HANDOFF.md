@@ -122,10 +122,10 @@ modules are loaded by `dlopen`, not linked).
 
 ### Updated open / next-session items (priority order — refreshed 2026-06-20)
 
-Item 2 (PAM skeleton) closed this session — see "What landed
-THIS session" above.  Item 3 (daemon seccomp envelope) **drafted
-this session** — see "Daemon seccomp envelope drafted" below.
-Remaining work:
+Item 2 (PAM skeleton) closed this session.  Item 3 (daemon
+seccomp envelope) drafted, strace-confirmed, AND implemented
+behind `--enable-seccomp` opt-in — see "Daemon seccomp envelope"
+sections below.  Remaining work:
 
 1. **Pick the PAM architecture** (operator decision).  Three
    candidates filed in `docs/v2/pam-architecture.md`.  Default
@@ -136,22 +136,15 @@ Remaining work:
    full prescription (port v1's `vault.rs`,
    `Request::Unlock { vault_payload }` on the protocol crate,
    wire `babbleon init` and `babbleon unlock`).
-3. **Pin daemon seccomp profile** (operator confirmation gating
-   landing-in-code).  Envelope drafted in
-   `docs/v2/daemon-seccomp-envelope.md` — 32 allowed syscalls,
-   explicit deny rationale for ~15 commonly-allowed ones.  Five
-   open questions filed at the bottom of the doc with default
-   recommendations.  Once operator signs off:
-   - Add `seccomp_profile.rs` in `crates/v2-babbleon-daemon/src/`
-     using `seccompiler` (same crate the launcher already uses).
-   - Install the filter in `main::run_daemon` between socket bind
-     and the first `accept`.
-   - Also add `PR_SET_NO_NEW_PRIVS=1` before the seccomp install
-     (filter applies even to unprivileged peer connects).
-   - Two integration tests: `seccomp_envelope.rs` (daemon serves
-     the full operator sequence under the filter) and
-     `seccomp_denies_forbidden.rs` (forbidden syscalls die with
-     SIGSYS).
+3. **Flip daemon seccomp default to ON** (operator decision).
+   The filter, the `--enable-seccomp` opt-in flag, the
+   `PR_SET_NO_NEW_PRIVS=1` install, and the end-to-end
+   integration test all landed THIS session.  The default is OFF
+   pending operator confirmation of the 36-syscall envelope.
+   The flip is a one-line clap-default change plus a HANDOFF
+   note; the only operational risk is if a phase-3 change adds a
+   syscall the daemon needs that isn't yet on the list (which
+   the seccomp_envelope.rs test would catch immediately).
 4. **Atomic wrapper-dir swap.**  Unchanged — defer until the
    PAM architecture pick lands (item 1 above) so we understand
    the full session lifecycle.
@@ -159,25 +152,42 @@ Remaining work:
 Items 1, 2 are roughly independent.  Items 3 and 4 should land
 before any production deployment but don't block phase-3 progress.
 
-### Daemon seccomp envelope drafted (2026-06-20)
+### Daemon seccomp envelope — drafted, strace-confirmed, implemented (2026-06-20)
 
-`docs/v2/daemon-seccomp-envelope.md` enumerates every syscall
-the daemon makes today, broken down by lifecycle stage (startup
-/ steady state / rotation / shutdown).  The list was derived by
-reading every module under `crates/v2-babbleon-daemon/src/` and
-the transitive `babbleon-core-v2` paths; the recommended next
-step is a `strace -f` confirmation pass against a real workload
-diff'd against the doc.
+Three commits:
 
-Proposed allowlist: 32 syscalls in four groups (I/O, FS, memory,
-signals+sync, time, exit).  Notable exclusions: `execve`,
-`fork`/`clone*`, `prctl` (in steady state), `setuid`/`setgid`,
-`mount`/`unshare`/`setns`, `ptrace`, `bpf`, `keyctl`,
-`io_uring_*`.  The `least-privilege.md` seccomp table grew one
-row (the daemon row).
+1. `docs/v2/daemon-seccomp-envelope.md` — initial 32-syscall
+   draft derived from reading every daemon module.
+2. Strace confirmation pass against a live daemon running the
+   full operator sequence (status × N → rotate × N → emit-table
+   × N).  Surfaced **four additional syscalls** the draft
+   missed: `chmod`, `fstat`, `mkdir`, `fcntl`.  Doc updated.
+3. `crates/v2-babbleon-daemon/src/seccomp_profile.rs` —
+   implementation.  36-syscall allowlist, `PR_SET_NO_NEW_PRIVS=1`
+   first, `seccompiler::apply_filter` second.  Eight unit tests
+   on the allowlist's structure (each category + key exclusions).
 
-Five open questions filed for operator review.  All have default
-recommendations.  None block other items.
+**Behind `--enable-seccomp` opt-in** for phase 2.  Default OFF
+until operator confirms the 36-syscall envelope; HANDOFF item 3
+above tracks the flip.
+
+`tests/seccomp_envelope.rs` — integration test that spawns the
+real daemon binary with `--enable-seccomp` and runs the full
+operator sequence (status → rotate → emit → status).  Catches
+syscall drift on every CI run.  If a phase-3 change adds a call
+the filter doesn't allow, this test fails with `Connection reset
+by peer` (= daemon SIGSYS'd) and the failure message points the
+reader at the envelope doc.
+
+Test deltas:
+
+| Crate | Before | After |
+|---|---|---|
+| `v2-babbleon-daemon` | 63 unit + 3 client + 5 e2e + 0 seccomp | 71 unit + 3 client + 5 e2e + 1 seccomp |
+| **Total v2 (excl ignored)** | **266** | **275** (+9) |
+
+`least-privilege.md` daemon-row updated to reflect the
+post-strace 36-syscall list.
 
 ## What landed PREVIOUS session (2026-06-19 late, user asleep — protocol carve-out)
 

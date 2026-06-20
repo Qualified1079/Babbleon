@@ -69,6 +69,8 @@ pub mod errors;
 pub mod handlers;
 pub mod hardening;
 pub mod materialization;
+#[cfg(target_os = "linux")]
+pub mod seccomp_profile;
 pub mod socket;
 pub mod state;
 

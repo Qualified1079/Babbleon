@@ -117,10 +117,16 @@ Same filter; just notes which entries are exercised on a rotation.
 | `rseq` (older kernels — Rust runtime cleanup) | TLS teardown | std |
 | `prctl(PR_SET_NAME, ...)` (NOT today, but Rust runtime may emit on thread spawn) | thread naming | std::thread |
 
-## Proposed allowlist (DRAFT)
+## Proposed allowlist (CONFIRMED via strace, 2026-06-20)
 
 Implemented in `seccompiler` as `SeccompAction::Allow` for the
 listed syscalls; `SeccompAction::KillProcess` for everything else.
+
+The initial 32-syscall draft was confirmed via `strace -f` against
+a live daemon serving the operator sequence (status × N → rotate
+× N → emit-table × N).  **Four additional syscalls** surfaced
+that the draft missed; they are folded in below and marked with
+`# strace`.
 
 ```
 // I/O
@@ -136,9 +142,12 @@ sendto          // some glibc versions translate write on socket
 openat
 unlinkat
 fchmod
+chmod           # strace — std::fs::set_permissions on wrapper files emits chmod(2)
 newfstatat
 statx
+fstat           # strace — std::fs::metadata on opened FDs emits fstat(2)
 getdents64
+mkdir           # strace — std::fs::create_dir_all on /run/babbleon/ parents
 
 // Memory
 brk
@@ -155,6 +164,7 @@ rt_sigreturn
 restart_syscall
 sigaltstack
 futex
+fcntl           # strace — std uses F_DUPFD_CLOEXEC on accept4'd sockets
 
 // Time + identity (read-only)
 clock_gettime
@@ -169,6 +179,35 @@ exit
 exit_group
 rseq
 ```
+
+Final count: **36 syscalls**.
+
+### Strace confirmation
+
+To re-run the confirmation pass after any change to the daemon's
+materialise / handlers / state code:
+
+```sh
+DAEMON=./target/debug/babbleon-daemon
+SOCK=/tmp/probe.sock
+WRAP=/tmp/probe-wrappers
+rm -f "$SOCK"; rm -rf "$WRAP"; mkdir -p "$WRAP"
+$DAEMON --socket "$SOCK" run --wrapper-dir "$WRAP" \
+        --tracked-tool curl=/usr/bin/curl --insecure-stub-secret &
+DAEMON_PID=$!; sleep 1
+strace -f -p $DAEMON_PID -o /tmp/probe.strace &
+STRACE_PID=$!; sleep 0.2
+$DAEMON --socket "$SOCK" status
+$DAEMON --socket "$SOCK" rotate-mapping
+$DAEMON --socket "$SOCK" emit-activated-table > /dev/null
+sleep 0.5
+kill -KILL $STRACE_PID $DAEMON_PID
+grep -oE '^[0-9]+ +[a-z_]+\(' /tmp/probe.strace | awk '{print $2}' | sort -u
+```
+
+Diff the resulting unique-syscall list against the allowlist in
+`crates/v2-babbleon-daemon/src/seccomp_profile.rs`.  Any new entry
+means the doc + the code list both need updating.
 
 ### What is NOT on the allowlist (explicit deny by absence)
 

@@ -2003,6 +2003,7 @@ dependencies = [
  "clap",
  "libc",
  "nix",
+ "seccompiler",
  "serde_json",
  "tempfile",
  "thiserror",

@@ -97,6 +97,25 @@ fn run_daemon(
     let listener = bind_socket(socket_path)
         .map_err(|e| format!("bind {}: {e}", socket_path.display()))?;
 
+    // Install seccomp BEFORE the serve loop — the filter excludes
+    // socket/bind/listen (already done above) and prctl (already
+    // done above), so the install order is mandatory.  See
+    // docs/v2/daemon-seccomp-envelope.md.
+    if args.enable_seccomp {
+        #[cfg(target_os = "linux")]
+        babbleon_daemon_v2::seccomp_profile::apply().map_err(|e| {
+            format!("seccomp profile install: {e}")
+        })?;
+        tracing::info!(
+            "babbleon-daemon: seccomp allowlist installed (32 syscalls)",
+        );
+    } else {
+        tracing::info!(
+            "babbleon-daemon: seccomp NOT installed (pass --enable-seccomp \
+             to enable; envelope draft in docs/v2/daemon-seccomp-envelope.md)",
+        );
+    }
+
     tracing::info!(
         socket = %socket_path.display(),
         "babbleon-daemon serving (phase 2 stub)",

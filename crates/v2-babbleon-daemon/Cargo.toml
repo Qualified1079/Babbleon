@@ -38,6 +38,10 @@ libc = { workspace = true }
 # (no `#[derive(Deserialize)]` on operator-influenceable surfaces; see
 # security-baseline rule 11).
 serde_json = { workspace = true }
+# Seccomp filter — same crate the launcher uses for its step-8 profile.
+# Used by `seccomp_profile.rs` to install the daemon's allowlist;
+# documented envelope lives at `docs/v2/daemon-seccomp-envelope.md`.
+seccompiler = { workspace = true }
 # Async runtime — to be decided.  Phase 2 ships a single-threaded
 # blocking loop; phase 4+ may move to tokio if the wrapper-build
 # pipeline benefits from parallelism.  Not yet pulled in.

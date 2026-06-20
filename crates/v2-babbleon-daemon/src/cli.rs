@@ -107,6 +107,16 @@ pub struct RunArgs {
     /// is not yet wired.  Refuses to start without this flag.
     #[arg(long = "insecure-stub-secret")]
     pub insecure_stub_secret: bool,
+
+    /// Install the daemon's seccomp allowlist before entering the
+    /// serve loop.  Allowlist is documented in
+    /// `docs/v2/daemon-seccomp-envelope.md` (32 syscalls).  Opt-in
+    /// in phase 2 while the operator confirms the envelope; the
+    /// default flips to "on" in a later phase.  When ON the daemon
+    /// will be killed by the kernel if any code path issues a
+    /// forbidden syscall — useful regression-detection in CI.
+    #[arg(long = "enable-seccomp")]
+    pub enable_seccomp: bool,
 }
 
 /// One parsed `--tracked-tool` value.  Real-binary path is `Some`
