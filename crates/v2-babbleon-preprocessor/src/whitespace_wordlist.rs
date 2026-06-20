@@ -123,6 +123,73 @@ impl WhitespaceWordlist {
         Ok(Self { epoch, compounds })
     }
 
+    /// Construct a `WhitespaceWordlist` from caller-supplied
+    /// compounds.
+    ///
+    /// # When to use this
+    ///
+    /// This is the **trust-tier client** entry point.  An operator
+    /// CLI receives the per-epoch compounds from the daemon over the
+    /// local Unix socket (see
+    /// `babbleon_daemon_protocol_v2::Response::WhitespaceCompounds`)
+    /// and uses this constructor to build the mapping locally
+    /// without ever holding the per-host secret in its own address
+    /// space.  Compartmentalisation: the secret remains in the
+    /// daemon; only its per-epoch derived output is on the wire.
+    ///
+    /// `compounds` MUST be in `WhitespaceKind::ALL` slot order —
+    /// `compounds[k.slot()]` is the compound for kind `k`.
+    ///
+    /// # Validation
+    ///
+    /// Compounds are validated for the same invariants the
+    /// HKDF-derived path enforces by construction:
+    ///
+    /// - Each compound non-empty.
+    /// - Each byte ASCII-lowercase (matches the v2 baseline
+    ///   wordlist's vocabulary; defeats homoglyph injection on the
+    ///   wire).
+    /// - All five compounds pairwise distinct (`match_prefix`
+    ///   correctness depends on this).
+    ///
+    /// # Errors
+    ///
+    /// - `Error::InvalidSuppliedCompounds` on any validation
+    ///   failure.  The variant carries the slot index and a
+    ///   structural reason; it does NOT carry the compound bytes
+    ///   (rule 13).
+    pub fn from_compounds(
+        epoch: u64,
+        compounds: [String; WHITESPACE_COMPOUND_COUNT],
+    ) -> Result<Self> {
+        for (slot, compound) in compounds.iter().enumerate() {
+            if compound.is_empty() {
+                return Err(Error::InvalidSuppliedCompounds {
+                    slot,
+                    reason: "empty",
+                });
+            }
+            if !compound.bytes().all(|b| b.is_ascii_lowercase()) {
+                return Err(Error::InvalidSuppliedCompounds {
+                    slot,
+                    reason: "non-ascii-lowercase",
+                });
+            }
+        }
+        // Pairwise distinct: O(n^2) over 5 items is trivial.
+        for i in 0..compounds.len() {
+            for j in (i + 1)..compounds.len() {
+                if compounds[i] == compounds[j] {
+                    return Err(Error::InvalidSuppliedCompounds {
+                        slot: j,
+                        reason: "duplicate",
+                    });
+                }
+            }
+        }
+        Ok(Self { epoch, compounds })
+    }
+
     /// Epoch this mapping was derived for.
     #[must_use]
     pub fn epoch(&self) -> u64 {
@@ -324,6 +391,127 @@ mod tests {
                 assert_eq!(have, 3);
             }
             other => panic!("expected WordlistTooSmall, got {other:?}"),
+        }
+    }
+
+    // ----- from_compounds (operator-CLI-side constructor) -----
+
+    fn synth_distinct_compounds() -> [String; super::WHITESPACE_COMPOUND_COUNT] {
+        [
+            "alpharedwoodemberglacier".to_string(),
+            "bravooceanfernhalibut".to_string(),
+            "charliebellpinepenguin".to_string(),
+            "deltahillcanyonwoods".to_string(),
+            "echoaridmarrowbasin".to_string(),
+        ]
+    }
+
+    #[test]
+    fn from_compounds_round_trips_through_match_prefix() {
+        let compounds = synth_distinct_compounds();
+        let w = WhitespaceWordlist::from_compounds(7, compounds.clone())
+            .unwrap();
+        assert_eq!(w.epoch(), 7);
+        for kind in WhitespaceKind::ALL {
+            assert_eq!(w.compound_for(kind), compounds[kind.slot()].as_str());
+            let with_trailer = format!("{}rest", compounds[kind.slot()]);
+            let (matched, len) = w.match_prefix(&with_trailer).unwrap();
+            assert_eq!(matched, kind);
+            assert_eq!(len, compounds[kind.slot()].len());
+        }
+    }
+
+    #[test]
+    fn from_compounds_matches_hkdf_path_for_same_compounds() {
+        // The two constructors should be observationally
+        // equivalent when given the same compounds.  Derive via
+        // HKDF, snapshot the compounds, reconstruct via
+        // from_compounds, assert match_prefix agrees on every kind.
+        let s = fixed_secret();
+        let wl = Wordlist::english_baseline();
+        let derived = WhitespaceWordlist::build(&s, wl, 13).unwrap();
+        let snapshot: [String; super::WHITESPACE_COMPOUND_COUNT] = derived
+            .all_compounds()
+            .clone();
+        let reconstructed =
+            WhitespaceWordlist::from_compounds(13, snapshot.clone()).unwrap();
+        for kind in WhitespaceKind::ALL {
+            assert_eq!(
+                derived.compound_for(kind),
+                reconstructed.compound_for(kind),
+            );
+        }
+    }
+
+    #[test]
+    fn from_compounds_rejects_empty_compound() {
+        let mut compounds = synth_distinct_compounds();
+        compounds[2].clear();
+        let err = WhitespaceWordlist::from_compounds(0, compounds).unwrap_err();
+        match err {
+            Error::InvalidSuppliedCompounds { slot, reason } => {
+                assert_eq!(slot, 2);
+                assert_eq!(reason, "empty");
+            }
+            other => panic!("expected InvalidSuppliedCompounds, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_compounds_rejects_non_ascii_lowercase() {
+        let mut compounds = synth_distinct_compounds();
+        // Inject an uppercase byte; baseline compounds are lowercase.
+        compounds[1] = "BRAVOOCEANFERNHALIBUT".to_string();
+        let err = WhitespaceWordlist::from_compounds(0, compounds).unwrap_err();
+        match err {
+            Error::InvalidSuppliedCompounds { slot, reason } => {
+                assert_eq!(slot, 1);
+                assert_eq!(reason, "non-ascii-lowercase");
+            }
+            other => panic!("expected InvalidSuppliedCompounds, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_compounds_rejects_non_ascii_byte() {
+        let mut compounds = synth_distinct_compounds();
+        compounds[3] = "deltahil\u{1F600}canyonwoods".to_string();
+        let err = WhitespaceWordlist::from_compounds(0, compounds).unwrap_err();
+        match err {
+            Error::InvalidSuppliedCompounds { slot, reason } => {
+                assert_eq!(slot, 3);
+                assert_eq!(reason, "non-ascii-lowercase");
+            }
+            other => panic!("expected InvalidSuppliedCompounds, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_compounds_rejects_duplicate_pair() {
+        let mut compounds = synth_distinct_compounds();
+        compounds[4] = compounds[0].clone();
+        let err = WhitespaceWordlist::from_compounds(0, compounds).unwrap_err();
+        match err {
+            Error::InvalidSuppliedCompounds { slot, reason } => {
+                // Higher of the colliding pair is reported.
+                assert_eq!(slot, 4);
+                assert_eq!(reason, "duplicate");
+            }
+            other => panic!("expected InvalidSuppliedCompounds, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_compounds_preserves_supplied_epoch() {
+        // Picked u64 corners; round-trip via epoch() and assert
+        // the supplied value comes back verbatim.
+        for epoch in [0, 1, 42, u64::MAX] {
+            let w = WhitespaceWordlist::from_compounds(
+                epoch,
+                synth_distinct_compounds(),
+            )
+            .unwrap();
+            assert_eq!(w.epoch(), epoch);
         }
     }
 }

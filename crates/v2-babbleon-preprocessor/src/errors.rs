@@ -76,4 +76,26 @@ pub enum Error {
         /// failed.
         at: usize,
     },
+
+    /// A `WhitespaceWordlist::from_compounds` caller supplied
+    /// compounds that violate the table's invariants — empty
+    /// compound, non-ASCII-lowercase byte, duplicate compound.
+    ///
+    /// The variant carries the offending slot index and a short
+    /// structural reason; it deliberately does NOT carry the
+    /// compound bytes themselves (rule 13 — even
+    /// daemon-derived compounds are secret-adjacent and must not
+    /// flow into operator logs through an error path).
+    #[error(
+        "supplied whitespace compounds invalid at slot {slot}: {reason}"
+    )]
+    InvalidSuppliedCompounds {
+        /// Index in `WhitespaceKind::ALL` where the violation was
+        /// detected.  For duplicate-pair violations, the higher of
+        /// the two slot indices.
+        slot: usize,
+        /// Structural reason without compound bytes.  One of:
+        /// `"empty"`, `"non-ascii-lowercase"`, `"duplicate"`.
+        reason: &'static str,
+    },
 }
