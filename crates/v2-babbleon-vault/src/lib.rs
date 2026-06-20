@@ -89,6 +89,8 @@ pub mod vault;
 pub use backend::KekBackend;
 pub use errors::{Error, Result};
 pub use file_layout::{default_vault_path, ensure_parent_dir};
-pub use payload::{VaultPayload, PAYLOAD_SCHEMA_CURRENT};
+pub use payload::{
+    VaultPayload, PAYLOAD_HOST_SECRET_LEN, PAYLOAD_SCHEMA_CURRENT,
+};
 pub use soft_backend::{SoftBackend, SoftProfile, SOFT_BACKEND_NAME};
 pub use vault::Vault;

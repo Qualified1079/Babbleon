@@ -33,3 +33,9 @@ rand = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# Property-based tests for the vault payload's JSON round-trip and
+# the seal/unseal cipher round-trip — see `tests/proptest_vault.rs`.
+# The cipher-side property test runs a small case budget (Argon2id
+# under the Headless profile is ~30 ms per derivation; 64 cases ×
+# 2 derivations ≈ 4 s wall).
+proptest = { workspace = true }
