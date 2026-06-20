@@ -1,4 +1,4 @@
-# Security-baseline self-audit — v2 crates as of 2026-06-19
+# Security-baseline self-audit — v2 crates as of 2026-06-20 (vault unlock)
 
 Cross-reference: `docs/v2/security-baseline.md` (the 15 rules).
 
@@ -8,15 +8,25 @@ entry cites the specific file / line evidence; a "DEFER" entry
 names the follow-up commit that must land before the crate is
 considered shippable.
 
-Snapshot HEAD: `75abdca` (post protocol carve-out + proptest suite,
-2026-06-19 night).  Previous snapshot `e42f81c` had v2-babbleon-daemon
-as a CLI-only skeleton with no socket loop, no state, no
-materialisation; that state changed across `b326107` (protocol),
-`ac37d0f` (state), `9dd8e86` (handlers), `60617cb` (socket),
-`1a81b77` (main wired end-to-end), `ca2268e` (hardening),
-`5b6f58e` (materialisation), and `9574c23` (protocol carve-out).
-The daemon's row below is refreshed accordingly, and a new row
-for `v2-babbleon-daemon-protocol` is added.
+Snapshot HEAD: `4d5864b` (HANDOFF item 2 closed — vault unlock
+end-to-end and daemon defaults to Locked).  Previous snapshot
+`75abdca` covered the protocol carve-out.  Since then the vault
+unlock track landed across five commits:
+
+- `83152e1` — new crate `v2-babbleon-vault` (32 tests).
+- `fbdd7f1` — `Request::Unlock` + `Response::Unlocked` in the
+  protocol crate (UnlockSecret with hex wire form,
+  zeroize-on-drop, redacted Debug).
+- `e6cc823` — DaemonState refactored to Locked / Unlocked enum
+  (epoch / mapping accessors became `Option<...>`).
+- `b8d2a7e` — user-CLI `babbleon init` and `babbleon unlock`
+  wired (passphrase via TTY or stdin, vault file at mode 0o600).
+- `4d5864b` — daemon defaults to starting Locked;
+  `--insecure-stub-secret` is now opt-in for tests / dev.
+
+Rows below: new `v2-babbleon-vault` section, refreshed
+`v2-babbleon-daemon-protocol`, `v2-babbleon-daemon`,
+`v2-babbleon` sections.
 
 ---
 
@@ -71,82 +81,137 @@ maintainer accidentally loading secret material in this crate).
 
 ---
 
-## Crate: `v2-babbleon`  (user-facing CLI)
+## Crate: `v2-babbleon`  (user-facing CLI; vault unlock wired 2026-06-20)
 
 | # | Rule | Status | Evidence |
 |---|---|---|---|
 | 1 | `forbid(unsafe_code)` | ✅ PASS | `src/main.rs:30` |
-| 2 | `deny(missing_docs)` + pedantic | ✅ PASS | `src/main.rs:31`; clippy clean |
-| 3-5, 8 | secret-related rules | N/A | this crate is a thin client; secrets live in the daemon |
-| 6 | plain-English names | ✅ PASS | subcommand names per docs/v2/naming-conventions.md |
-| 7 | module docs | ✅ PASS | `main.rs` opens with the "What this defeats" template |
-| 11 | no long-lived secrets in serde | ✅ PASS (vacuous) | no serde-deserialized types yet |
-| 13 | errors do not leak secrets | ✅ PASS | uses anyhow with non-secret strings |
-| 15 | tests | ✅ PASS | 3 CLI parse-roundtrip tests |
+| 2 | `deny(missing_docs)` + pedantic | ✅ PASS | `src/main.rs:31`; clippy clean across passphrase.rs / vault_lifecycle.rs / main.rs |
+| 3 | Secrets wear `Zeroizing`, no Clone/Copy/Debug | ✅ PASS | `passphrase::Passphrase` wraps `Zeroizing<String>`; `vault_lifecycle::generate_host_secret` returns `Zeroizing<Vec<u8>>`.  The CLI process holds the unwrapped secret for exactly one `Vault::unseal -> UnlockSecret::from_bytes -> round_trip(Request::Unlock)` stack frame, then drops |
+| 4 | Constant-time compares | N/A | no secret-to-secret compares; passphrase confirm uses plain string compare since both sides are operator-controlled |
+| 5 | HKDF for domain separation | ✅ PASS (delegated) | KDF lives in `v2-babbleon-vault::SoftBackend` (Argon2id RFC 9106); this crate just plumbs the passphrase through |
+| 6 | Plain-English names | ✅ PASS | `passphrase`, `vault_lifecycle`, `prompt_passphrase`, `run_init`, `run_unlock` — every public item describes its job |
+| 7 | "What this defeats" module docs | ✅ PASS | `main.rs`, `passphrase.rs`, `vault_lifecycle.rs` open with the template |
+| 8 | Process hardening at startup | DEFER (mlockall on the unlock path) | the CLI process holds the secret briefly during the unlock round-trip; not currently mlockall'd because the secret's window is one syscall.  Filed as future tighten |
+| 9 | `SAFETY:` comment on every `unsafe` block | ✅ PASS (vacuous) | `forbid(unsafe_code)` at crate root |
+| 10 | Capability annotation per syscall site | ✅ PASS | the only privileged-ish syscalls are `open` for vault read/write and `connect` to the daemon socket; neither requires extra caps |
+| 11 | No long-lived secrets in serde-deserialized types | ✅ PASS | no serde::Deserialize on operator-influenceable surface; the vault-payload deserializer lives in `v2-babbleon-vault::payload` and is hand-managed (rule 11 enforced there) |
+| 12 | RFC-recognisable primitives | ✅ PASS (delegated) | uses age (delegated to v2-babbleon-vault) and Argon2id; no inline crypto |
+| 13 | Errors do not leak secrets | ✅ PASS | uses anyhow with non-secret strings; the wrong-passphrase error surface is `v2-babbleon-vault::Error::WrongPassphrase` which carries no fields |
+| 14 | Secret-bearing args are `&` references | ✅ PASS | `passphrase.expose() -> &str` is the only secret accessor; `UnlockSecret::from_bytes(&[u8])` takes the secret-bearing slice by reference |
+| 15 | Tests cover unit + property invariants | ✅ PASS | 16 unit (6 passphrase + 4 vault_lifecycle + 6 main clap) + 7 integration tests against the real daemon binary |
 
-**Verdict:** passes (subset applicable).  Note: phase-2 stubs every
-subcommand; the actual implementations will need re-audit once the
-daemon socket protocol is wired up.
+**Verdict:** passes all applicable rules.  Rule 8 is DEFERed (the
+CLI does not mlockall during the brief unwrap window) — the
+secret's live window is one stack frame; an attacker who can read
+the CLI's address space during that window has already won at a
+higher layer.  Promotion to PASS would tighten this.
 
 ---
 
-## Crate: `v2-babbleon-daemon`  (shipping, phase-2 stub-secret mode)
+## Crate: `v2-babbleon-daemon`  (shipping, phase-3 vault unlock; defaults to Locked startup)
 
 | # | Rule | Status | Evidence |
 |---|---|---|---|
 | 1 | `forbid(unsafe_code)` | ✅ PASS | `src/lib.rs:63`, `src/main.rs:10` |
-| 2 | `deny(missing_docs)` + pedantic | ✅ PASS | `src/lib.rs:64-65`; `cargo clippy -p v2-babbleon-daemon --all-targets -- -D warnings` clean |
-| 3 | Secrets wear `Zeroizing`, no `Clone/Copy/Debug` | ✅ PASS | `state.rs:83` `DaemonState` holds `PerHostSecret` by move (no derives); explicit comment at `state.rs:299-300` notes Clone/Copy/Debug are deliberately not derived to preserve `PerHostSecret`'s zeroize-on-drop |
+| 2 | `deny(missing_docs)` + pedantic | ✅ PASS | `src/lib.rs:64-65`; `cargo clippy -p v2-babbleon-daemon --all-targets -- -D warnings` clean post-Locked/Unlocked refactor |
+| 3 | Secrets wear `Zeroizing`, no `Clone/Copy/Debug` | ✅ PASS | `state.rs` — `DaemonState` wraps `SecretState::Locked` or `SecretState::Unlocked { secret: PerHostSecret, ... }`.  `DaemonState` itself derives no Clone/Copy/Debug.  The Locked state holds NO secret bytes in memory at all |
 | 4 | Constant-time compares | ✅ PASS (vacuous in this crate) | no secret-to-secret compare in the daemon; the core crate's `crypto_compare` is reached transitively via `MappingBuilder::is_honey` calls |
 | 5 | HKDF for domain separation | ✅ PASS (delegated) | daemon does not derive keys directly; it calls `MappingBuilder::new(secret, wordlist).build(...)` which performs HKDF inside the core crate |
-| 6 | Plain-English names | ✅ PASS | `state`, `handlers`, `socket`, `hardening`, `materialization`, `cli` — every module is named for its job |
-| 7 | "What this defeats" module docs | ✅ PASS | `lib.rs`, `state.rs`, `socket.rs`, `hardening.rs`, `materialization.rs` open with the template; `handlers.rs`, `errors.rs`, `cli.rs` use the Infrastructure-module variant |
-| 8 | Process hardening at startup | ✅ PASS | `hardening::apply_secret_hygiene` invoked from `main.rs` before `PerHostSecret::from_bytes`: `PR_SET_DUMPABLE=0` + `RLIMIT_CORE=0` (fatal on failure) and `mlockall` (best-effort) |
+| 6 | Plain-English names | ✅ PASS | `state`, `handlers`, `socket`, `hardening`, `materialization`, `cli` — every module is named for its job.  `DaemonState::new_locked` / `new_unlocked` / `unlock` / `vault_locked` follow the plain-English convention |
+| 7 | "What this defeats" module docs | ✅ PASS | `lib.rs`, `state.rs`, `socket.rs`, `hardening.rs`, `materialization.rs` open with the template (state.rs's docstring expanded to cover the Locked/Unlocked lifecycle); `handlers.rs`, `errors.rs`, `cli.rs` use the Infrastructure-module variant |
+| 8 | Process hardening at startup | ✅ PASS | `hardening::apply_secret_hygiene` invoked from `main.rs::run_daemon` BEFORE any `PerHostSecret` construction (both startup paths, Locked and stub-Unlocked) |
 | 9 | `SAFETY:` comment on every `unsafe` block | ✅ PASS (vacuous) | `forbid(unsafe_code)` at crate root |
 | 10 | Capability annotation per syscall site | ✅ PASS | hardening + materialise sites carry capability comments; socket bind is unprivileged (`UnixListener::bind`); the daemon runs as a dedicated UID with no caps per `docs/v2/least-privilege.md` |
-| 11 | No long-lived secrets in serde-deserialized types | ✅ PASS | the daemon's only deserializer surface is the wire protocol, which lives in `v2-babbleon-daemon-protocol` and is hand-parsed via `serde_json::Value` (no `#[derive(Deserialize)]` on operator-influenceable types) |
+| 11 | No long-lived secrets in serde-deserialized types | ✅ PASS | wire protocol lives in `v2-babbleon-daemon-protocol`, hand-parsed via `serde_json::Value`.  `Request::Unlock` parses `host_secret_hex` through `UnlockSecret::from_hex_wire` which decodes straight into a `Zeroizing<[u8;32]>`; the intermediate hex `String` lives one stack frame and never becomes a daemon-side field |
 | 12 | RFC-recognisable primitives | ✅ PASS (delegated) | daemon uses core's HKDF-SHA-256 / Fisher-Yates / Ed25519 wrappers; introduces no new crypto |
-| 13 | Errors do not leak secrets | ✅ PASS | `errors.rs` variants carry strings; reviewed: no construction site passes secret bytes; `handlers::error_response` maps daemon `Error` to wire `Response::Error` with `Display` form only |
-| 14 | Secret-bearing args are `&` references | ✅ PASS | the secret enters by move via `DaemonState::new(secret: PerHostSecret, ...)` and stays in the struct for the daemon's lifetime; `MappingBuilder::new(&self.secret, ...)` accesses it by reference thereafter |
-| 15 | Tests cover unit + property invariants | ✅ PASS | 63 unit + 3 client_round_trip integration + 5 end_to_end_binary integration; `state.rs` rotation tests assert epoch advance + scrambled-name change as invariants over the secret/wordlist domain |
+| 13 | Errors do not leak secrets | ✅ PASS | `errors.rs` variants carry strings; reviewed: no construction site passes secret bytes; `handlers::error_response` maps daemon `Error` to wire `Response::Error` with `Display` form only.  `Error::Vault("vault is already unlocked ...")` from the double-unlock guard carries no secret bytes |
+| 14 | Secret-bearing args are `&` references | ✅ PASS | the secret enters by move via `DaemonState::unlock(secret: PerHostSecret)` or `new_unlocked(...)` and stays in the struct for the daemon's lifetime; `MappingBuilder::new(secret, ...)` accesses it by reference thereafter.  `handlers::unlock` takes `&UnlockSecret` |
+| 15 | Tests cover unit + property invariants | ✅ PASS | 86 unit + 3 client_round_trip integration + 5 end_to_end_binary integration + 1 seccomp envelope integration + 2 seccomp denial tests; `state.rs` rotation tests assert epoch advance + scrambled-name change; new lifecycle tests cover Locked / Unlocked transitions, double-unlock rejection, locked-mutator rejection |
 
-**Verdict:** the daemon passes every applicable rule at phase-2
-ship.  Phase 3 (real vault unlock) will introduce a new
-`Request::Unlock { vault_payload }` surface — re-audit rule 11
-once that variant lands (the variant must use the same hand-parsed
-discipline already established for the other request kinds).
+**Verdict:** the daemon passes every applicable rule.  The Locked
+startup default is now the secure default: a freshly-started
+daemon holds no secret material until an operator unlocks via
+`babbleon unlock`.  The `--insecure-stub-secret` opt-in remains
+for test paths and is documented as "NOT for production" in the
+CLI help.
+
+Note on rule 14: the `unlock` method takes the secret by move
+(constructor-style, consistent with the rule's exception policy).
+After construction, all access is by `&` reference through
+`MappingBuilder::new(&secret, ...)`.
 
 ---
 
-## Crate: `v2-babbleon-daemon-protocol`  (new — protocol carve-out)
+## Crate: `v2-babbleon-daemon-protocol`  (protocol carve-out; Unlock added 2026-06-20)
 
 The wire protocol + client + canonical socket path, carved out of
 the daemon crate so its peers (launcher, user CLI) link only the
-small protocol surface.  No state, no secret, no I/O loop, no
-materialisation; no `v2-babbleon-core` dependency.
+small protocol surface.  No state, no I/O loop, no materialisation;
+no `v2-babbleon-core` dependency.
+
+Phase-3 update: now also carries an `UnlockSecret` type — a brief
+secret-bearing wire payload.  The crate is no longer
+"holds-no-secret-material"; it holds a `Zeroizing<[u8;32]>` for
+exactly the duration of one Request::Unlock parse-or-construct
+call.
 
 | # | Rule | Status | Evidence |
 |---|---|---|---|
 | 1 | `forbid(unsafe_code)` | ✅ PASS | `src/lib.rs:38` |
-| 2 | `deny(missing_docs)` + pedantic | ✅ PASS | `src/lib.rs:39-40`; `cargo clippy -p v2-babbleon-daemon-protocol --all-targets -- -D warnings` clean |
-| 3 | Secrets wear `Zeroizing`, no `Clone/Copy/Debug` | ✅ PASS (vacuous) | crate holds NO secret material — that's the point of the carve-out |
-| 4 | Constant-time compares | N/A | no secret material |
+| 2 | `deny(missing_docs)` + pedantic | ✅ PASS | `src/lib.rs:39-40`; `cargo clippy -p v2-babbleon-daemon-protocol --all-targets -- -D warnings -W clippy::pedantic` clean |
+| 3 | Secrets wear `Zeroizing`, no `Clone/Copy/Debug` | ✅ PASS (with one documented relaxation) | `UnlockSecret` wraps `Zeroizing<[u8;32]>`; hand-rolled `Debug` prints `"<redacted>"`; `Clone` IS derived as a structural concession to the proptest harness (`Strategy::Value: Clone`).  The relaxation is documented in `src/unlock_secret.rs` module docs; production paths do NOT clone (audit-checked by code review of `Request::parse` and `handlers::dispatch`) |
+| 4 | Constant-time compares | ✅ PASS (deliberate non-CT for tests; not used for auth) | `impl PartialEq for UnlockSecret` is non-constant-time, documented in code: this comparison is for test assertions only.  No authentication path uses it |
 | 5 | HKDF for domain separation | N/A | no key derivation |
-| 6 | Plain-English names | ✅ PASS | `protocol`, `client`, `socket_path`, `errors` — every module describes its job |
-| 7 | "What this defeats" module docs | ✅ PASS | `lib.rs` and `protocol.rs` open with the template; `client.rs`, `socket_path.rs`, `errors.rs` use the Infrastructure-module variant |
+| 6 | Plain-English names | ✅ PASS | `protocol`, `client`, `socket_path`, `errors`, `unlock_secret`, `UnlockSecret`, `Request::Unlock`, `Response::Unlocked` |
+| 7 | "What this defeats" module docs | ✅ PASS | `lib.rs`, `protocol.rs`, `unlock_secret.rs` open with the template; `client.rs`, `socket_path.rs`, `errors.rs` use the Infrastructure-module variant |
 | 8 | Process hardening at startup | N/A | library crate; no `main()` |
 | 9 | `SAFETY:` comment on every `unsafe` block | ✅ PASS (vacuous) | `forbid(unsafe_code)` |
 | 10 | Capability annotation per syscall site | ✅ PASS (vacuous) | crate makes no privileged syscalls — `UnixStream::connect` runs as the caller's UID with no extra caps |
-| 11 | No long-lived secrets in serde-deserialized types | ✅ PASS | hand-parsed `serde_json::Value` throughout `protocol.rs`; no `#[derive(Deserialize)]` on `Request` / `Response` / `ErrorKind` |
-| 12 | RFC-recognisable primitives | N/A | no crypto |
-| 13 | Errors do not leak secrets | ✅ PASS | `errors.rs` carries two variants (`Ipc`, `ActivatedTable`); both wrap `String` built from non-secret sources |
-| 14 | Secret-bearing args are `&` references | N/A | no secret args |
-| 15 | Tests cover unit + property invariants | ✅ PASS | 27 unit (22 protocol roundtrip + 1 client connection-error + 2 socket_path + 2 minor) + 6 proptest properties × 1024 cases each = 6144 random inputs covering no-panic / roundtrip / oversize-reject / byte-preservation invariants |
+| 11 | No long-lived secrets in serde-deserialized types | ✅ PASS | hand-parsed `serde_json::Value` throughout `protocol.rs`.  `Request::Unlock` parses `host_secret_hex` through `UnlockSecret::from_hex_wire` which decodes straight into `Zeroizing<[u8;32]>`.  The hex `String` produced by `serde_json::Value::as_str().to_owned()` is the unavoidable JSON limitation and lives one parse-call stack frame |
+| 12 | RFC-recognisable primitives | ✅ PASS | hex encoding (RFC 4648 §8 base16); no other crypto |
+| 13 | Errors do not leak secrets | ✅ PASS | `errors.rs` carries two variants (`Ipc`, `ActivatedTable`); both wrap `String` built from non-secret sources.  `UnlockSecret::from_hex_wire` error explicitly comments "do NOT include the hex string itself — it is the secret"; test `from_hex_wire_message_does_not_echo_input` asserts |
+| 14 | Secret-bearing args are `&` references | ✅ PASS | `UnlockSecret::from_bytes(bytes: &[u8])` takes the slice by reference; `UnlockSecret::from_hex_wire(hex_str: &str)` similarly.  `expose()` returns `&[u8]`.  Constructor moves into the wrapper (rule 14 exception policy: constructors take by value) |
+| 15 | Tests cover unit + property invariants | ✅ PASS | 46 unit (incl. 10 `UnlockSecret`, 5 `Request::Unlock`, 4 `Response::Unlocked`, 27 prior) + 6 proptest properties × 1024 cases each = 6144 random inputs covering no-panic / roundtrip / oversize-reject / byte-preservation across both Request and Response (incl. Unlock variant) |
 
-**Verdict:** passes all applicable rules.  The crate exists
-specifically to be the *narrow* surface that audit reviewers
-study; that narrowness is the security-baseline expression of
-the carve-out's purpose.
+**Verdict:** passes every applicable rule.  The narrow surface
+carries one short-lived secret-bearing wire payload; the
+discipline is preserved by hand-managed (de)serialization, a
+hand-rolled redacted Debug, and the test-harness `Clone`
+relaxation documented in code.
+
+---
+
+## Crate: `v2-babbleon-vault`  (new 2026-06-20 — at-rest seal of the per-host secret)
+
+Vault library: `Vault::seal` / `unseal` with `age` passphrase
+encryption + `Argon2id` KEK derivation in `SoftBackend`.  Linked
+by the user-CLI only; NOT linked by the daemon (compartmentalised
+audit surface — see crate docs for the rationale).
+
+| # | Rule | Status | Evidence |
+|---|---|---|---|
+| 1 | `forbid(unsafe_code)` | ✅ PASS | `src/lib.rs:91` |
+| 2 | `deny(missing_docs)` + pedantic | ✅ PASS | `src/lib.rs:92-93`; `cargo clippy -p v2-babbleon-vault --all-targets -- -D warnings -W clippy::pedantic` clean |
+| 3 | Secrets wear `Zeroizing`, no `Clone/Copy/Debug` | ✅ PASS | `VaultPayload` holds `host_secret: Zeroizing<Vec<u8>>`; no derives of `Clone`, `Copy`, or `Debug`.  Test `error_display_never_contains_secret_bytes` belts-and-braces against Display leakage |
+| 4 | Constant-time compares | ✅ PASS (vacuous in this crate) | wrong-passphrase path lands inside `age::Decryptor` (Poly1305 MAC; constant-time inside age) |
+| 5 | HKDF for domain separation | N/A — but Argon2id is the analogous primitive | the soft backend uses Argon2id (RFC 9106) with a fixed domain-separation salt (`b"babbleon-soft-v2"`).  The age library wraps the resulting KEK in its own ChaCha20-Poly1305 encryption |
+| 6 | Plain-English names | ✅ PASS | `Vault`, `VaultPayload`, `KekBackend`, `SoftBackend`, `SoftProfile`, `default_vault_path`, `ensure_parent_dir`, `seal`, `unseal` — every public item is named for its job |
+| 7 | "What this defeats" module docs | ✅ PASS | `lib.rs`, `payload.rs`, `backend.rs`, `soft_backend.rs`, `vault.rs` open with the template; `errors.rs` and `file_layout.rs` use the Infrastructure-module variant |
+| 8 | Process hardening at startup | N/A | library crate; no `main()` |
+| 9 | `SAFETY:` comment on every `unsafe` block | ✅ PASS (vacuous) | `forbid(unsafe_code)` |
+| 10 | Capability annotation per syscall site | ✅ PASS | `ensure_parent_dir` makes `mkdir` + `chmod` calls; both are unprivileged in the per-user vault-path case; root-write to `/etc/babbleon/vault.age` requires the operator already being root |
+| 11 | No long-lived secrets in serde-deserialized types | ✅ PASS | `VaultPayload` hand-managed (de)serialization through a private `WirePayload` struct: the wire struct's `String` lives one decode-stack frame and is dropped before `VaultPayload::from_json_bytes` returns.  No public `serde::Deserialize` on a secret-bearing type |
+| 12 | RFC-recognisable primitives | ✅ PASS | Argon2id (RFC 9106), age (passphrase mode → ChaCha20-Poly1305 RFC 8439), hex (RFC 4648), OsRng for `babbleon init`'s fresh secret |
+| 13 | Errors do not leak secrets | ✅ PASS | `errors.rs` variants carry strings; `from_hex_wire`-style decode error explicitly comments "do NOT echo the input"; tests `error_display_never_contains_secret_bytes` and `error_display_on_input_error_never_contains_hex_secret` assert.  Wrong-passphrase landing is its own variant `WrongPassphrase` (no fields) so age's MAC-fail bytes never reach a Display |
+| 14 | Secret-bearing args are `&` references | ✅ PASS | `VaultPayload::host_secret() -> &[u8]`; `Vault::seal(payload: &VaultPayload, credential: Option<&str>)`.  Constructor `VaultPayload::new(host_secret: Zeroizing<Vec<u8>>, ...)` takes by move (rule 14 exception policy) |
+| 15 | Tests cover unit + property invariants | ✅ PASS | 32 unit tests including: KDF determinism, profile distinction, ciphertext is non-deterministic (age nonce), plaintext bytes do not appear verbatim in ciphertext, wrong-passphrase ≠ corrupted-ciphertext discriminant, error-Display does not leak |
+
+**Verdict:** passes every applicable rule.  The crate is small
+(~660 lines incl. tests), well-compartmentalised, and lives off
+the daemon's audit graph by design.  Future TPM / FIDO2 / USB
+backends will land as new `*_backend.rs` modules without changing
+the `Vault` / `KekBackend` API.
 
 ---
 
@@ -202,24 +267,29 @@ produced `.so` carries `BIND_NOW` and non-executable
 
 ## Aggregate
 
-Across the six v2 crates:
+Across the seven v2 crates:
 
 - v2-babbleon-core: PASS (every applicable rule)
 - v2-babbleon-launch-untrusted: PASS-with-noted-exception (unsafe quarantine per rule-1 exception policy)
-- v2-babbleon: PASS (subset applicable to the user CLI)
-- v2-babbleon-daemon: PASS (every applicable rule)
-- v2-babbleon-daemon-protocol: PASS (every applicable rule; library scope)
+- v2-babbleon: PASS-with-one-defer (rule 8 mlockall on CLI unwrap window)
+- v2-babbleon-daemon: PASS (every applicable rule; Locked/Unlocked refactor preserves the baseline)
+- v2-babbleon-daemon-protocol: PASS (every applicable rule; UnlockSecret carries one documented Clone relaxation for the proptest harness)
+- v2-babbleon-vault: PASS (every applicable rule; new crate landed 2026-06-20)
 - v2-babbleon-pam: PASS (subset applicable to the skeleton; re-audit when architecture lands)
-- 0 DEFER
+- 1 DEFER (v2-babbleon rule 8 — CLI unwrap-window mlockall)
 - 0 FAIL
 
-Phase 3 will introduce vault unlock and re-open three rules for
-re-audit (3, 11, 14) on the new code path.
+Phase 3's vault unlock landed across five commits (`83152e1`,
+`fbdd7f1`, `e6cc823`, `b8d2a7e`, `4d5864b`).  The new vault crate
+opened rules 3, 11, 13, 14 on its own surface; protocol crate's
+new `UnlockSecret` opened the same rules on a one-stack-frame
+window; daemon's Locked/Unlocked refactor preserved rule 3 and
+ensured the Locked state holds no secret bytes at all.
 
-The daemon's seccomp profile (`v2-babbleon-daemon/src/seccomp_profile.rs`,
-landed 2026-06-20) is opt-in behind `--enable-seccomp`; once
-the operator flips its default to ON it counts as defense-in-depth
-on top of rule 8 (hardening) and rule 10 (capability discipline).
+The daemon's seccomp profile (`v2-babbleon-daemon/src/seccomp_profile.rs`)
+is opt-in behind `--enable-seccomp`; once the operator flips its
+default to ON it counts as defense-in-depth on top of rule 8
+(hardening) and rule 10 (capability discipline).
 
 ## Open audit items
 
@@ -227,17 +297,24 @@ on top of rule 8 (hardening) and rule 10 (capability discipline).
   construct `PerHostSecret` unless the caller has declared
   hardening applied; currently this is by convention.  Filed as
   a future tighten.
+- **Rule 8 on `v2-babbleon`'s unlock path.**  The user-CLI
+  process holds the unwrapped secret bytes for one stack frame
+  (`Vault::unseal` returns → `UnlockSecret::from_bytes` consumes
+  → `round_trip(Request::Unlock)` ships off the box).  `mlockall`
+  during that window would tighten leakage resistance.  Filed as
+  the one DEFER above.
 - **Rule 15 property tests** are present for `EpochMapping`
   invariants in core; the permutation crate has roundtrip +
   Fisher-Yates bijection asserts but no large-N property test.
-  Could tighten.  As of this snapshot, the protocol crate has
-  added proptests covering its own no-panic / roundtrip / size-cap
-  invariants — pattern is available for porting to other crates.
+  Could tighten.  The protocol crate covers its no-panic /
+  roundtrip / size-cap invariants via proptest; same pattern is
+  available for porting to other crates.  Filing the vault crate
+  for proptest coverage in a future commit is worth considering
+  (the seal/unseal roundtrip is the natural candidate).
 - **Activated-table audit-surface tightening.**  The launcher
   depends transitively on the core crate's HKDF / ed25519 stack
   even though it only uses the `activated_table` + `credentials`
   modules.  Filed as a refactor in HANDOFF.md: extract
   `activated_table.rs` + `credentials.rs` into their own crate so
   the launcher's audit surface drops the crypto deps.  Same shape
-  as the protocol carve-out that closed item 3.  Not blocking;
-  cosmetic for review.
+  as the protocol carve-out.  Not blocking; cosmetic for review.
