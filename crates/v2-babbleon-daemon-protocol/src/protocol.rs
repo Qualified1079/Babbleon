@@ -55,6 +55,31 @@ use crate::unlock_secret::{UnlockSecret, UNLOCK_SECRET_HEX_LEN};
 /// bound parser allocation under an adversarial peer.
 pub const MAX_REQUEST_BYTES: usize = 8 * 1024;
 
+/// Number of whitespace compounds in the `WhitespaceCompounds`
+/// response, mirroring `v2-babbleon-preprocessor`'s
+/// `WHITESPACE_COMPOUND_COUNT`.
+///
+/// The protocol crate is independent of `v2-babbleon-preprocessor`
+/// (the launcher and CLI must not transitively pick up preprocessor
+/// surface they don't need).  Cross-crate agreement is enforced by
+/// a compile-time `static_assertions`-style check on the
+/// preprocessor side: if the preprocessor ever bumps its
+/// `WhitespaceKind::ALL` count, the bump lands in the same commit
+/// as the constant update here and a wire-format break is filed
+/// in the same commit's HANDOFF entry.
+pub const WHITESPACE_COMPOUND_COUNT_WIRE: usize = 5;
+
+/// Reasonable upper bound on the byte length of a single whitespace
+/// compound on the wire.
+///
+/// The preprocessor produces compounds of `COMPOUND_N = 4` words
+/// from a wordlist whose longest entry in the English baseline is
+/// under 50 bytes; the worst-case compound is well under 256 bytes.
+/// The cap is defensive — a peer that supplies a 16-MiB single
+/// compound to gum up the CLI's `from_compounds` validator must be
+/// stopped at the protocol parser.
+const WHITESPACE_COMPOUND_MAX_BYTES: usize = 1024;
+
 /// Inbound request from a peer.
 ///
 /// `Clone` is derived because the proptest harness requires it
@@ -82,6 +107,18 @@ pub enum Request {
     /// on success or [`Response::Error`] (`ErrorKind::Vault`) if the
     /// daemon is already unlocked or the secret install failed.
     Unlock(UnlockSecret),
+    /// Read the per-epoch whitespace compounds the daemon is
+    /// currently serving.  Daemon answers with
+    /// [`Response::WhitespaceCompounds`].  Requires the vault to be
+    /// unlocked; the daemon answers `Response::Error
+    /// { kind: ErrorKind::Vault, ... }` otherwise.
+    ///
+    /// Issued by the operator-facing `babbleon scramble` /
+    /// `babbleon unscramble` subcommands so the CLI can locally
+    /// derive a `WhitespaceWordlist` without ever holding the
+    /// per-host secret.  Trust-tier-only — caller authentication
+    /// (peer-uid check on the socket layer) gates the request.
+    GetWhitespaceCompounds,
 }
 
 /// Outbound response from the daemon.
@@ -123,6 +160,29 @@ pub enum Response {
     Unlocked {
         /// Epoch number the daemon is now holding a mapping for.
         epoch: u64,
+    },
+    /// The daemon's per-epoch whitespace compounds.
+    ///
+    /// Indexed by `WhitespaceKind::ALL` slot order
+    /// (`Newline`, `Space`, `Tab`, `IndentOpen`, `IndentClose`).
+    /// The receiving CLI feeds `compounds` directly into
+    /// `v2-babbleon-preprocessor::WhitespaceWordlist::from_compounds`.
+    ///
+    /// The compounds are secret-derived (HKDF over per-host secret +
+    /// epoch) but not secret-equivalent: a worm that gets one epoch's
+    /// compounds can scramble against that epoch but cannot recover
+    /// the per-host secret.  Wire-side rotation (epoch bump)
+    /// invalidates a leaked compound set.
+    WhitespaceCompounds {
+        /// Epoch the compounds were derived for.  Mirrors the
+        /// `epoch` field of [`Self::Status`] when the daemon is
+        /// unlocked.
+        epoch: u64,
+        /// Five compounds in `WhitespaceKind::ALL` slot order.
+        /// Each is a non-empty ASCII-lowercase byte string; the
+        /// receiver's `from_compounds` enforces the invariants
+        /// against tampering on the local-socket path.
+        compounds: [String; WHITESPACE_COMPOUND_COUNT_WIRE],
     },
     /// Daemon-side error.  Message does not leak secret material
     /// (security-baseline rule 13).
@@ -218,6 +278,7 @@ impl Request {
             "emit-activated-table" => Ok(Self::EmitActivatedTable),
             "rotate-mapping" => Ok(Self::RotateMapping),
             "unlock" => parse_unlock(obj),
+            "get-whitespace-compounds" => Ok(Self::GetWhitespaceCompounds),
             other => Err(Error::Ipc(format!("request: unknown kind {other:?}"))),
         }
     }
@@ -249,6 +310,9 @@ impl Request {
                 "kind": "unlock",
                 "host_secret_hex": secret.to_hex_wire(),
             }),
+            Self::GetWhitespaceCompounds => {
+                serde_json::json!({ "kind": "get-whitespace-compounds" })
+            }
         };
         let mut out = serde_json::to_vec(&v)
             .expect("serializing a JSON object cannot fail");
@@ -341,6 +405,14 @@ impl Response {
                 "kind": "unlocked",
                 "epoch": epoch,
             }),
+            Self::WhitespaceCompounds { epoch, compounds } => {
+                serde_json::json!({
+                    "ok": true,
+                    "kind": "whitespace-compounds",
+                    "epoch": epoch,
+                    "compounds": compounds,
+                })
+            }
             Self::Error { kind, message } => serde_json::json!({
                 "ok": false,
                 "kind": "error",
@@ -403,6 +475,7 @@ impl Response {
             "activated-table" => parse_activated_table(obj),
             "rotated" => parse_rotated(obj),
             "unlocked" => parse_unlocked(obj),
+            "whitespace-compounds" => parse_whitespace_compounds(obj),
             other => Err(Error::Ipc(format!(
                 "response: unknown kind {other:?}"
             ))),
@@ -503,6 +576,85 @@ fn parse_unlocked(
             )
         })?;
     Ok(Response::Unlocked { epoch })
+}
+
+/// Parse a `whitespace-compounds` response into a typed
+/// [`Response::WhitespaceCompounds`].
+///
+/// Strict on:
+/// - `epoch` present + u64.
+/// - `compounds` present + JSON array.
+/// - Exactly `WHITESPACE_COMPOUND_COUNT_WIRE` entries.
+/// - Each entry a string with length in
+///   `1..=WHITESPACE_COMPOUND_MAX_BYTES`.
+///
+/// Leaves structural-invariant checking (ASCII-lowercase, pairwise
+/// distinct) to the consumer's
+/// `WhitespaceWordlist::from_compounds`.  Keeps the parser focused
+/// on the wire schema; layering responsibility avoids two crates
+/// disagreeing on what counts as valid.
+fn parse_whitespace_compounds(
+    obj: &serde_json::Map<String, serde_json::Value>,
+) -> Result<Response> {
+    let epoch = obj
+        .get("epoch")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| {
+            Error::Ipc(
+                "whitespace-compounds response: missing/non-u64 epoch".into(),
+            )
+        })?;
+    let arr = obj
+        .get("compounds")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| {
+            Error::Ipc(
+                "whitespace-compounds response: missing/non-array compounds"
+                    .into(),
+            )
+        })?;
+    if arr.len() != WHITESPACE_COMPOUND_COUNT_WIRE {
+        return Err(Error::Ipc(format!(
+            "whitespace-compounds response: compounds array length {} != \
+             expected {WHITESPACE_COMPOUND_COUNT_WIRE}",
+            arr.len(),
+        )));
+    }
+    // Build the fixed-size array.  Use array::try_from_fn equivalent
+    // via a Vec roundtrip to keep the loop explicit (no nightly
+    // try_from_fn yet).
+    let mut compounds: Vec<String> = Vec::with_capacity(arr.len());
+    for (i, entry) in arr.iter().enumerate() {
+        let s = entry.as_str().ok_or_else(|| {
+            Error::Ipc(format!(
+                "whitespace-compounds response: entry {i} is not a string"
+            ))
+        })?;
+        if s.is_empty() {
+            return Err(Error::Ipc(format!(
+                "whitespace-compounds response: entry {i} is empty"
+            )));
+        }
+        if s.len() > WHITESPACE_COMPOUND_MAX_BYTES {
+            return Err(Error::Ipc(format!(
+                "whitespace-compounds response: entry {i} length {} exceeds \
+                 cap {WHITESPACE_COMPOUND_MAX_BYTES}",
+                s.len(),
+            )));
+        }
+        compounds.push(s.to_owned());
+    }
+    // Vec -> fixed-size array.  The length check above guarantees
+    // this conversion succeeds.
+    let compounds: [String; WHITESPACE_COMPOUND_COUNT_WIRE] = compounds
+        .try_into()
+        .map_err(|_| {
+            Error::Ipc(
+                "whitespace-compounds response: internal length mismatch"
+                    .into(),
+            )
+        })?;
+    Ok(Response::WhitespaceCompounds { epoch, compounds })
 }
 
 #[cfg(test)]
@@ -871,5 +1023,144 @@ mod tests {
             let s = kind.as_wire_str();
             assert_eq!(ErrorKind::from_wire_str(s), kind);
         }
+    }
+
+    // ----- GetWhitespaceCompounds request -----
+
+    #[test]
+    fn get_whitespace_compounds_request_roundtrips() {
+        let wire = Request::GetWhitespaceCompounds.to_wire();
+        let parsed = Request::parse(&wire).unwrap();
+        assert_eq!(parsed, Request::GetWhitespaceCompounds);
+    }
+
+    #[test]
+    fn get_whitespace_compounds_request_wire_form_is_one_line() {
+        let wire = Request::GetWhitespaceCompounds.to_wire();
+        assert_eq!(wire.iter().filter(|b| **b == b'\n').count(), 1);
+        assert_eq!(*wire.last().unwrap(), b'\n');
+    }
+
+    // ----- WhitespaceCompounds response -----
+
+    fn sample_compounds() -> [String; WHITESPACE_COMPOUND_COUNT_WIRE] {
+        [
+            "alpha".to_string(),
+            "bravo".to_string(),
+            "charlie".to_string(),
+            "delta".to_string(),
+            "echo".to_string(),
+        ]
+    }
+
+    #[test]
+    fn whitespace_compounds_response_roundtrips() {
+        let r = Response::WhitespaceCompounds {
+            epoch: 7,
+            compounds: sample_compounds(),
+        };
+        let wire = r.to_wire().unwrap();
+        let parsed = Response::parse(&wire).unwrap();
+        assert_eq!(parsed, r);
+    }
+
+    #[test]
+    fn whitespace_compounds_response_preserves_slot_order() {
+        // Distinct compounds; if the encoder ever sorted the array
+        // this test catches it.
+        let r = Response::WhitespaceCompounds {
+            epoch: 0,
+            compounds: sample_compounds(),
+        };
+        let wire = r.to_wire().unwrap();
+        let parsed = Response::parse(&wire).unwrap();
+        match parsed {
+            Response::WhitespaceCompounds {
+                compounds: parsed, ..
+            } => {
+                assert_eq!(parsed[0], "alpha");
+                assert_eq!(parsed[1], "bravo");
+                assert_eq!(parsed[2], "charlie");
+                assert_eq!(parsed[3], "delta");
+                assert_eq!(parsed[4], "echo");
+            }
+            other => panic!("expected WhitespaceCompounds, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn whitespace_compounds_response_rejects_missing_epoch() {
+        let bytes = br#"{"ok":true,"kind":"whitespace-compounds","compounds":["a","b","c","d","e"]}"#;
+        let err = Response::parse(bytes).unwrap_err();
+        assert!(format!("{err}").contains("epoch"));
+    }
+
+    #[test]
+    fn whitespace_compounds_response_rejects_missing_compounds() {
+        let bytes = br#"{"ok":true,"kind":"whitespace-compounds","epoch":0}"#;
+        let err = Response::parse(bytes).unwrap_err();
+        assert!(format!("{err}").contains("compounds"));
+    }
+
+    #[test]
+    fn whitespace_compounds_response_rejects_wrong_array_length() {
+        for body in [
+            r#"{"ok":true,"kind":"whitespace-compounds","epoch":0,"compounds":["a"]}"#,
+            r#"{"ok":true,"kind":"whitespace-compounds","epoch":0,"compounds":["a","b","c","d"]}"#,
+            r#"{"ok":true,"kind":"whitespace-compounds","epoch":0,"compounds":["a","b","c","d","e","f"]}"#,
+        ] {
+            let err = Response::parse(body.as_bytes()).unwrap_err();
+            assert!(
+                format!("{err}").contains("length"),
+                "expected length error for {body}, got {err}",
+            );
+        }
+    }
+
+    #[test]
+    fn whitespace_compounds_response_rejects_non_array_compounds() {
+        let bytes = br#"{"ok":true,"kind":"whitespace-compounds","epoch":0,"compounds":"notarray"}"#;
+        let err = Response::parse(bytes).unwrap_err();
+        assert!(format!("{err}").contains("non-array"));
+    }
+
+    #[test]
+    fn whitespace_compounds_response_rejects_non_string_entry() {
+        let bytes = br#"{"ok":true,"kind":"whitespace-compounds","epoch":0,"compounds":["a","b",42,"d","e"]}"#;
+        let err = Response::parse(bytes).unwrap_err();
+        assert!(format!("{err}").contains("not a string"));
+    }
+
+    #[test]
+    fn whitespace_compounds_response_rejects_empty_entry() {
+        let bytes = br#"{"ok":true,"kind":"whitespace-compounds","epoch":0,"compounds":["a","","c","d","e"]}"#;
+        let err = Response::parse(bytes).unwrap_err();
+        assert!(format!("{err}").contains("empty"));
+    }
+
+    #[test]
+    fn whitespace_compounds_response_rejects_oversize_entry() {
+        // An entry longer than WHITESPACE_COMPOUND_MAX_BYTES (1024)
+        // must be rejected by the parser before reaching the
+        // consumer's validator.  The whole request stays well under
+        // MAX_REQUEST_BYTES (8 KiB) so the size-cap doesn't fire
+        // first.
+        let big = "a".repeat(2000);
+        let body = format!(
+            r#"{{"ok":true,"kind":"whitespace-compounds","epoch":0,"compounds":["{big}","b","c","d","e"]}}"#
+        );
+        let err = Response::parse(body.as_bytes()).unwrap_err();
+        assert!(format!("{err}").contains("exceeds cap"), "{err}");
+    }
+
+    #[test]
+    fn whitespace_compounds_response_wire_format_is_one_line() {
+        let r = Response::WhitespaceCompounds {
+            epoch: 0,
+            compounds: sample_compounds(),
+        };
+        let wire = r.to_wire().unwrap();
+        assert_eq!(wire.iter().filter(|b| **b == b'\n').count(), 1);
+        assert_eq!(*wire.last().unwrap(), b'\n');
     }
 }

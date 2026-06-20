@@ -194,6 +194,17 @@ fn one_shot(
             // we print it rather than panic.
             println!("unlocked at epoch: {epoch}");
         }
+        Response::WhitespaceCompounds { epoch, compounds } => {
+            // Operator-side daemon-binary one-shots do not send
+            // GetWhitespaceCompounds today (the user-CLI's
+            // scramble/unscramble subcommands do).  Print a
+            // diagnostic line so a future scripted use surfaces the
+            // shape rather than panicking on the exhaustive match.
+            println!("whitespace-compounds for epoch: {epoch}");
+            for (i, c) in compounds.iter().enumerate() {
+                println!("  [{i}] {c}");
+            }
+        }
         Response::Error { kind, message } => {
             return Err(format!("daemon error ({kind:?}): {message}"));
         }

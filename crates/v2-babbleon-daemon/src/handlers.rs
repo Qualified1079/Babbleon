@@ -39,6 +39,16 @@ pub fn dispatch(state: &mut DaemonState, request: Request) -> Response {
         Request::EmitActivatedTable => emit_activated_table(state),
         Request::RotateMapping => rotate_mapping(state),
         Request::Unlock(secret) => unlock(state, &secret),
+        // Real handler lands in a follow-up commit that adds a
+        // preprocessor dependency.  Keeping this commit's daemon
+        // dispatch exhaustive without pulling in the new dep keeps
+        // the protocol carve-out auditable independently.
+        Request::GetWhitespaceCompounds => Response::Error {
+            kind: ErrorKind::Internal,
+            message: "get-whitespace-compounds: handler not yet wired \
+                      (preprocessor dep lands in follow-up commit)"
+                .into(),
+        },
     }
 }
 

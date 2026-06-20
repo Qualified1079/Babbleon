@@ -31,8 +31,8 @@
 #![allow(clippy::naive_bytecount, clippy::doc_markdown)]
 
 use babbleon_daemon_protocol_v2::{
-    ErrorKind, Request, Response, UnlockSecret, MAX_REQUEST_BYTES,
-    UNLOCK_SECRET_LEN,
+    protocol::WHITESPACE_COMPOUND_COUNT_WIRE, ErrorKind, Request, Response,
+    UnlockSecret, MAX_REQUEST_BYTES, UNLOCK_SECRET_LEN,
 };
 use proptest::array::uniform32;
 use proptest::collection::vec;
@@ -53,7 +53,41 @@ fn arb_request() -> impl Strategy<Value = Request> {
         Just(Request::EmitActivatedTable),
         Just(Request::RotateMapping),
         arb_unlock_secret().prop_map(Request::Unlock),
+        Just(Request::GetWhitespaceCompounds),
     ]
+}
+
+/// One arbitrary compound — at least one byte to satisfy the
+/// schema, capped at 32 bytes so the proptest array does not
+/// dominate sample time.  Charset is ASCII-lowercase to keep
+/// the proptest body realistic (production compounds are
+/// lowercase by HKDF derivation through the wordlist), with
+/// some `a-z` repeats per draw to surface dedup edge cases.
+fn arb_compound() -> impl Strategy<Value = String> {
+    "[a-z]{1,32}".prop_map(String::from)
+}
+
+/// Five distinct compounds.  The proptest body re-rolls duplicate
+/// draws so the consumer-side `from_compounds` distinctness check
+/// is exercised on legitimate inputs without spurious rejection.
+fn arb_compounds()
+-> impl Strategy<Value = [String; WHITESPACE_COMPOUND_COUNT_WIRE]> {
+    proptest::collection::vec(arb_compound(), 5..=5).prop_map(|mut v| {
+        // Force distinctness by suffixing position bytes.  Cheap
+        // and total over the strategy's domain.
+        for (i, s) in v.iter_mut().enumerate() {
+            let suffix: u8 = b'a' + u8::try_from(i).unwrap();
+            s.push(char::from(suffix));
+            s.push(char::from(suffix));
+        }
+        [
+            v[0].clone(),
+            v[1].clone(),
+            v[2].clone(),
+            v[3].clone(),
+            v[4].clone(),
+        ]
+    })
 }
 
 fn arb_error_kind() -> impl Strategy<Value = ErrorKind> {
@@ -98,6 +132,9 @@ fn arb_response() -> impl Strategy<Value = Response> {
         }),
         any::<u64>().prop_map(|new_epoch| Response::Rotated { new_epoch }),
         any::<u64>().prop_map(|epoch| Response::Unlocked { epoch }),
+        (any::<u64>(), arb_compounds()).prop_map(|(epoch, compounds)| {
+            Response::WhitespaceCompounds { epoch, compounds }
+        }),
         (arb_error_kind(), ".{0,256}").prop_map(|(kind, message)| {
             Response::Error { kind, message }
         }),
