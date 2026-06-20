@@ -24,7 +24,23 @@ v2-babbleon-core = { path = "../v2-babbleon-core" }
 # pipeline, and per-host secret never appear in this crate's
 # dependency graph.
 v2-babbleon-daemon-protocol = { path = "../v2-babbleon-daemon-protocol" }
+# Vault library: babbleon init / unlock use this crate to seal /
+# unseal the per-host secret.  Linked only by the user CLI; NOT
+# linked by the daemon (the daemon receives unwrapped bytes over the
+# socket).  See v2-babbleon-vault::lib for the compartmentalization
+# rationale.
+v2-babbleon-vault = { path = "../v2-babbleon-vault" }
 clap = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+# Interactive passphrase prompt (`babbleon unlock` and `babbleon
+# init`).  Non-interactive paths read from stdin via
+# `--passphrase-stdin` and do not touch rpassword.
+rpassword = { workspace = true }
+# Zeroizing wrapper around the operator's passphrase string in
+# memory while it is in flight between rpassword/stdin and the
+# vault's KekBackend.
+zeroize = { workspace = true }
+# RNG for fresh-secret generation during `babbleon init`.
+rand = { workspace = true }

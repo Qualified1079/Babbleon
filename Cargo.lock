@@ -1967,11 +1967,15 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "rand 0.8.6",
+ "rpassword",
  "tempfile",
  "tracing",
  "tracing-subscriber",
  "v2-babbleon-core",
  "v2-babbleon-daemon-protocol",
+ "v2-babbleon-vault",
+ "zeroize",
 ]
 
 [[package]]

@@ -14,21 +14,24 @@
 //! # Compartmentalization
 //!
 //! This binary does NOT hold the host secret or the epoch key in its
-//! own address space.  Privileged operations (mounting, sealing the
-//! vault) are dispatched to the daemon over a local Unix socket; this
-//! process is a thin client.  As such, the CLI does not require
-//! `forbid(unsafe_code)` to be a meaningful security claim — there is
-//! no secret material to leak — but we keep the lint enabled for
-//! discipline.
+//! own address space for any longer than one `unlock` call needs.
+//! The seal / unseal happens in [`vault_lifecycle`] inside the
+//! one-shot stack frame; the unwrapped 32 bytes are immediately
+//! handed to the daemon over the socket and dropped (Zeroizing wipes).
+//! Privileged operations (mounting, sealing the vault) are dispatched
+//! to the daemon over a local Unix socket; this process is a thin
+//! client.
 //!
-//! Phase 1 ships the command surface and argument parsing; the actual
-//! daemon-side wiring lands in phase 2 alongside
-//! `babbleon-launch-untrusted`.  Until then, each subcommand returns
-//! a clear "not yet implemented" stub so operator scripts can be
-//! authored against the final surface.
+//! Phase 3 wires `init` and `unlock` end-to-end.
+//! `mount-scrambled-view` remains stubbed; it lands with the
+//! launcher integration in a later phase.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
+#![warn(clippy::pedantic)]
+
+mod passphrase;
+mod vault_lifecycle;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -38,6 +41,10 @@ use clap::{Parser, Subcommand};
 
 use babbleon_daemon_protocol_v2::{
     default_socket_path, round_trip, Request, Response,
+};
+
+use vault_lifecycle::{
+    run_init, run_unlock, InitOptions, PassphraseSource, UnlockOptions,
 };
 
 /// Top-level CLI.  The bare `babbleon` invocation prints help.
@@ -61,6 +68,21 @@ struct Cli {
     #[arg(long = "socket", value_name = "PATH", global = true)]
     socket: Option<PathBuf>,
 
+    /// Override the vault file path.  Defaults to
+    /// `babbleon_vault_v2::default_vault_path()` —
+    /// `$XDG_CONFIG_HOME/babbleon/vault.age` for per-user installs
+    /// or `/etc/babbleon/vault.age` for system installs.  Only the
+    /// `init` and `unlock` subcommands honour this flag.
+    #[arg(long = "vault-path", value_name = "PATH", global = true)]
+    vault_path: Option<PathBuf>,
+
+    /// Read the passphrase from the first line of stdin instead of
+    /// prompting via the controlling TTY.  Use this for CI scripts
+    /// and integration tests; do NOT use it interactively (the
+    /// passphrase would echo).
+    #[arg(long = "passphrase-stdin", global = true)]
+    passphrase_stdin: bool,
+
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -74,13 +96,23 @@ struct Cli {
 enum Cmd {
     /// Create a new vault on this host.  Generates the per-host
     /// secret, seals it under the configured credential backend,
-    /// and writes the initial epoch mapping.  Run once per host.
-    Init,
+    /// and writes the vault file.  Run once per host.  Refuses to
+    /// overwrite an existing vault unless `--force` is supplied.
+    Init {
+        /// Acknowledge that re-init destroys the existing per-host
+        /// mapping (all previously-issued wrappers, all audit
+        /// records keyed off the old secret).  Required when the
+        /// vault file already exists at `--vault-path`.
+        #[arg(long = "force")]
+        force: bool,
+    },
 
     /// Unlock the vault for the current session.  Prompts for the
-    /// credential (passphrase, security key, or both depending on
-    /// configuration).  On success, the daemon holds the epoch
-    /// keys in mlock'd memory until session end.
+    /// passphrase (or reads stdin under `--passphrase-stdin`),
+    /// decrypts the on-disk vault locally, then ships the 32-byte
+    /// per-host secret to the daemon via the `Unlock` request.  The
+    /// daemon then holds the secret in `mlock`'d memory until
+    /// session end.
     Unlock,
 
     /// Bump the epoch and reseal the vault with a fresh permutation.
@@ -105,17 +137,28 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     install_tracing(cli.verbose);
 
-    let socket_path = cli.socket.unwrap_or_else(default_socket_path);
+    let socket_path = cli.socket.clone().unwrap_or_else(default_socket_path);
+    let passphrase_source = if cli.passphrase_stdin {
+        PassphraseSource::Stdin
+    } else {
+        PassphraseSource::Interactive
+    };
 
     let result: Result<()> = match cli.cmd {
-        // Phase 3 — need the vault-unlock protocol on the daemon socket.
-        Cmd::Init => not_yet_implemented("init"),
-        Cmd::Unlock => not_yet_implemented("unlock"),
-        // Phase 2 — wired through to the daemon as of this commit.
+        Cmd::Init { force } => run_init(InitOptions {
+            vault_path: cli.vault_path.clone(),
+            passphrase_source,
+            allow_overwrite: force,
+        }),
+        Cmd::Unlock => run_unlock(UnlockOptions {
+            vault_path: cli.vault_path.clone(),
+            passphrase_source,
+            socket_path: socket_path.clone(),
+        }),
         Cmd::RotateMapping => run_rotate_mapping(&socket_path),
         Cmd::Status => run_status(&socket_path),
-        // Phase 3 — needs the launcher binary to be on PATH and the
-        // PAM module wired.
+        // Phase 3+: needs the launcher binary on PATH and the PAM
+        // module wired.
         Cmd::MountScrambledView => not_yet_implemented("mount-scrambled-view"),
     };
 
@@ -198,11 +241,11 @@ fn install_tracing(verbose: u8) {
     tracing_subscriber::fmt().with_env_filter(filter).init();
 }
 
-/// Phase-1 placeholder.  Returns Err so scripts surface the gap
-/// loudly instead of silently succeeding.
+/// Placeholder.  Returns Err so scripts surface the gap loudly
+/// instead of silently succeeding.
 fn not_yet_implemented(command: &str) -> Result<()> {
     anyhow::bail!(
-        "`{command}` is not yet implemented in v2 phase 1; \
+        "`{command}` is not yet implemented; \
          see V2_PLAN.md for the phase roadmap",
     )
 }
@@ -229,5 +272,34 @@ mod tests {
     fn acronym_alias_msv_routes_to_mount_scrambled_view() {
         let m = Cli::command().try_get_matches_from(["babbleon", "msv"]);
         assert!(m.is_ok(), "alias `msv` must route to a subcommand");
+    }
+
+    #[test]
+    fn vault_path_global_flag_parses() {
+        let m = Cli::command().try_get_matches_from([
+            "babbleon",
+            "--vault-path",
+            "/tmp/vault.age",
+            "status",
+        ]);
+        assert!(m.is_ok(), "--vault-path must be a global flag");
+    }
+
+    #[test]
+    fn passphrase_stdin_global_flag_parses() {
+        let m = Cli::command().try_get_matches_from([
+            "babbleon",
+            "--passphrase-stdin",
+            "unlock",
+        ]);
+        assert!(m.is_ok(), "--passphrase-stdin must be a global flag");
+    }
+
+    #[test]
+    fn init_accepts_force_flag() {
+        let m = Cli::command().try_get_matches_from([
+            "babbleon", "init", "--force",
+        ]);
+        assert!(m.is_ok());
     }
 }

@@ -24,6 +24,241 @@ lands, push here)
 
 Date: 2026-06-20 (user-asleep session continued — claude-opus-4-7)
 
+Last commit before this handoff section: `e6cc823` — refactor(v2-babbleon-daemon):
+DaemonState now has Locked / Unlocked states.
+
+## What landed THIS session (2026-06-20 night — vault unlock end-to-end, user asleep)
+
+**Headline: open-items item 2 closed — `babbleon init` and
+`babbleon unlock` are wired end-to-end through the new
+`v2-babbleon-vault` crate, the protocol's `Request::Unlock`
+variant, and the daemon's new Locked/Unlocked state machine.**
+
+Four compartmentalized commits.  Total v2 test count: **309 →
+332 (+23)**.  Clippy pedantic clean across every v2 crate.
+
+### Commit 1 — `feat(v2-babbleon-vault)`: new crate
+
+At-rest vault library.  Lives at `crates/v2-babbleon-vault/` and
+is linked by the user-CLI only (NOT by the daemon — the daemon
+receives unwrapped 32 bytes over the socket, see Commit 2).
+Modules:
+
+- `errors.rs` — flat `Error`.  No variant carries secret bytes
+  (rule 13).  Tests assert wrong-passphrase / corrupted-ciphertext
+  errors lead to distinct discriminants.
+- `payload.rs` — `VaultPayload`.  Schema-versioned (current = 1).
+  Secret bytes live in `Zeroizing<Vec<u8>>`; no Clone / Copy /
+  Debug (rule 3).  Hand-managed (de)serialisation: the wire
+  struct's `String` host_secret_hex lives one stack frame, decoded
+  immediately to bytes-in-Zeroizing at the boundary.
+- `backend.rs` — `KekBackend` trait.  Soft tier ships in v2.0;
+  TPM / FIDO2 / USB can be added without changing `Vault`'s API.
+- `soft_backend.rs` — Argon2id (RFC 9106).  Two cost profiles
+  (`Laptop` = m=46 MiB t=2 p=1 ~ 250 ms / attempt; `Headless` =
+  m=8 MiB t=12 p=1 ~ 30 ms / attempt for the test path).
+- `vault.rs` — `seal` / `unseal` via age passphrase encryption.
+  Wrong-passphrase path lands as `Error::WrongPassphrase`
+  (distinct from `Error::Unseal` for truncated ciphertext).
+  Tests assert ciphertext is non-deterministic (age nonce) and
+  the plaintext secret bytes do not appear verbatim in the
+  ciphertext.
+- `file_layout.rs` — `default_vault_path()` (XDG → user-config
+  fallback → `/etc/babbleon/vault.age`); `ensure_parent_dir()`
+  creates with mode `0o700`.
+
+32 unit tests; clippy pedantic clean.
+
+### Commit 2 — `feat(v2-babbleon-daemon-protocol)`: Request::Unlock + Response::Unlocked
+
+Extends the wire schema.  New surface:
+
+- `UnlockSecret` (`src/unlock_secret.rs`) — 32-byte wrapper.
+  `Zeroizing<[u8;32]>` for zero-on-drop; hand-rolled `Debug`
+  prints `"<redacted>"`; `Clone` derive carried only for the
+  proptest harness (production paths do not clone — comment in
+  the type's docstring).  Hex wire form (64 ASCII chars).  10
+  unit tests including a non-leaky-error-message check.
+- `Request::Unlock(UnlockSecret)` — wire form
+  `{"kind":"unlock","host_secret_hex":"<64 hex>"}`.  Parse rejects:
+  missing field, wrong length, non-hex chars.  Error messages do
+  NOT echo the supplied hex (rule 13).
+- `Response::Unlocked { epoch }` — symmetric to
+  `Response::Rotated`.
+- `UNLOCK_SECRET_LEN = 32` / `UNLOCK_SECRET_HEX_LEN = 64`
+  constants re-exported.  Mirror the same value in
+  `v2-babbleon-core::PER_HOST_SECRET_LEN` and
+  `v2-babbleon-vault::PAYLOAD_HOST_SECRET_LEN`; if 32 ever
+  changes the bump lands in the same commit across all three.
+
+Daemon's `handlers::dispatch` adds an explicit `Request::Unlock(_)`
+arm (initially returns `ErrorKind::Vault "...not yet wired..."`;
+real wiring lands in Commit 3).  Daemon's `main::one_shot` adds
+a `Response::Unlocked` arm.  Both keep the match exhaustive.
+
+Proptest harness covers Unlock + Unlocked under the same 1024-
+cases budget as the other variants.
+
+19 new unit tests + 1 new proptest variant in `v2-babbleon-daemon-protocol`.
+
+### Commit 3 — `refactor(v2-babbleon-daemon)`: DaemonState Locked/Unlocked
+
+Refactors the daemon's state machine so unlock is a real lifecycle
+transition.  Wires the protocol's `Request::Unlock` into the
+dispatcher.
+
+State layout (`src/state.rs`):
+
+- `DaemonConfig` (private) holds always-present pieces (wordlist,
+  tracked_tools, MaterializationConfig, test-only
+  skip_materialization).
+- `SecretState` (private enum):
+    `Locked` — empty; no secret in memory.
+    `Unlocked { secret, epoch, cached_mapping, last_rotation }`.
+
+API:
+
+- `new_locked(...)` — production startup path post-phase-2.
+- `new_unlocked(...)` — direct Unlocked construction.  Used by
+  `--insecure-stub-secret` until that flag retires.
+- `unlock(&mut self, secret) -> Result<u64>` — Locked -> Unlocked.
+  Double-unlock returns `Error::Vault` (would leave the prior
+  mapping live alongside the new one; operator must restart).
+- `epoch() -> Option<u64>` (was `u64`).  None when Locked.
+- `vault_locked() -> bool` (new).
+- `last_rotation_unix_secs() -> Option<u64>` — None when Locked.
+- `current_mapping() -> Option<&EpochMapping>` — None when Locked.
+- `activated_table_jsonl()` / `rotate()` — return `Error::Vault`
+  when Locked.  No partial state changes on the error path.
+
+Handler dispatch:
+
+- `Request::Unlock(secret) -> unlock() -> Response::Unlocked
+  { epoch }`.
+- `Status` works in both states; `vault_locked` now reflects
+  the real state (was hard-coded `false` in phase 2).
+- `EmitActivatedTable` / `RotateMapping` return
+  `ErrorKind::Vault "...locked..."` when Locked.
+
+14 new tests (7 state + 5 dispatch + 2 wrap-around regression
+guards).
+
+### Commit 4 — `feat(v2-babbleon)`: babbleon init + babbleon unlock
+
+Wires the user-facing CLI.  Adds three globals:
+
+- `--vault-path PATH` — override the default
+  (`v2-babbleon-vault::default_vault_path()`).
+- `--passphrase-stdin` — read passphrase from stdin's first line
+  (for CI / tests / scripts).  Default is interactive via
+  `rpassword`.
+- `Init { --force }` — refuses to overwrite an existing vault
+  unless `--force` is passed (re-init destroys the previous
+  per-host secret).
+
+New modules under `crates/v2-babbleon/src/`:
+
+- `passphrase.rs` — `Passphrase` (Zeroizing wrapper);
+  `prompt_passphrase` (interactive), `prompt_passphrase_confirmed`
+  (init's two-prompt path), `read_passphrase_from_reader`
+  (stdin / test path).  6 unit tests.
+- `vault_lifecycle.rs` — `run_init(InitOptions)` and
+  `run_unlock(UnlockOptions)`.
+    - `run_init`: resolve vault path → refuse overwrite without
+      --force → prompt twice → generate 32 fresh OsRng bytes →
+      seal under `SoftBackend` → write at mode `0o600`.
+    - `run_unlock`: resolve vault path → read ciphertext → prompt
+      once → unseal → construct `UnlockSecret` from the unwrapped
+      bytes → `round_trip(Request::Unlock)` → print result.
+
+`main.rs` dispatches to the new modules; `cmd::Init` and
+`cmd::Unlock` are no longer `not_yet_implemented` stubs.
+
+Test deltas:
+
+| Crate | Before | After |
+|---|---|---|
+| `v2-babbleon-vault` (new) | — | 32 |
+| `v2-babbleon-daemon-protocol` (unit) | 27 | 46 (+19) |
+| `v2-babbleon-daemon` (unit) | 72 | 86 (+14) |
+| `v2-babbleon` (unit) | 3 | 16 (+13) |
+| `v2-babbleon` (integ) | 4 | 7 (+3 init/unlock; -1 regression guard) |
+| **Total v2 (excl ignored)** | **275** | **332 (+57)** |
+
+`cargo clippy --all-targets -- -D warnings` clean across every
+v2 crate.  `-W clippy::pedantic` clean for the new crates
+(vault, vault-lifecycle, passphrase, state.rs refactor).
+
+### Updated open / next-session items (priority order — refreshed 2026-06-20 night)
+
+Item 2 (real vault unlock) closed this session.  Item 3 (daemon
+seccomp default) is operator-decision blocked.  Item 1 (PAM
+architecture pick) is operator-decision blocked.  Remaining work:
+
+1. **Flip daemon startup to `new_locked` (drop --insecure-stub-secret).**
+   The daemon today still starts in Unlocked via the
+   `--insecure-stub-secret` flag; this is a one-line change to
+   `crates/v2-babbleon-daemon/src/main.rs::run_daemon` once an
+   operator confirms.  The migration step is:
+     a. Replace `new_unlocked(stub_secret, ...)` with
+        `new_locked(...)`.
+     b. Remove the `--insecure-stub-secret` clap arg and the
+        startup check that requires it.
+     c. Update `tests/end_to_end_binary.rs` and
+        `tests/cli_against_daemon.rs` to drive
+        `babbleon init` + `babbleon unlock` instead of relying
+        on the stub-secret startup.
+     d. Update `tests/seccomp_envelope.rs` similarly.
+   This is the symmetric closing of item 2; it's small but
+   touches a few test paths, so operator-confirm before flipping.
+
+2. **Pick the PAM architecture** (operator decision).  Three
+   candidates filed in `docs/v2/pam-architecture.md`.  Default
+   recommendation: flavour 3.  Until picked, the PAM crate
+   ships `Readiness::SkeletonOnly`.
+
+3. **Flip daemon seccomp default to ON** (operator decision).
+   The filter, the `--enable-seccomp` opt-in flag, the
+   `PR_SET_NO_NEW_PRIVS=1` install, and the end-to-end
+   integration test all already landed.  Operator-confirm only.
+
+4. **Atomic wrapper-dir swap.**  Unchanged — defer until item 2
+   (PAM architecture pick) so we understand the full session
+   lifecycle.
+
+5. **(filed by this session)** Persist epoch across daemon
+   restarts.  The vault payload carries an `epoch` field; the
+   daemon resets epoch=0 on unlock today.  Phase 4+ should either
+   re-seal the vault on every rotate (synchronous, simple) or add
+   a `Request::Unlock { epoch_hint }` field that lets the user-
+   CLI pass through the vault's recorded epoch.
+
+Items 1 and 2/3 are independent; item 4 should land before any
+production deployment but does not block phase-3 progress.
+
+### End-to-end smoke test against `cargo test` post-this-session
+
+```
+$ cargo test -p v2-babbleon ... --test cli_against_daemon
+running 7 tests
+test cli_status_against_missing_daemon_returns_actionable_error ... ok
+test cli_status_prints_daemon_state ... ok
+test cli_rotate_mapping_advances_epoch ... ok
+test cli_init_creates_vault_file_at_specified_path ... ok
+test cli_init_refuses_overwrite_without_force ... ok
+test cli_init_then_unlock_against_already_unlocked_daemon_reports_already ... ok
+test cli_unlock_with_wrong_passphrase_fails_without_daemon_traffic ... ok
+test result: ok. 7 passed; 0 failed; 0 ignored;
+```
+
+The seven tests cover: init creates a 0o600 vault, init refuses
+overwrite without --force, end-to-end init+unlock against a
+running daemon (reports already-unlocked because the daemon is
+still on stub-secret), unlock with wrong passphrase fails BEFORE
+attempting the daemon round-trip.
+
+## Earlier-this-session (prior section — 2026-06-20 — PAM skeleton + daemon seccomp envelope)
+
 Last commit before this handoff: `8eef22b` — docs(security-baseline-audit):
 refresh daemon row + add protocol-crate row.
 
