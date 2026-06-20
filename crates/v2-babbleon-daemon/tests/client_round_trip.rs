@@ -45,8 +45,8 @@ fn make_state() -> DaemonState {
     .unwrap()
 }
 
-fn serve_one(socket_path: std::path::PathBuf) -> thread::JoinHandle<()> {
-    let listener = bind_socket(&socket_path).unwrap();
+fn serve_one(socket_path: &std::path::Path) -> thread::JoinHandle<()> {
+    let listener = bind_socket(socket_path).unwrap();
     thread::spawn(move || {
         let mut state = make_state();
         let (stream, _) = listener.accept().unwrap();
@@ -62,7 +62,7 @@ fn serve_one(socket_path: std::path::PathBuf) -> thread::JoinHandle<()> {
 fn status_round_trip_against_inline_server() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("d.sock");
-    let server = serve_one(path.clone());
+    let server = serve_one(&path);
 
     let resp = round_trip(&path, &Request::Status).unwrap();
     match resp {
@@ -83,7 +83,7 @@ fn status_round_trip_against_inline_server() {
 fn rotate_round_trip_against_inline_server() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("d.sock");
-    let server = serve_one(path.clone());
+    let server = serve_one(&path);
 
     let resp = round_trip(&path, &Request::RotateMapping).unwrap();
     match resp {
@@ -97,7 +97,7 @@ fn rotate_round_trip_against_inline_server() {
 fn emit_activated_table_round_trip_against_inline_server() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("d.sock");
-    let server = serve_one(path.clone());
+    let server = serve_one(&path);
 
     let resp = round_trip(&path, &Request::EmitActivatedTable).unwrap();
     match resp {

@@ -4,7 +4,7 @@
 //! The positive integration test (`seccomp_envelope.rs`) confirms
 //! the filter does not break the daemon's documented envelope.
 //! This file is the complementary check: it confirms the filter
-//! actually **enforces** the KillProcess action — without it we
+//! actually **enforces** the `KillProcess` action — without it we
 //! could ship an allowlist that's secretly a no-op and the
 //! daemon would still pass `seccomp_envelope.rs`.
 //!
