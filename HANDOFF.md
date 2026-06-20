@@ -24,8 +24,192 @@ lands, push here)
 
 Date: 2026-06-20 (user-asleep session continued — claude-opus-4-7)
 
-Last commit before this handoff section: `76b85ed` — refactor:
-extract activated_table + credentials to v2-babbleon-launch-artefacts
+Last commit before this handoff section: `5d2758d` —
+feat(tools/preprocessor-benchmark): phase-3 latency harness
+
+---
+
+## 2026-06-20 night (sleeping-operator continuation — claude-opus-4-7)
+
+Continuing the tokens-while-asleep session.  Five
+compartmentalised commits land the operator-facing layer-3
+entry point end-to-end: an operator can now run `babbleon
+scramble` and `babbleon unscramble` against the daemon, the
+daemon serves whitespace compounds over a hardened socket
+without ever exposing the per-host secret, and the
+preprocessor's per-file latency is measured at 22-35 µs median
+(over 1000x under the 50 ms phase-3 budget).
+
+### Commits this session block (in landing order)
+
+1. `a3aac64` — `feat(v2-babbleon-preprocessor): WhitespaceWordlist::from_compounds`
+   - Operator-CLI-side constructor.  Takes a caller-supplied
+     `[String; 5]` and an epoch instead of HKDF-deriving from a
+     secret.  Strict invariant check
+     (non-empty / ASCII-lowercase / pairwise-distinct) without
+     surfacing compound bytes via `Error` (rule 13).
+   - 7 new unit tests; cargo clippy pedantic clean.
+
+2. `9231cb8` — `feat(v2-babbleon-daemon-protocol): Request::GetWhitespaceCompounds + Response`
+   - New wire variants.  Daemon dispatch stubbed with
+     "not yet wired" error so the protocol carve-out audits
+     cleanly without the daemon's new preprocessor dep.
+   - `pub const WHITESPACE_COMPOUND_COUNT_WIRE: usize = 5` mirrors
+     the preprocessor's `WHITESPACE_COMPOUND_COUNT` (cross-crate
+     agreement documented in both crates' module docs).
+   - Per-entry size cap (`WHITESPACE_COMPOUND_MAX_BYTES = 1024`)
+     stops an adversarial peer from gumming up the consumer's
+     `from_compounds` validator with megabyte strings.
+   - 13 unit tests + proptest harness extension (1024 cases).
+
+3. `68ae3ec` — `feat(v2-babbleon-daemon): wire Request::GetWhitespaceCompounds handler`
+   - Replaces the previous commit's stub with the real handler.
+   - New `DaemonState::whitespace_compounds(&self) -> Result<(u64, [String; 5])>`
+     keeps the `PerHostSecret` inside the daemon's address space;
+     only the HKDF-derived compounds cross the socket.
+   - Cargo dep `v2-babbleon-preprocessor` added to the daemon.
+     Kept off launcher and user-CLI dependency graphs (verified
+     by `cargo tree`).
+   - Preprocessor crate gains
+     `[lib] name = "babbleon_preprocessor_v2"` to match the
+     every-v2-crate convention.
+   - Seccomp envelope unchanged — new handler issues no syscall
+     beyond the existing 36-syscall allowlist.
+     `tests/seccomp_envelope.rs` extends the operator sequence
+     with a `get-whitespace-compounds` round-trip.
+   - 9 new tests (6 state + 3 handler).
+
+4. `b97d8ed` — `feat(v2-babbleon): wire babbleon scramble / babbleon unscramble`
+   - New module `src/scramble_lifecycle.rs`.  `run_scramble` /
+     `run_unscramble` accept `InputSource` (stdin / file) and
+     `OutputSink` (stdout / file).  CLI gains `-i` / `-o` short
+     forms and treats `-` / omitted flags as stdin / stdout.
+   - Compartmentalisation: CLI process never holds the per-host
+     secret.  Each subcommand round-trips
+     `Request::GetWhitespaceCompounds`, builds a local
+     `WhitespaceWordlist::from_compounds`, runs
+     tokenize → scramble / unscramble in pure-compute mode.
+   - Fix for an unrelated flake (`cli_init_refuses_overwrite_without_force`):
+     swallow the EPIPE on writing to a child that exits early
+     on the "refuse overwrite" path; the child's exit status is
+     what the test asserts on.  Verified non-flaky over 5
+     consecutive runs after the fix.
+   - 13 new unit tests + 3 new integration tests.
+
+5. `5d2758d` — `feat(tools/preprocessor-benchmark): phase-3 latency harness`
+   - Standalone Cargo workspace (same pattern as
+     `tools/rotation-benchmark/`) so the benchmark binary's deps
+     do not drag into the main workspace's CI compile graph.
+   - Times `tokenize → scramble → unscramble` end-to-end over
+     the five example puzzles.  1000 timed iterations + 100
+     warmup per puzzle; reports mean / median / p95 / min / max
+     in microseconds.  Exit-code 1 if any puzzle's median
+     exceeds `--target-micros` (default 50 000 = 50 ms).
+   - Baseline run (sandbox container, release profile):
+     median 22-35 µs across the five-puzzle corpus.
+     **Three orders of magnitude under the phase-3 50 ms budget.**
+   - Files: `Cargo.toml`, `src/main.rs`, `README.md`,
+     `RESULTS.md`, `.gitignore`.
+
+### Test deltas across the session block
+
+| Crate / target | Before | After | Δ |
+|---|---|---|---|
+| `v2-babbleon-preprocessor` (unit) | 43 | 50 | +7 |
+| `v2-babbleon-preprocessor` (integ) | 6 | 6 | — |
+| `v2-babbleon-daemon-protocol` (unit) | 46 | 58 | +12 |
+| `v2-babbleon-daemon-protocol` (proptest) | 6 (1024 cases) | 6 (1024 cases, extended) | (new variant) |
+| `v2-babbleon-daemon` (unit) | 86 | 98 | +12 |
+| `v2-babbleon-daemon` (integ) | 4+5+1+2 | 4+5+1+2 (envelope extends) | — |
+| `v2-babbleon` (unit) | 16 | 29 | +13 |
+| `v2-babbleon` (integ) | 7 | 10 | +3 |
+| **Total v2 tests (excl rooted)** | **332** | **379** | **+47** |
+
+cargo clippy pedantic clean across every v2 crate
+(`-p v2-babbleon-core -p v2-babbleon-preprocessor
+-p v2-babbleon-daemon-protocol -p v2-babbleon-daemon
+-p v2-babbleon-vault -p v2-babbleon-launch-untrusted
+-p v2-babbleon-launch-artefacts -p v2-babbleon -p v2-babbleon-pam`).
+
+### Phase-3 MVP step list — current status
+
+`docs/v2/structure-scrambling.md` §"Recommended phase-3 prototype":
+
+| # | Step | Status | Where |
+|---|---|---|---|
+| 1 | Standalone Rust binary preprocessor | ⚠️ partial | Library crate + operator CLI subcommands cover the UX; dedicated `babbleon-preprocessor` binary filed for follow-up. |
+| 2 | Layer 3 only (whitespace-as-words) for Python | ✅ | `94d5128` (prior session) + this session's polish. |
+| 3 | `babbleon scramble FILE` / `babbleon unscramble FILE` | ✅ | `b97d8ed` (this session). |
+| 4 | Wrap python3 via `pipe(2)` | ⚠️ partial | Stdin sentinel (`-`) means an operator can shell-pipe today (`babbleon unscramble - < src.scr \| python3 -`).  Dedicated `babbleon-python` shim that exec's python3 internally filed for follow-up. |
+| 5 | Sub-50ms latency confirmation | ✅ | `5d2758d` (this session); RESULTS.md. |
+| 6 | Operator's adversarial-LLM test | ⏳ operator-side | Tooling in place; operator runs the test. |
+
+### Open / next-session items (priority order — refreshed 2026-06-20 night, post-session-block)
+
+Operator-decision-blocked items (unchanged from prior session):
+
+1. **Pick the PAM architecture** (operator decision).  Three
+   candidates filed in `docs/v2/pam-architecture.md`.  Default
+   recommendation: flavour 3 (authorized-session + shell rc).
+   PAM crate ships `Readiness::SkeletonOnly` until this lands.
+
+2. **Atomic wrapper-dir swap.**  Defer until item 1 lands so
+   we understand the full session lifecycle.
+
+3. **Persist epoch across daemon restarts.**  Phase 4+ item.
+   Two designs in HANDOFF (re-seal on every rotate vs
+   `Request::Unlock { epoch_hint }`); operator picks.
+
+Phase-3 follow-ups (independent of operator decisions; any can
+be tackled by the next sleeping-session):
+
+4. **Standalone `babbleon-preprocessor` binary** with the
+   security-baseline binary hardening (mlockall,
+   `PR_SET_DUMPABLE=0`, `RLIMIT_CORE=0`, own seccomp profile).
+   Library crate is ready; this just builds the bin target with
+   the rule-8 hardening boilerplate.
+
+5. **`babbleon-python` shim**.  `pipe(2)` plumbing into a child
+   python3 interpreter.  Reads scrambled `.py` from argv,
+   round-trips compounds from the daemon, unscrambles, pipes
+   the result to `python3 -`.  Needs SIGCHLD handling +
+   exec-after-cloexec discipline.
+
+6. **Run the operator's adversarial-LLM test** against the
+   layer-3 output of the example puzzles.  This is the gate
+   for the "decision branch" filed in HANDOFF "Phase 3 MVP"
+   section: defeats trivially / defeats with effort / does not
+   defeat.  The result determines phase-4 escalation order.
+
+7. **Real Python tokenizer.**  The MVP tokenizer's
+   `MVP_LIMITATIONS` list (multi-line strings, operator-from-
+   identifier splitting, f-string interior tokenization) is
+   the obvious next correctness frontier.  Swap to
+   `rustpython-parser` or `tree-sitter-python`; the IR is
+   designed for this — `tokens.rs` and `scrambler.rs` /
+   `unscrambler.rs` are unchanged on the swap.
+
+8. **Operator-facing batch tools**.  `babbleon scramble-dir
+   --in DIR --out DIR` for install-time corpus scrambling.
+   Same plumbing; just a directory-walk wrapper around the
+   per-file pipeline.  Latency budget tightens at scale (see
+   RESULTS.md's "What this clears" interpretation note).
+
+### What this session did NOT do (intentionally)
+
+- No change to `v2-babbleon-core` API surface.  The phase-3
+  work consumes existing primitives; the daemon-side derivation
+  inlines `WhitespaceWordlist::build` via the preprocessor crate.
+- No change to the launcher (`v2-babbleon-launch-untrusted`)
+  graph.  The preprocessor dep is on the daemon (which needs to
+  derive compounds) and the user-CLI (which scrambles /
+  unscrambles), NOT on the launcher (which only consumes the
+  activated table).  Verified by absence of
+  `v2-babbleon-preprocessor` in the launcher's `Cargo.toml`.
+- No change to phase-0 design docs.  The operator-design items
+  filed in earlier handoff sections (dictionary-order word-tags,
+  dynamic keywords, GUI design) remain as filed; this session's
+  scope was build-out, not design.
 
 ---
 
