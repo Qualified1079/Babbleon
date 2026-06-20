@@ -29,13 +29,18 @@
 //! (which needs `socket`+`bind`, not on the allowlist) and the
 //! first `accept` in the serve loop.
 //!
-//! # Phase-2 opt-in
+//! # Default: ON
 //!
-//! The filter is OPT-IN via `--enable-seccomp` in phase 2.  The
-//! envelope was drafted in `docs/v2/daemon-seccomp-envelope.md`
-//! and is awaiting operator confirmation.  Once confirmed, the flag
-//! default flips to "on" and the operator opts OUT via
-//! `--disable-seccomp` for diagnostic sessions.
+//! Seccomp is installed BY DEFAULT at daemon startup.  The
+//! envelope is documented in `docs/v2/daemon-seccomp-envelope.md`
+//! (36 syscalls).  Operators who need to iterate on code paths
+//! that may add a new syscall pass `--no-seccomp` to skip the
+//! install for that run; production deployments leave the
+//! default in place.  The legacy `--enable-seccomp` flag is
+//! kept as a hidden no-op alias for back-compat with phase-2
+//! scripts; it emits a deprecation warning and will be removed
+//! in v2.1.  CI drift detection lives in
+//! `tests/seccomp_envelope.rs`.
 //!
 //! # Threat model boundaries
 //!
@@ -150,9 +155,9 @@ const ALLOWED_SYSCALLS: &[i64] = &[
 /// # Failure semantics
 ///
 /// The function returns `Err` on any step failure and the daemon
-/// `main` propagates that as a fatal startup error — when the
-/// operator passes `--enable-seccomp` and the install can't
-/// proceed, silently running unfiltered would defeat the opt-in.
+/// `main` propagates that as a fatal startup error — seccomp is
+/// on by default, and silently running unfiltered would defeat
+/// the secure default.
 /// The kernel rejects unprivileged seccomp install only when
 /// `PR_SET_NO_NEW_PRIVS` is not set; we set it as step 1 so
 /// barring kernel-config anomalies the apply always succeeds.

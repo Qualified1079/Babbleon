@@ -110,11 +110,28 @@ fn run_daemon(
     let listener = bind_socket(socket_path)
         .map_err(|e| format!("bind {}: {e}", socket_path.display()))?;
 
+    // Surface the deprecated --enable-seccomp flag so a script
+    // passing it learns to drop it before v2.1 retires it.
+    if args.legacy_enable_seccomp {
+        tracing::warn!(
+            "babbleon-daemon: --enable-seccomp is deprecated and a no-op \
+             (seccomp is on by default since the phase-2 close).  \
+             Drop the flag; this warning will become a hard error in v2.1.",
+        );
+    }
+
     // Install seccomp BEFORE the serve loop — the filter excludes
     // socket/bind/listen (already done above) and prctl (already
     // done above), so the install order is mandatory.  See
-    // docs/v2/daemon-seccomp-envelope.md.
-    if args.enable_seccomp {
+    // docs/v2/daemon-seccomp-envelope.md.  Default is ON; --no-seccomp
+    // is an opt-out for local development iteration.
+    if args.disable_seccomp {
+        tracing::warn!(
+            "babbleon-daemon: seccomp NOT installed (--no-seccomp passed).  \
+             NOT recommended for production; envelope in \
+             docs/v2/daemon-seccomp-envelope.md.",
+        );
+    } else {
         #[cfg(target_os = "linux")]
         babbleon_daemon_v2::seccomp_profile::apply().map_err(|e| {
             format!("seccomp profile install: {e}")
@@ -122,11 +139,6 @@ fn run_daemon(
         tracing::info!(
             "babbleon-daemon: seccomp allowlist installed (36 syscalls; \
              envelope in docs/v2/daemon-seccomp-envelope.md)",
-        );
-    } else {
-        tracing::info!(
-            "babbleon-daemon: seccomp NOT installed (pass --enable-seccomp \
-             to enable; envelope draft in docs/v2/daemon-seccomp-envelope.md)",
         );
     }
 

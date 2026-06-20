@@ -113,15 +113,28 @@ pub struct RunArgs {
     #[arg(long = "insecure-stub-secret")]
     pub insecure_stub_secret: bool,
 
-    /// Install the daemon's seccomp allowlist before entering the
-    /// serve loop.  Allowlist is documented in
-    /// `docs/v2/daemon-seccomp-envelope.md` (32 syscalls).  Opt-in
-    /// in phase 2 while the operator confirms the envelope; the
-    /// default flips to "on" in a later phase.  When ON the daemon
-    /// will be killed by the kernel if any code path issues a
-    /// forbidden syscall — useful regression-detection in CI.
-    #[arg(long = "enable-seccomp")]
-    pub enable_seccomp: bool,
+    /// Skip installing the daemon's seccomp allowlist.  The
+    /// allowlist (36 syscalls, documented in
+    /// `docs/v2/daemon-seccomp-envelope.md`) is installed BY
+    /// DEFAULT before entering the serve loop; when installed,
+    /// any code path that issues a forbidden syscall is killed
+    /// by the kernel.  Pass `--no-seccomp` for local development
+    /// iteration where a new syscall hasn't yet been added to
+    /// the envelope.  NOT recommended for production.
+    ///
+    /// Drift detection: `tests/seccomp_envelope.rs` exercises
+    /// the live envelope against the full operator sequence; if
+    /// a code change adds a syscall the filter doesn't allow,
+    /// that test fails immediately.
+    #[arg(long = "no-seccomp")]
+    pub disable_seccomp: bool,
+
+    /// Deprecated alias.  Kept hidden so existing scripts that
+    /// pass `--enable-seccomp` keep working through the v2.0
+    /// transition; the flag is now a no-op because seccomp is
+    /// on by default.  Will be removed in v2.1.
+    #[arg(long = "enable-seccomp", hide = true)]
+    pub legacy_enable_seccomp: bool,
 }
 
 /// One parsed `--tracked-tool` value.  Real-binary path is `Some`
@@ -313,6 +326,70 @@ mod tests {
     fn rotate_mapping_alias_rm_routes_to_rotate_mapping() {
         let args = Args::try_parse_from(["babbleon-daemon", "rm"]).unwrap();
         assert!(matches!(args.cmd, super::Cmd::RotateMapping));
+    }
+
+    #[test]
+    fn seccomp_default_is_on_when_flag_absent() {
+        // The whole point of the phase-2-close flip: an operator
+        // who invokes `run` with no seccomp-related flag must get
+        // the seccomp-enabled path.
+        let args = Args::try_parse_from([
+            "babbleon-daemon",
+            "run",
+            "--wrapper-dir",
+            "/w",
+            "--insecure-stub-secret",
+        ])
+        .unwrap();
+        match args.cmd {
+            super::Cmd::Run(r) => {
+                assert!(!r.disable_seccomp, "default must be seccomp-on");
+                assert!(!r.legacy_enable_seccomp);
+            }
+            other => panic!("expected Run, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn no_seccomp_flag_opts_out() {
+        let args = Args::try_parse_from([
+            "babbleon-daemon",
+            "run",
+            "--wrapper-dir",
+            "/w",
+            "--no-seccomp",
+            "--insecure-stub-secret",
+        ])
+        .unwrap();
+        match args.cmd {
+            super::Cmd::Run(r) => {
+                assert!(r.disable_seccomp);
+            }
+            other => panic!("expected Run, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn legacy_enable_seccomp_still_parses_as_hidden_alias() {
+        // The flag is a no-op for backward compatibility; we
+        // assert that scripts passing it do not fail to parse.
+        let args = Args::try_parse_from([
+            "babbleon-daemon",
+            "run",
+            "--wrapper-dir",
+            "/w",
+            "--enable-seccomp",
+            "--insecure-stub-secret",
+        ])
+        .unwrap();
+        match args.cmd {
+            super::Cmd::Run(r) => {
+                assert!(r.legacy_enable_seccomp);
+                // Default (no --no-seccomp) means seccomp is on.
+                assert!(!r.disable_seccomp);
+            }
+            other => panic!("expected Run, got {other:?}"),
+        }
     }
 
     #[test]
