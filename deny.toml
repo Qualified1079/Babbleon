@@ -83,6 +83,10 @@ name = "v2-babbleon-daemon-protocol"
 allow = ["LicenseRef-PolyForm-Noncommercial-1.0.0"]
 name = "v2-babbleon-pam"
 
+[[licenses.exceptions]]
+allow = ["LicenseRef-PolyForm-Noncommercial-1.0.0"]
+name = "v2-babbleon-vault"
+
 [bans]
 multiple-versions = "warn"
 wildcards = "warn"

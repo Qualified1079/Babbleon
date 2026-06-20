@@ -72,3 +72,6 @@ audit-as-crates-io = false
 
 [policy.v2-babbleon-pam]
 audit-as-crates-io = false
+
+[policy.v2-babbleon-vault]
+audit-as-crates-io = false
