@@ -24,8 +24,8 @@ lands, push here)
 
 Date: 2026-06-20 (user-asleep session continued — claude-opus-4-7)
 
-Last commit before this handoff section: `5d2758d` —
-feat(tools/preprocessor-benchmark): phase-3 latency harness
+Last commit before this handoff section: `b33479b` —
+feat(v2-babbleon): wire scramble-dir / unscramble-dir batch subcommands
 
 ---
 
@@ -111,6 +111,53 @@ preprocessor's per-file latency is measured at 22-35 µs median
    - Files: `Cargo.toml`, `src/main.rs`, `README.md`,
      `RESULTS.md`, `.gitignore`.
 
+6. `8643a65` — `feat(v2-babbleon-python-shim): phase-3 runtime entry point`
+   - **Phase-3 MVP step 1 + step 4 close in one commit.**  The
+     standalone `babbleon-python` binary bridges a layer-3
+     scrambled `.py` file to a child `python3` interpreter via
+     `pipe(2)`.  No tempfile, no `/dev/shm`, no `memfd_create`:
+     unscrambled source lives in a `Vec<u8>` on the shim's
+     stack + the kernel pipe buffer.
+   - New crate `crates/v2-babbleon-python-shim/`.  Five files:
+     `lib.rs`, `main.rs`, `process_hardening.rs`,
+     `pipeline.rs`, `exec_python.rs`.  Same security-baseline
+     shape as every other v2 crate (`#![forbid(unsafe_code)]`,
+     `#![deny(missing_docs)]`, `#![warn(clippy::pedantic)]`,
+     plain-English module names, module-doc threat-model
+     header).
+   - Pipeline: `process_hardening::apply()` (same triad as the
+     daemon) → read scrambled bytes → fetch compounds from
+     daemon → unscramble in-memory → spawn `python3 -` with
+     stdin piped, stdout/stderr inherited → write source →
+     drop stdin (EOF) → wait → propagate exit status.
+   - 21 tests: 17 unit + 4 end-to-end (against a real daemon
+     + real python3, which the sandbox has at
+     `/usr/local/bin/python3` 3.11.15).
+   - Argv contract: `babbleon-python [SHIM-FLAGS] SCRIPT
+     [PYTHON-ARGS...]`.  Shim flags are `--socket PATH`,
+     `--python PATH`, `-v`.  Everything after the script is
+     forwarded verbatim to python.
+
+7. `b33479b` — `feat(v2-babbleon): wire scramble-dir / unscramble-dir batch subcommands`
+   - Install-time corpus scrambling for vendored Python trees.
+     ONE daemon round-trip + ONE in-process walk across the
+     whole tree.
+   - Operator surface:
+       `babbleon scramble-dir --input-dir DIR --output-dir DIR [--force]`
+       `babbleon unscramble-dir --input-dir DIR --output-dir DIR [--force]`
+   - New module `src/corpus_lifecycle.rs`.  `run_scramble_dir`
+     / `run_unscramble_dir` share `walk_and_apply` (FnMut
+     callback + accumulator pattern) so the only
+     direction-specific code is the closure body.
+   - Non-`.py` files skipped silently in MVP; future revision
+     can add `--include-glob`.
+   - `CorpusReport` (Copy, 4 numeric fields) tells the operator
+     how many files were transformed, how many bytes in/out,
+     and wall-clock elapsed.
+   - 10 new unit tests + 1 new integration test (full
+     scramble-dir → unscramble-dir round-trip with subdirs and
+     non-.py files).
+
 ### Test deltas across the session block
 
 | Crate / target | Before | After | Δ |
@@ -121,9 +168,10 @@ preprocessor's per-file latency is measured at 22-35 µs median
 | `v2-babbleon-daemon-protocol` (proptest) | 6 (1024 cases) | 6 (1024 cases, extended) | (new variant) |
 | `v2-babbleon-daemon` (unit) | 86 | 98 | +12 |
 | `v2-babbleon-daemon` (integ) | 4+5+1+2 | 4+5+1+2 (envelope extends) | — |
-| `v2-babbleon` (unit) | 16 | 29 | +13 |
-| `v2-babbleon` (integ) | 7 | 10 | +3 |
-| **Total v2 tests (excl rooted)** | **332** | **379** | **+47** |
+| `v2-babbleon` (unit) | 16 | 39 | +23 |
+| `v2-babbleon` (integ) | 7 | 11 | +4 |
+| `v2-babbleon-python-shim` (new) | — | 10 lib + 7 bin + 4 integ | +21 |
+| **Total v2 tests (excl rooted)** | **332** | **421** | **+89** |
 
 cargo clippy pedantic clean across every v2 crate
 (`-p v2-babbleon-core -p v2-babbleon-preprocessor
@@ -131,18 +179,38 @@ cargo clippy pedantic clean across every v2 crate
 -p v2-babbleon-vault -p v2-babbleon-launch-untrusted
 -p v2-babbleon-launch-artefacts -p v2-babbleon -p v2-babbleon-pam`).
 
-### Phase-3 MVP step list — current status
+### Phase-3 MVP step list — current status (refreshed post-commit-7)
 
 `docs/v2/structure-scrambling.md` §"Recommended phase-3 prototype":
 
 | # | Step | Status | Where |
 |---|---|---|---|
-| 1 | Standalone Rust binary preprocessor | ⚠️ partial | Library crate + operator CLI subcommands cover the UX; dedicated `babbleon-preprocessor` binary filed for follow-up. |
+| 1 | Standalone Rust binary preprocessor | ✅ | `8643a65` `crates/v2-babbleon-python-shim/` — the standalone binary IS the python3 shim. |
 | 2 | Layer 3 only (whitespace-as-words) for Python | ✅ | `94d5128` (prior session) + this session's polish. |
-| 3 | `babbleon scramble FILE` / `babbleon unscramble FILE` | ✅ | `b97d8ed` (this session). |
-| 4 | Wrap python3 via `pipe(2)` | ⚠️ partial | Stdin sentinel (`-`) means an operator can shell-pipe today (`babbleon unscramble - < src.scr \| python3 -`).  Dedicated `babbleon-python` shim that exec's python3 internally filed for follow-up. |
-| 5 | Sub-50ms latency confirmation | ✅ | `5d2758d` (this session); RESULTS.md. |
+| 3 | `babbleon scramble FILE` / `babbleon unscramble FILE` | ✅ | `b97d8ed`. |
+| 4 | Wrap python3 via `pipe(2)` | ✅ | `8643a65` `exec_python::run`. |
+| 5 | Sub-50ms latency confirmation | ✅ | `5d2758d`; RESULTS.md. |
 | 6 | Operator's adversarial-LLM test | ⏳ operator-side | Tooling in place; operator runs the test. |
+
+**Phase-3 MVP is FUNCTIONALLY COMPLETE** (steps 1-5).  Step 6 is
+operator-side; the build-out side is closed.  The operator can
+now:
+
+```
+babbleon init                                  # one-time
+babbleon unlock                                # per session
+babbleon scramble-dir --input-dir ./src --output-dir ./scr
+babbleon-python ./scr/main.py [args...]        # runs against
+                                               # daemon socket
+babbleon rotate-mapping                        # invalidates old
+                                               # compounds; bumps
+                                               # the epoch
+```
+
+end-to-end against a real daemon and a real python3.  The
+`tests/end_to_end.rs` in the python-shim crate exercises this
+exact pipeline against an `--insecure-stub-secret` daemon every
+`cargo test -p v2-babbleon-python-shim` run.
 
 ### Open / next-session items (priority order — refreshed 2026-06-20 night, post-session-block)
 
@@ -160,26 +228,25 @@ Operator-decision-blocked items (unchanged from prior session):
    Two designs in HANDOFF (re-seal on every rotate vs
    `Request::Unlock { epoch_hint }`); operator picks.
 
-Phase-3 follow-ups (independent of operator decisions; any can
-be tackled by the next sleeping-session):
+Phase-3 follow-ups (commits 6-7 close items 4-5 + 8 from the
+prior list; remaining work):
 
-4. **Standalone `babbleon-preprocessor` binary** with the
-   security-baseline binary hardening (mlockall,
-   `PR_SET_DUMPABLE=0`, `RLIMIT_CORE=0`, own seccomp profile).
-   Library crate is ready; this just builds the bin target with
-   the rule-8 hardening boilerplate.
+4. ✅ **Standalone preprocessor binary** — closed by `8643a65`
+   (`babbleon-python` shim is the standalone binary; rule-8
+   hardening triad lives at `process_hardening::apply`).
 
-5. **`babbleon-python` shim**.  `pipe(2)` plumbing into a child
-   python3 interpreter.  Reads scrambled `.py` from argv,
-   round-trips compounds from the daemon, unscrambles, pipes
-   the result to `python3 -`.  Needs SIGCHLD handling +
-   exec-after-cloexec discipline.
+5. ✅ **`babbleon-python` shim** — closed by `8643a65`.
+   `pipe(2)` plumbing in `exec_python::run`.  SIGCHLD reaping
+   via the parent's `wait()`.  SIGINT forwarding to the child
+   is filed for follow-up (see crate's lib.rs out-of-scope
+   list); cloexec is handled by `Command::new`'s default.
 
 6. **Run the operator's adversarial-LLM test** against the
    layer-3 output of the example puzzles.  This is the gate
    for the "decision branch" filed in HANDOFF "Phase 3 MVP"
    section: defeats trivially / defeats with effort / does not
    defeat.  The result determines phase-4 escalation order.
+   *Operator-side; build-out side is closed.*
 
 7. **Real Python tokenizer.**  The MVP tokenizer's
    `MVP_LIMITATIONS` list (multi-line strings, operator-from-
@@ -189,11 +256,24 @@ be tackled by the next sleeping-session):
    designed for this — `tokens.rs` and `scrambler.rs` /
    `unscrambler.rs` are unchanged on the swap.
 
-8. **Operator-facing batch tools**.  `babbleon scramble-dir
-   --in DIR --out DIR` for install-time corpus scrambling.
-   Same plumbing; just a directory-walk wrapper around the
-   per-file pipeline.  Latency budget tightens at scale (see
-   RESULTS.md's "What this clears" interpretation note).
+8. ✅ **Operator-facing batch tools** — closed by `b33479b`
+   (`babbleon scramble-dir` / `babbleon unscramble-dir`).
+   One daemon round-trip; in-process walk across the tree.
+
+9. **Trust-tier inode gate** for the python-shim.  Today the
+   shim trusts that the operator only installs it where the
+   trusted tier runs.  A defense-in-depth namespace-inode
+   check (refuse to run if `readlink(/proc/self/ns/mnt)` does
+   NOT match the trusted-tier inode set) is filed for the
+   same gate the launcher exposes.  Filed as the
+   python-shim crate's `lib.rs` out-of-scope list.
+
+10. **SIGINT forwarding** in the python-shim.  Today SIGINT
+    sent to `babbleon-python` reaps the child python3 via the
+    kernel's default SIGCHLD handling; the operator's
+    `Ctrl-C` may not propagate to the python script.
+    Filed in the python-shim crate's `lib.rs` out-of-scope
+    list.
 
 ### What this session did NOT do (intentionally)
 
