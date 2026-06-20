@@ -573,6 +573,97 @@ fn cli_scramble_against_locked_daemon_reports_vault_error() {
     );
 }
 
+/// End-to-end: `babbleon scramble-dir` + `babbleon unscramble-dir`
+/// round-trip a small Python corpus through the daemon.
+///
+/// Demonstrates the install-time use case: one daemon round-trip
+/// covers the whole tree.  Output structure mirrors input layout
+/// (including subdirectories); non-`.py` files are skipped.
+#[test]
+fn cli_scramble_dir_then_unscramble_dir_round_trip() {
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("daemon.sock");
+    let wrapper_dir = dir.path().join("wrappers");
+    std::fs::create_dir_all(&wrapper_dir).unwrap();
+    let curl = fake_real_binary(dir.path(), "curl");
+    let child = spawn_daemon(&sock, &wrapper_dir, ("curl", &curl));
+
+    let inp = dir.path().join("inp");
+    let scr = dir.path().join("scr");
+    let recon = dir.path().join("recon");
+    std::fs::create_dir_all(inp.join("sub")).unwrap();
+    let a_body = "x = 1\nif x:\n    print(\"a\")\n";
+    let b_body = "def f():\n    return 2\n";
+    let readme = "this is a non-py file\n";
+    std::fs::write(inp.join("a.py"), a_body).unwrap();
+    std::fs::write(inp.join("sub").join("b.py"), b_body).unwrap();
+    std::fs::write(inp.join("README"), readme).unwrap();
+
+    let cli = sibling_binary("babbleon-v2");
+
+    // scramble-dir
+    let out = Command::new(&cli)
+        .arg("--socket")
+        .arg(&sock)
+        .arg("scramble-dir")
+        .arg("--input-dir")
+        .arg(&inp)
+        .arg("--output-dir")
+        .arg(&scr)
+        .output()
+        .unwrap();
+    if !out.status.success() {
+        shutdown(child);
+        panic!(
+            "scramble-dir failed: stdout={:?} stderr={:?}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("files_transformed: 2"),
+        "stdout should report 2 files: {stdout}",
+    );
+
+    // Scrambled tree mirrors the input layout; non-.py files are
+    // skipped.
+    assert!(scr.join("a.py").exists());
+    assert!(scr.join("sub").join("b.py").exists());
+    assert!(!scr.join("README").exists(), "README must be skipped");
+
+    // Layer-3 promise: no visible '\n' in any scrambled output.
+    let scrambled_a = std::fs::read(scr.join("a.py")).unwrap();
+    assert!(!scrambled_a.contains(&b'\n'));
+
+    // unscramble-dir
+    let out = Command::new(&cli)
+        .arg("--socket")
+        .arg(&sock)
+        .arg("unscramble-dir")
+        .arg("--input-dir")
+        .arg(&scr)
+        .arg("--output-dir")
+        .arg(&recon)
+        .output()
+        .unwrap();
+    shutdown(child);
+    assert!(
+        out.status.success(),
+        "unscramble-dir failed: stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+
+    // Reconstructed sources are byte-identical to originals modulo
+    // the MVP normalisations (trailing newline; canonical indent).
+    let recon_a = std::fs::read_to_string(recon.join("a.py")).unwrap();
+    assert_eq!(recon_a, a_body);
+    let recon_b =
+        std::fs::read_to_string(recon.join("sub").join("b.py")).unwrap();
+    assert_eq!(recon_b, b_body);
+}
+
 /// `scramble` against a missing daemon socket must fail cleanly
 /// with an actionable error pointing at the socket path.  Catches
 /// regression where the CLI swallows the connect error or

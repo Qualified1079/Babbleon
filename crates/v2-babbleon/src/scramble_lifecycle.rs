@@ -179,6 +179,15 @@ fn write_output(sink: &OutputSink, bytes: &[u8]) -> Result<()> {
 
 /// Round-trip `Request::GetWhitespaceCompounds` against the daemon,
 /// then construct a `WhitespaceWordlist` from the returned compounds.
+///
+/// Public to the binary crate so the batch [`crate::corpus_lifecycle`]
+/// path can share one round-trip across a multi-file walk.
+pub fn fetch_whitespace_wordlist_pub(
+    socket_path: &Path,
+) -> Result<WhitespaceWordlist> {
+    fetch_whitespace_wordlist(socket_path)
+}
+
 fn fetch_whitespace_wordlist(socket_path: &Path) -> Result<WhitespaceWordlist> {
     let resp = round_trip(socket_path, &Request::GetWhitespaceCompounds)
         .with_context(|| {

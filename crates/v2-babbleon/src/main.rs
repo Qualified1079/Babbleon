@@ -30,6 +30,7 @@
 #![deny(missing_docs)]
 #![warn(clippy::pedantic)]
 
+mod corpus_lifecycle;
 mod passphrase;
 mod scramble_lifecycle;
 mod vault_lifecycle;
@@ -44,6 +45,9 @@ use babbleon_daemon_protocol_v2::{
     default_socket_path, round_trip, Request, Response,
 };
 
+use corpus_lifecycle::{
+    run_scramble_dir, run_unscramble_dir, CorpusOptions, CorpusReport,
+};
 use scramble_lifecycle::{
     run_scramble, run_unscramble, InputSource, OutputSink, ScrambleOptions,
 };
@@ -171,6 +175,41 @@ enum Cmd {
         #[arg(short = 'o', long = "output", value_name = "PATH")]
         output: Option<PathBuf>,
     },
+
+    /// Recursively scramble every `.py` file under `--input-dir`
+    /// to the same relative path under `--output-dir`.  Fetches
+    /// per-epoch compounds from the daemon ONCE up-front; no
+    /// per-file round-trip.  Operator typically runs this at
+    /// install time over a vendored Python tree.
+    #[command(name = "scramble-dir")]
+    ScrambleDir {
+        /// Source tree to read.
+        #[arg(long = "input-dir", value_name = "PATH")]
+        input_dir: PathBuf,
+        /// Destination tree to write.  Must not exist (or be
+        /// empty) unless `--force` is supplied.
+        #[arg(long = "output-dir", value_name = "PATH")]
+        output_dir: PathBuf,
+        /// Permit writing into a non-empty output directory.
+        #[arg(long = "force")]
+        force: bool,
+    },
+
+    /// Inverse of `scramble-dir`: walk a tree of scrambled `.py`
+    /// files and write reconstructed sources to the same relative
+    /// paths under `--output-dir`.  Same flags as `scramble-dir`.
+    #[command(name = "unscramble-dir")]
+    UnscrambleDir {
+        /// Source tree to read.
+        #[arg(long = "input-dir", value_name = "PATH")]
+        input_dir: PathBuf,
+        /// Destination tree to write.
+        #[arg(long = "output-dir", value_name = "PATH")]
+        output_dir: PathBuf,
+        /// Permit writing into a non-empty output directory.
+        #[arg(long = "force")]
+        force: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -210,6 +249,28 @@ fn main() -> ExitCode {
             output: output_sink_from(output),
             socket_path: socket_path.clone(),
         }),
+        Cmd::ScrambleDir {
+            input_dir,
+            output_dir,
+            force,
+        } => run_scramble_dir(CorpusOptions {
+            input_dir,
+            output_dir,
+            allow_overwrite: force,
+            socket_path: socket_path.clone(),
+        })
+        .map(print_corpus_report),
+        Cmd::UnscrambleDir {
+            input_dir,
+            output_dir,
+            force,
+        } => run_unscramble_dir(CorpusOptions {
+            input_dir,
+            output_dir,
+            allow_overwrite: force,
+            socket_path: socket_path.clone(),
+        })
+        .map(print_corpus_report),
     };
 
     match result {
@@ -318,6 +379,21 @@ fn output_sink_from(path: Option<PathBuf>) -> OutputSink {
         Some(p) if p.as_os_str() == "-" => OutputSink::Stdout,
         Some(p) => OutputSink::File(p),
     }
+}
+
+/// Pretty-print a [`CorpusReport`] to stdout after a successful
+/// `scramble-dir` / `unscramble-dir` run.
+fn print_corpus_report(report: CorpusReport) {
+    let CorpusReport {
+        files_transformed,
+        bytes_in,
+        bytes_out,
+        elapsed_ms,
+    } = report;
+    println!("files_transformed: {files_transformed}");
+    println!("bytes_in: {bytes_in}");
+    println!("bytes_out: {bytes_out}");
+    println!("elapsed_ms: {elapsed_ms}");
 }
 
 #[cfg(test)]
