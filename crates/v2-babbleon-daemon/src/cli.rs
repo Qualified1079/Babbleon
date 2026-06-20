@@ -102,9 +102,14 @@ pub struct RunArgs {
     #[arg(long = "tracked-tool", value_name = "NAME[=PATH]", value_parser = parse_tracked_tool)]
     pub tracked_tools: Vec<ParsedTrackedTool>,
 
-    /// Use a hardcoded development secret instead of loading from
-    /// the vault.  PHASE 2 STUB — required while real vault unlock
-    /// is not yet wired.  Refuses to start without this flag.
+    /// Start in Unlocked with a hardcoded development secret
+    /// (`0x42` repeated 32 times) instead of waiting for an operator
+    /// `Unlock` request.  Used by integration tests and by
+    /// operators who deliberately want a non-vault daemon (e.g.
+    /// for local feature iteration).  Default is to start Locked
+    /// and accept `Request::Unlock` over the socket.
+    ///
+    /// NOT for production.
     #[arg(long = "insecure-stub-secret")]
     pub insecure_stub_secret: bool,
 

@@ -212,31 +212,83 @@ fn binary_serves_status_emit_rotate_in_sequence() {
 }
 
 #[test]
-fn binary_refuses_to_run_without_insecure_stub_secret_flag() {
+fn binary_starts_locked_without_insecure_stub_secret_flag() {
+    // Default behaviour as of HANDOFF item 2 closure: the daemon
+    // starts in the Locked state without the `--insecure-stub-secret`
+    // flag.  `Status` works; `EmitActivatedTable` and `RotateMapping`
+    // return `Vault` errors until an operator sends `Request::Unlock`.
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("daemon.sock");
     let wrapper_dir = dir.path().join("wrappers");
     std::fs::create_dir_all(&wrapper_dir).unwrap();
 
-    let output = Command::new(daemon_binary())
+    // Spawn the daemon WITHOUT --insecure-stub-secret.
+    let bin = daemon_binary();
+    let mut child = Command::new(&bin)
         .arg("--socket")
         .arg(&sock)
         .arg("run")
         .arg("--wrapper-dir")
         .arg(&wrapper_dir)
         // NOTE: no --insecure-stub-secret.
-        .output()
-        .expect("run babbleon-daemon");
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn babbleon-daemon");
 
-    assert!(
-        !output.status.success(),
-        "daemon should refuse to start without --insecure-stub-secret"
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("--insecure-stub-secret"),
-        "stderr should explain the required flag.  Got: {stderr}",
-    );
+    // Wait for the socket to appear (it always does, regardless of
+    // lock state — the listener binds before the serve loop starts).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if sock.exists() {
+            break;
+        }
+        if let Ok(Some(status)) = child.try_wait() {
+            let _ = child.kill();
+            let mut stderr = String::new();
+            if let Some(s) = child.stderr.as_mut() {
+                use std::io::BufRead;
+                let _ = std::io::BufReader::new(s).read_line(&mut stderr);
+            }
+            panic!("daemon exited before binding ({status}); stderr: {stderr}");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(sock.exists(), "daemon never bound socket");
+
+    // Status works in Locked mode: vault_locked = true.
+    let resp = round_trip(&sock, &Request::Status).expect("status");
+    match resp {
+        Response::Status {
+            vault_locked,
+            tracked_count,
+            ..
+        } => {
+            assert!(vault_locked, "daemon should start Locked");
+            assert_eq!(tracked_count, 0);
+        }
+        other => {
+            shutdown(child);
+            panic!("expected Status, got {other:?}");
+        }
+    }
+
+    // Emit-activated-table refuses with a Vault error in Locked.
+    let resp = round_trip(&sock, &Request::EmitActivatedTable)
+        .expect("emit round-trip");
+    match resp {
+        Response::Error { kind, message } => {
+            use babbleon_daemon_protocol_v2::ErrorKind;
+            assert_eq!(kind, ErrorKind::Vault);
+            assert!(message.contains("locked"), "{message}");
+        }
+        other => {
+            shutdown(child);
+            panic!("expected Error, got {other:?}");
+        }
+    }
+
+    shutdown(child);
 }
 
 #[test]

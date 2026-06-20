@@ -60,44 +60,52 @@ fn run_daemon(
     socket_path: &std::path::Path,
     args: RunArgs,
 ) -> Result<(), String> {
-    if !args.insecure_stub_secret {
-        return Err(
-            "phase 2 requires --insecure-stub-secret while real vault \
-             unlock is pending.  Pass it explicitly to acknowledge that \
-             this daemon will use a development-only hardcoded secret \
-             (NOT for production)."
-                .into(),
-        );
-    }
-
     // Security-baseline rule 8: harden BEFORE any secret enters
-    // memory.  The next line builds a PerHostSecret; the hygiene
-    // call has to come first.
+    // memory.  Runs in both the Locked and Unlocked startup paths
+    // because the Locked path will eventually receive a secret via
+    // Request::Unlock.
     apply_secret_hygiene()
         .map_err(|e| format!("secret-hygiene startup: {e}"))?;
 
     let tracked = resolve_tracked_tools(args.tracked_tools)?;
-
-    let secret = PerHostSecret::from_bytes(&INSECURE_STUB_SECRET)
-        .map_err(|e| format!("constructing stub secret: {e}"))?;
     let materialization = MaterializationConfig {
         wrapper_dir: args.wrapper_dir,
         honey_list_path: None,
         stale_list_path: None,
         trusted_ns_inode: None,
     };
-    // Phase 2: `--insecure-stub-secret` is the only path into the
-    // daemon today.  Constructs the state directly in Unlocked so the
-    // daemon serves immediately.  When the user-CLI's `babbleon
-    // unlock` lands (HANDOFF item 2), production startup will switch
-    // to `new_locked` and wait for the operator's Unlock request.
-    let mut state = DaemonState::new_unlocked(
-        secret,
-        Wordlist::english_baseline(),
-        tracked,
-        materialization,
-    )
-    .map_err(|e| format!("constructing DaemonState: {e}"))?;
+    // Default: start Locked and wait for the operator's `babbleon
+    // unlock`.  Opt-in path: `--insecure-stub-secret` starts
+    // Unlocked with the development-only sentinel secret (the
+    // legacy phase-2 behaviour, retained for tests and for
+    // operators who deliberately want a non-vault daemon).
+    let mut state = if args.insecure_stub_secret {
+        let secret = PerHostSecret::from_bytes(&INSECURE_STUB_SECRET)
+            .map_err(|e| format!("constructing stub secret: {e}"))?;
+        tracing::warn!(
+            "babbleon-daemon: --insecure-stub-secret in use; \
+             daemon starts in Unlocked with a development-only \
+             hardcoded secret (NOT for production)",
+        );
+        DaemonState::new_unlocked(
+            secret,
+            Wordlist::english_baseline(),
+            tracked,
+            materialization,
+        )
+        .map_err(|e| format!("constructing DaemonState: {e}"))?
+    } else {
+        tracing::info!(
+            "babbleon-daemon: starting Locked; awaiting `babbleon unlock` \
+             from a peer (Request::Unlock over the socket)",
+        );
+        DaemonState::new_locked(
+            Wordlist::english_baseline(),
+            tracked,
+            materialization,
+        )
+        .map_err(|e| format!("constructing DaemonState: {e}"))?
+    };
 
     let listener = bind_socket(socket_path)
         .map_err(|e| format!("bind {}: {e}", socket_path.display()))?;
