@@ -2073,6 +2073,7 @@ dependencies = [
 name = "v2-babbleon-preprocessor"
 version = "0.1.0"
 dependencies = [
+ "proptest",
  "thiserror",
  "v2-babbleon-core",
 ]

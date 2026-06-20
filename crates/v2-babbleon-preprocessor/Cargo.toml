@@ -25,3 +25,10 @@ pedantic = { level = "warn", priority = -1 }
 [dependencies]
 v2-babbleon-core = { path = "../v2-babbleon-core" }
 thiserror.workspace = true
+
+[dev-dependencies]
+# Property-based testing for the tokenize -> scramble -> unscramble
+# round-trip invariant.  Same harness shape as
+# v2-babbleon-daemon-protocol's proptest_protocol.rs and
+# v2-babbleon-vault's proptest_vault.rs.
+proptest = { workspace = true }
