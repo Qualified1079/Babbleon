@@ -143,17 +143,19 @@ const ALLOWED_SYSCALLS: &[i64] = &[
 ///
 /// Returns [`Error::Ipc`] if either step fails.  We reuse the Ipc
 /// variant to keep the daemon's error surface small; the Display
-/// string carries the specific failure name so log triage is
+/// string carries the specific failure name (`PR_SET_NO_NEW_PRIVS`
+/// vs. `seccomp filter build`/`compile`/`apply`) so log triage is
 /// unambiguous.
 ///
-/// # Failure semantics on the seccomp install itself
+/// # Failure semantics
 ///
-/// `seccompiler::apply_filter` failure is non-fatal *by design at
-/// this build step* — the filter is opt-in (phase-2 stub) and an
-/// install failure leaves the daemon running unfiltered.  This is
-/// less safe but we surface a `tracing::error!` so the operator
-/// notices.  Once the filter goes default-on, install failure
-/// becomes fatal at the call site.
+/// The function returns `Err` on any step failure and the daemon
+/// `main` propagates that as a fatal startup error — when the
+/// operator passes `--enable-seccomp` and the install can't
+/// proceed, silently running unfiltered would defeat the opt-in.
+/// The kernel rejects unprivileged seccomp install only when
+/// `PR_SET_NO_NEW_PRIVS` is not set; we set it as step 1 so
+/// barring kernel-config anomalies the apply always succeeds.
 pub fn apply() -> Result<()> {
     // Step 1: PR_SET_NO_NEW_PRIVS = 1.  Unprivileged operation;
     // monotonic (once on, can't be turned off).  Required for

@@ -33,7 +33,9 @@
 //! - [`DaemonState::new`] — construct with the secret, wordlist,
 //!   tracked-tool list, and wrapper directory.  Builds the epoch-0
 //!   mapping eagerly.
-//! - [`DaemonState::status`] — read-only snapshot.
+//! - [`DaemonState::epoch`] / [`DaemonState::tracked_count`] /
+//!   [`DaemonState::last_rotation_unix_secs`] — read-only snapshot
+//!   accessors used by the `Status` handler.
 //! - [`DaemonState::activated_table_jsonl`] — serialize the cached
 //!   mapping as JSONL (validated through
 //!   [`babbleon_core_v2::build_activated_table_from_mapping`]).

@@ -177,12 +177,13 @@ pub fn materialize(
 }
 
 /// Remove every Babbleon-signed wrapper file in `wrapper_dir` whose
-/// filename is not in `keep`.  Files lacking the
-/// [`WRAPPER_SIGNATURE`] header are left alone — they belong to
-/// someone else and we will not unlink them.  Returns the count of
-/// removed files.  Errors are logged at `warn` level and counted as
-/// "not removed"; cleanup is best-effort and never blocks a
-/// materialise.
+/// filename is not in `keep`.  Files lacking the Babbleon wrapper
+/// header (`#!/bin/sh\n# babbleon-v2 wrapper pad:`, the
+/// crate-private `WRAPPER_SIGNATURE` constant) are left alone —
+/// they belong to someone else and we will not unlink them.
+/// Returns the count of removed files.  Errors are logged at `warn`
+/// level and counted as "not removed"; cleanup is best-effort and
+/// never blocks a materialise.
 pub fn cleanup_stale_wrappers<S: BuildHasher>(
     wrapper_dir: &Path,
     keep: &HashSet<&str, S>,
