@@ -152,6 +152,37 @@ sections below.  Remaining work:
 Items 1, 2 are roughly independent.  Items 3 and 4 should land
 before any production deployment but don't block phase-3 progress.
 
+### End-to-end smoke test with --enable-seccomp (2026-06-20)
+
+After all this session's commits landed, ran the full operator
+sequence against a live daemon spawned with `--enable-seccomp`:
+
+```
+$ SOCK=/tmp/smoke.sock; WRAP=/tmp/wrappers-smoke
+$ ./target/debug/babbleon-daemon --socket "$SOCK" run \
+    --wrapper-dir "$WRAP" --tracked-tool curl=/usr/bin/curl \
+    --tracked-tool ssh=/usr/bin/ssh --insecure-stub-secret \
+    --enable-seccomp &
+$ ./target/debug/babbleon-daemon --socket "$SOCK" status
+  epoch: 0
+  tracked_count: 2
+  vault_locked: false
+  last_rotation_unix_secs: ...
+$ ./target/debug/babbleon-daemon --socket "$SOCK" rotate-mapping
+  rotated to epoch: 1
+$ ./target/debug/babbleon-daemon --socket "$SOCK" emit-activated-table | head -c 300
+  {"epoch":1,"honey":["sarcomeremulticonstantmirrorspelves",...
+$ ls "$WRAP" | wc -l
+  102
+```
+
+102 wrappers = current epoch (50 honey + 2 real) + previous
+epoch's stale set (50 honey + 2 real) — matches the
+`current ∪ previous_stale` cleanup invariant filed at item 4b in
+the prior handoff.  Daemon stderr empty — every materialise
+syscall is on the 36-syscall allowlist, every signal-handling
+syscall is allowed, no SIGSYS fired.
+
 ### Daemon seccomp envelope — drafted, strace-confirmed, implemented (2026-06-20)
 
 Three commits:
