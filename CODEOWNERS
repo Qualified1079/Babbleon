@@ -8,29 +8,59 @@
 *                                       @qualified1079
 
 # Crypto + key material code paths.  Changes here demand careful review.
+#
+# v1 (deprecated; reference only — see crates/DEPRECATED-V1.md).
 /crates/babbleon/src/mapping/           @qualified1079
 /crates/babbleon/src/vault/             @qualified1079
 /crates/babbleon/src/crypto.rs          @qualified1079
 /crates/babbleon/src/audit.rs           @qualified1079
 /crates/babbleon/src/process_hardening.rs @qualified1079
 
+# v2 core — per-host secret, HKDF, permutation, mapping primitives,
+# wrapper rendering.  All key derivation lives here.
+/crates/v2-babbleon-core/               @qualified1079
+
+# v2 daemon — sole owner of the per-host secret in process memory.
+# Includes the seccomp profile + hardening (PR_SET_DUMPABLE,
+# RLIMIT_CORE, mlockall) that prevent secret leakage via core
+# dumps or swap.
+/crates/v2-babbleon-daemon/             @qualified1079
+
+# v2 launcher — capability-bearing binary (cap_sys_admin,
+# cap_setuid, cap_setgid, cap_ipc_lock).  Every line is
+# privilege-bearing.
+/crates/v2-babbleon-launch-untrusted/   @qualified1079
+
+# v2 daemon protocol — the wire format that bridges launcher / CLI
+# to the daemon.  Hand-parsed serde_json::Value per security-
+# baseline rule 11.
+/crates/v2-babbleon-daemon-protocol/    @qualified1079
+
 # Setuid binary — every line in here is privilege-bearing.
 /crates/babbleon-ns-helper/             @qualified1079
 
-# PAM module — C shim into the OS auth stack.
+# PAM modules — C shim into the OS auth stack.
 /crates/babbleon-pam/                   @qualified1079
+/crates/v2-babbleon-pam/                @qualified1079
 
 # CI workflows and supply-chain configuration.
 /.github/                               @qualified1079
 /deny.toml                              @qualified1079
 /Cargo.toml                             @qualified1079
 /Cargo.lock                             @qualified1079
+/supply-chain/                          @qualified1079
 
 # Threat model / standards docs — keep them in sync with the code.
 /docs/threat-model.md                   @qualified1079
 /docs/standards-survey.md               @qualified1079
+/docs/v2/                               @qualified1079
 /SECURITY.md                            @qualified1079
 /.well-known/security.txt               @qualified1079
+
+# Top-level v2 design docs at the repo root.
+/V2_PLAN.md                             @qualified1079
+/HANDOFF.md                             @qualified1079
+/CLAUDE.md                              @qualified1079
 
 # OS-level MAC profiles.
 /policies/                              @qualified1079
