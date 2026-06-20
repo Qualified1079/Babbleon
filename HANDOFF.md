@@ -29,6 +29,74 @@ extract activated_table + credentials to v2-babbleon-launch-artefacts
 
 ---
 
+## 2026-06-20 (sleeping-operator continuation — claude-opus-4-7)
+
+Started a tokens-while-asleep session that didn't initially have
+the remote's state pulled in (cold container; only `README.md`
+visible on the working tree).  After establishing that the
+remote held substantial v2 work, pulled and merged cleanly;
+took remote's `CLAUDE.md` and `README.md` on conflict (the
+routing-doc version is authoritative).
+
+### What this session contributed (research-first, no v2 code yet)
+
+**`docs/v2/llm-transform-effectiveness.md`** — focused research
+note answering the empirical question that every later phase-3
+escalation will be measured against: *which semantic-preserving
+transforms actually degrade code-LLM comprehension, and by how
+much?*  Pulled three converging 2025-2026 sources (arXiv
+2505.10443, 2504.04372, 2505.12185); reports per-transform
+accuracy drops with model breakdown; cross-walks each finding to
+v2's layer model.
+
+Key findings that bear on phase-3 escalation order:
+
+- Pure variable renaming (v1 mechanism) plausibly *helps*
+  open-source code-LLMs by breaking training-set memorisation.
+  Validates "layer 1 alone is not load-bearing" as the central
+  v2 thesis.
+- Loop transforms are the highest-leverage *individual* moves
+  (For→while -45 / partial unroll -70 vs Gemini-3).  Filed as
+  candidate for phase-4+ extension after the layer-3 MVP.
+- Dead code injection bottoms attacker accuracy at 18.5% (vs
+  baseline ~80%).  v2's "70% maximum-security target" for
+  decoy ratio is well-supported by literature; 30% default
+  leaves a lot of attacker-cost on the table.
+- Misleading comments (24.55% attacker accuracy) are nearly as
+  effective as dead code but **not explicitly modelled** in
+  v2's layer 5 today.  Filed as Open Question A in the note.
+
+The note also files three operator-call open questions: decoy
+comments as a sub-layer, phase-3 escalation re-ordering, and
+substituting CruxEval / LiveCodeBench for the operator's
+adversarial-LLM test.
+
+### Decisions this session is making (within scope)
+
+- Phase 3 MVP scaffold goes in as `crates/v2-babbleon-
+  preprocessor/` with the full v2 security-baseline shape
+  (`#![forbid(unsafe_code)]`, `#![deny(missing_docs)]`,
+  `#![warn(clippy::pedantic)]`, plain-English module names,
+  module-doc threat-model header).
+- Layer-3 work compartmentalised so the Python tokenizer is a
+  separately replaceable module (next session can swap to
+  `rustpython-parser` or `tree-sitter-python` without touching
+  scramble / unscramble).
+- No code change to `v2-babbleon-core` this session.  Phase 3
+  prototype consumes the existing wordlist + per-host secret
+  surface; doesn't widen it.
+
+### Not touching this session (operator-confirm)
+
+- The three operator-decision items from prior handoffs (flip
+  daemon `new_locked` default, pick PAM architecture, flip
+  daemon `--enable-seccomp` default) are still operator-blocked.
+- Open Questions A/B/C in the research note are filed for
+  operator pickup; this session is not making the call on any of
+  them.
+
+---
+
 ## Phases 1 + 2 — status declaration (2026-06-20 late)
 
 **Phase 1 (`v2-babbleon-core` skeleton): FUNCTIONALLY COMPLETE.**
