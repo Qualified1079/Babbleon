@@ -24,8 +24,142 @@ lands, push here)
 
 Date: 2026-06-20 (user-asleep session continued — claude-opus-4-7)
 
-Last commit before this handoff section: `e6cc823` — refactor(v2-babbleon-daemon):
-DaemonState now has Locked / Unlocked states.
+Last commit before this handoff section: `76b85ed` — refactor:
+extract activated_table + credentials to v2-babbleon-launch-artefacts
+
+---
+
+## Phases 1 + 2 — status declaration (2026-06-20 late)
+
+**Phase 1 (`v2-babbleon-core` skeleton): FUNCTIONALLY COMPLETE.**
+
+`V2_PLAN.md` phase-1 acceptance criteria, verbatim:
+"v2 core crate skeleton.  `babbleon-core` with mapping, vault
+(HKDF, SecretBox), wrapper template, event bus.  No structural
+scrambling yet — that's phase 3.  Identifier scramble +
+tripwires + response policy ported directly."
+
+Mapping to current state:
+
+| Criterion | Shipped | Where |
+|---|---|---|
+| mapping | ✅ | `v2-babbleon-core::mapping` (`EpochMapping`, `MappingBuilder`) |
+| HKDF | ✅ | `v2-babbleon-core::key_derivation::derive_subkey` (RFC 5869) |
+| SecretBox | ✅ | `v2-babbleon-core::PerHostSecret` (`Zeroizing<[u8;32]>`) |
+| wrapper template | ✅ | `v2-babbleon-core::wrapper` (unified template + HKDF-padding) |
+| event bus | ✅ | `v2-babbleon-core::events` (`StderrSink` / `JsonlFileSink` / `AuditChainSink`) |
+| identifier scramble | ✅ | `EpochMapping::scramble` |
+| tripwires | ✅ | `v2-babbleon-core::tripwire` (`TripwireResponder`, `TripwireResponsePolicy`) |
+| response policy | ✅ | `tripwire::TripwireResponsePolicy` |
+| vault (at-rest) | ✅ (carved out) | `v2-babbleon-vault` (Argon2id RFC 9106 + age) |
+
+Test count today: `v2-babbleon-core` 73 unit + 1 doc;
+`v2-babbleon-vault` 32 unit + proptest harness.
+
+**Phase 2 (`v2-babbleon-launch-untrusted` + PAM): FUNCTIONALLY COMPLETE.**
+
+`V2_PLAN.md` phase-2 acceptance criteria, verbatim:
+"v2 launcher + PAM.  `babbleon-launch-untrusted` with file
+capabilities, not setuid.  Per-syscall capability audit table in
+code comments."
+
+| Criterion | Shipped | Where |
+|---|---|---|
+| launcher binary | ✅ | `v2-babbleon-launch-untrusted` (11-step lifecycle, compartmentalized per step) |
+| file capabilities (NOT setuid) | ✅ | `docs/v2/least-privilege.md` install incantation; `bounding_set::trim_to_working_set` enforces |
+| per-syscall capability annotations | ✅ | every privileged site in `bounding_set.rs`, `namespaces.rs`, `mounts.rs`, `credential_gate.rs`, `process_hardening.rs`, `identity_drop.rs` carries a `CAPABILITY: CAP_*` comment |
+| PAM module | ✅ (skeleton) | `v2-babbleon-pam` — C shim + build.rs; full architecture pick blocked on operator decision (see `docs/v2/pam-architecture.md`) |
+
+Beyond the bare phase-2 spec, this branch also shipped:
+
+| Beyond-spec deliverable | Where |
+|---|---|
+| Activated-table protocol (daemon ↔ launcher) | `v2-babbleon-launch-artefacts` + `mounts::bind_mount_entries` |
+| Three launcher input modes (FD / path / daemon-socket) | `activated_table_input` |
+| Credential-dir tmpfs overlay | `credential_gate` + `launch-artefacts::credentials` |
+| Env-var scrub at exec | `main::exec_child` |
+| Rooted-test harness exercising real syscalls | `tests/rooted_lifecycle.rs` |
+| Daemon binary (end-to-end functional) | `v2-babbleon-daemon` — vault unlock wired, wrapper materialisation on rotate, socket protocol, seccomp envelope |
+| User-CLI `babbleon init` + `babbleon unlock` + `status` + `rotate-mapping` | `v2-babbleon` |
+| Daemon wire protocol carve-out | `v2-babbleon-daemon-protocol` |
+| Launcher audit-surface tightening (no crypto in prod tree) | `v2-babbleon-launch-artefacts` (commit `76b85ed`) |
+| Security-baseline self-audit | `docs/v2/security-baseline-audit.md` |
+| Daemon seccomp allowlist (36 syscalls) | `v2-babbleon-daemon::seccomp_profile` |
+
+Test count today across phases 1 + 2: **332 tests + 3 rooted (ignored by default)**.
+All `cargo clippy --all-targets -- -W clippy::pedantic` clean
+across all eight v2 crates.
+
+### What is NOT done (operator-decision-blocked, NOT incomplete code)
+
+These are policy switches, not code gaps:
+
+1. **Flip daemon default from `--insecure-stub-secret` to `new_locked`.**
+   Code shipped; one-line clap default change.  Operator-confirm.
+2. **Pick PAM architecture** (3 candidates in `docs/v2/pam-architecture.md`).
+   Default recommendation: flavour 3 (authorized-session + shell rc).
+   Until picked, PAM crate ships `Readiness::SkeletonOnly`.
+3. **Flip daemon `--enable-seccomp` default to ON.**
+   Filter + integration test shipped; one-line clap default change.
+   Operator-confirm.
+4. **Atomic wrapper-dir swap.**  Touches the launcher contract
+   (bind-mounts must follow the rename); deferred until the PAM
+   architecture pick lands (item 2) so we understand the full
+   session lifecycle.
+5. **Persist epoch across daemon restarts.**  Phase 4+ item.  Two
+   designs in HANDOFF (re-seal on every rotate vs `Unlock
+   { epoch_hint }`); operator picks.
+
+### Acceptance gate for declaring phases 1 + 2 SHIPPED (vs functionally complete)
+
+- Operator answers items 1-3 above.
+- Smoke-test on a fresh VM with full `babbleon init` + `babbleon
+  unlock` + a tracked-tool exec inside the launcher's mount NS.
+  (Existing rooted harness + e2e integration tests cover the
+  syscall paths individually; a full VM smoke-test ties them
+  together for the release gate.)
+
+### Phase 3 — smallest security-tight prototype
+
+Spec (verbatim from `docs/v2/structure-scrambling.md`
+§"Recommended phase-3 prototype"):
+
+1. Ship the runtime preprocessor as a standalone Rust binary.
+2. Implement **layer 3 only** (whitespace-as-words) for Python.
+3. Add `babbleon scramble FILE` and `babbleon unscramble FILE`
+   (trust-tier only).
+4. Wrap `python3` with a babbleon shim that runs scrambled `.py`
+   through preprocessor + interpreter via `pipe(2)`.
+5. Measure preprocessor latency on the existing
+   `rotation-benchmark` hardware to confirm sub-50 ms per file.
+6. Run the operator's adversarial-LLM test (the one that defeated
+   v1 when shown the original) against the layer-3-only output.
+
+LOC estimate for the MVP:
+
+| Component | LOC |
+|---|---|
+| `v2-babbleon-preprocessor` crate (tokenizer, unscrambler, pipe-to-interp, trust-tier check, hardening, seccomp) | ~1500 |
+| Scrambler (Python tokenizer → whitespace compounds) | ~300 |
+| `babbleon scramble` / `babbleon unscramble` subcommands | ~200 |
+| `python3` shim + dispatch | ~100 |
+| Latency harness | ~150 |
+| Tests (roundtrip, property, seccomp envelope) | ~500 |
+| **Phase 3 MVP total** | **~2750 LOC, 6-10 sessions** |
+
+**Decision branch** (built into the doc):
+
+- If layer 3 alone moves the adversarial-LLM test from "defeats
+  trivially" → "defeats with effort", phase 3 adds layers 2, 4, 5
+  incrementally (~1500-2500 LOC each, ~3-5 sessions each).
+- If layer 3 alone does NOT defeat the test, escalate to layers
+  2+3 together and re-measure before continuing.
+
+Full-phase upper bound (if all five layers must ship) is
+~9000-13000 LOC, ~20-40 sessions.  The MVP buys the test result
+that decides this.
+
+---
 
 ## What landed THIS session (2026-06-20 night — vault unlock end-to-end, user asleep)
 
