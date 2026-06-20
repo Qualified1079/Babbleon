@@ -2040,6 +2040,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "v2-babbleon-pam"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "tempfile",
+ "v2-babbleon-daemon-protocol",
+]
+
+[[package]]
 name = "valuable"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

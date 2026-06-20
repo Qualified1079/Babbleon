@@ -22,12 +22,127 @@ Branch (push target): `claude/magical-turing-mele8c` (operator
 intends to rename to `v1-maintenance` out-of-band; until that
 lands, push here)
 
-Date: 2026-06-19 (user-asleep session continued — claude-opus-4-7)
+Date: 2026-06-20 (user-asleep session continued — claude-opus-4-7)
 
-Last commit before this handoff: `6d983d2` — fix(v2-babbleon):
-replace anyhow's debug-backtrace with cause chain.
+Last commit before this handoff: `8eef22b` — docs(security-baseline-audit):
+refresh daemon row + add protocol-crate row.
 
-## What landed THIS session (2026-06-19 late, user asleep — protocol carve-out)
+## What landed THIS session (2026-06-20, user asleep — PAM skeleton)
+
+**Headline: open-items item 2 closed — `crates/v2-babbleon-pam/`
+filed as a skeleton with full v2 conventions.**
+
+The crate compiles, produces `pam_babbleon.so` (an ELF shared
+object built by `build.rs` from a small C source), passes 12
+tests (9 unit + 2 build-artifact integration + 1 cross-crate
+socket-path-agreement), and clears `cargo clippy -- -D warnings
+-W clippy::pedantic`.
+
+**What the skeleton does today.**  The C shim implements
+`pam_sm_open_session` and `pam_sm_close_session`.  At session open
+it: exempts root; probes the daemon's Unix socket via
+`connect(2)`; logs a breadcrumb via `pam_syslog`; returns
+`PAM_SUCCESS` unconditionally (consistent with the
+`session optional pam_babbleon.so` recommendation in build.rs's
+install docs — a Babbleon regression cannot brick login).
+
+**What the skeleton does NOT do — load-bearing follow-up.**  The
+shim does NOT yet wrap the user's eventual login shell with the
+launcher.  That is the architectural problem, not the language
+problem — `pam_sm_open_session` runs before PAM's caller execs
+the user's shell, and a PAM session module that wants the shell
+to run inside `babbleon-launch-untrusted` must do one of three
+things (each a real architecture, none trivial).  The three
+candidates are documented in the new `docs/v2/pam-architecture.md`:
+
+  1. **Shell wrapper.**  `chsh` each user's login shell to a
+     wrapper that exec's the launcher.  Simple, leaks deployment
+     visibility through `/etc/passwd`.
+  2. **PAM-internal namespace.**  Module itself does the
+     `unshare` + bind-mounts so PAM's caller's eventual exec
+     lands inside the namespace.  Architecturally clean,
+     unbounded audit surface.
+  3. **Authorized-session + shell rc** (`tmux`-style attach).
+     PAM writes a session token; `/etc/profile.d/babbleon-attach.sh`
+     reads it and re-execs into the launcher.  Smallest PAM
+     surface, depends on the shell rc machinery.
+
+The doc enumerates pros / cons / decision criteria for each.
+**Default recommendation (filed in the doc):** flavour 3, picked
+before phase 3 starts.
+
+**Build configurability** — `build.rs` honours two env vars
+(`BABBLEON_LAUNCH_UNTRUSTED_PATH` /
+`BABBLEON_DAEMON_SOCKET_PATH`), bakes them into the C source via
+`-D`, and falls back to documented defaults.  Same two vars are
+exposed on the Rust side via `launch_untrusted_install_path()` /
+`daemon_socket_path()` for the packaging layer's runtime probes.
+
+**Readiness gate.**  The Rust scaffolding exposes a
+`Readiness::SkeletonOnly` constant returned from `readiness()`;
+the test `readiness_is_skeleton_in_this_branch` flips to
+`Readiness::Wired` in the same commit that lands one of the
+three architectures.  Operator CLI (`babbleon status`) will read
+this in a later phase to refuse to enable PAM integration while
+the skeleton is the live artifact.
+
+**Cross-crate path agreement.**
+`v2-babbleon-pam::DEFAULT_DAEMON_SOCKET_PATH` is the same literal
+as `v2-babbleon-daemon-protocol::default_socket_path()`.  The C
+build path does NOT depend on the protocol crate (keeps the build
+graph small); the agreement is enforced by a dev-dependency
+integration test in `tests/socket_path_agreement.rs`.
+
+**Test deltas:**
+
+| Crate | Before | After |
+|---|---|---|
+| `v2-babbleon-pam` (new) | — | 9 unit + 2 integ + 1 cross-crate |
+| **Total v2 (excl ignored)** | **254** | **266** (+12) |
+
+`cargo clippy -p v2-babbleon-pam --all-targets -- -D warnings -W clippy::pedantic`
+is clean.  Build emits one `cargo:warning` per build summarising
+which paths were baked into the `.so` so packaging-CI can grep
+for it.
+
+**Workspace impact.**  `Cargo.toml` `members` gains
+`crates/v2-babbleon-pam`.  No other crate's `Cargo.toml`
+changed; the new crate is leaf — nothing else depends on it (PAM
+modules are loaded by `dlopen`, not linked).
+
+**Files added:**
+
+- `crates/v2-babbleon-pam/Cargo.toml`
+- `crates/v2-babbleon-pam/build.rs`
+- `crates/v2-babbleon-pam/src/lib.rs`
+- `crates/v2-babbleon-pam/src/pam_babbleon.c`
+- `crates/v2-babbleon-pam/tests/built_artifact.rs`
+- `crates/v2-babbleon-pam/tests/socket_path_agreement.rs`
+- `docs/v2/pam-architecture.md`
+
+### Updated open / next-session items (priority order — refreshed 2026-06-20)
+
+Item 2 (PAM skeleton) closed this session — see "What landed
+THIS session" above.  Remaining work:
+
+1. **Pick the PAM architecture** (operator decision).  Three
+   candidates filed in `docs/v2/pam-architecture.md`.  Default
+   recommendation: flavour 3.  Until picked, the PAM crate
+   ships `Readiness::SkeletonOnly`.
+2. **Real vault unlock.**  Unchanged from prior handoff —
+   replace `--insecure-stub-secret`.  See prior handoff for the
+   full prescription (port v1's `vault.rs`,
+   `Request::Unlock { vault_payload }` on the protocol crate,
+   wire `babbleon init` and `babbleon unlock`).
+3. **Daemon seccomp profile.**  Unchanged — pin once operator
+   confirms the materialise envelope.
+4. **Atomic wrapper-dir swap.**  Unchanged — defer until the
+   PAM architecture pick lands (item 1 above) so we understand
+   the full session lifecycle.
+
+Items 1, 2 are roughly independent.  Item 4 is gated on item 1.
+
+## What landed PREVIOUS session (2026-06-19 late, user asleep — protocol carve-out)
 
 **Headline: open-items item 3 closed — protocol + client carved out
 into `v2-babbleon-daemon-protocol`.**

@@ -1,0 +1,33 @@
+[package]
+name = "v2-babbleon-pam"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "PAM session module that establishes Babbleon's untrusted-tier environment at session open by exec'ing v2-babbleon-launch-untrusted."
+build = "build.rs"
+publish = false
+
+# We do not produce a Rust binary.  The shipped artifact is the
+# `pam_babbleon.so` shared object, built by `build.rs` from
+# `src/pam_babbleon.c` and installed at `/lib/security/pam_babbleon.so`.
+# The Rust library exists so cargo has a manifest to build, and so the
+# v2 conventions (security baseline, naming) live next to the C shim
+# instead of in a free-standing `docs/` folder.
+[lib]
+name = "babbleon_pam_v2"
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
+[build-dependencies]
+cc = "1"
+
+[dev-dependencies]
+# Used by the integration test that verifies the build.rs actually
+# produced a loadable `.so` file at the expected path.
+tempfile = { workspace = true }
+# Dev-only — the integration test in `tests/socket_path_agreement.rs`
+# asserts our `DEFAULT_DAEMON_SOCKET_PATH` matches the canonical
+# `v2-babbleon-daemon-protocol::default_socket_path()`.  Production
+# build (the C shim) does NOT pull this in.
+v2-babbleon-daemon-protocol = { path = "../v2-babbleon-daemon-protocol" }
