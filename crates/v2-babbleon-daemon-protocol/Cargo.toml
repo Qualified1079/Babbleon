@@ -1,0 +1,33 @@
+[package]
+name = "v2-babbleon-daemon-protocol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Wire protocol + client for the Babbleon v2 daemon socket. Carved out of v2-babbleon-daemon so that callers (launcher, user CLI) link only the small protocol surface instead of the full daemon (state + serve loop + materialisation)."
+publish = false
+
+[lib]
+name = "babbleon_daemon_protocol_v2"
+path = "src/lib.rs"
+
+[dependencies]
+# Wire format.  Hand-parsed via serde_json::Value (no
+# `#[derive(Deserialize)]` on operator-influenceable surface; see
+# security-baseline rule 11).
+serde_json = { workspace = true }
+# Error type.
+thiserror = { workspace = true }
+# Unlock request carries the per-host secret in
+# `Zeroizing<[u8;32]>` so the bytes are wiped from memory on drop.
+zeroize = { workspace = true }
+# 64-hex-chars on the wire (the JSON text form must be a string;
+# this is the least-attack-surface stringification of 32 bytes).
+hex = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+# Property-based tests for the wire-format parsers.  Drives Request /
+# Response through arbitrary-input roundtrips and no-panic invariants
+# that would otherwise need a fuzz harness — see `tests/proptest_protocol.rs`.
+proptest = { workspace = true }

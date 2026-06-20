@@ -1,0 +1,12 @@
+# cargo-vet exemptions — deps temporarily accepted without an audit.
+#
+# Empty at bootstrap.  When `cargo vet` flags an unaudited dep, the
+# choices are:
+#
+#   1. Audit it ourselves       — `cargo vet certify <crate>`
+#   2. Wait for an import audit — leave it here as an exemption
+#   3. Remove the dep
+#
+# This file is the deliberate "we know about this, will deal with it
+# later" list.  Entries should carry a one-line `notes = ...` so a
+# reviewer six months later sees why it landed here.

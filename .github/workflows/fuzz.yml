@@ -1,0 +1,63 @@
+name: fuzz
+
+# Scheduled cargo-fuzz smoke runs.  Each target gets ~5 min on a
+# nightly toolchain; crashes upload as artifacts and (when configured)
+# file an issue.  Separated from the per-PR CI loop because libfuzzer
+# requires nightly Rust and a long-running job.
+
+on:
+  schedule:
+    # Sunday 02:00 UTC — quietest slot in GitHub-hosted-runner quota.
+    - cron: "0 2 * * 0"
+  # Manual trigger for ad-hoc smoke runs.
+  workflow_dispatch:
+
+permissions: read-all
+
+jobs:
+  fuzz:
+    name: fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      # Each target's failure shouldn't cancel the others — we want
+      # the full crash signal even if one is reliably triggering bugs.
+      fail-fast: false
+      matrix:
+        target:
+          - honey_fifo_line
+          - fpe_roundtrip
+          - wrapper_render
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install libpam-dev
+        run: sudo apt-get update && sudo apt-get install -y libpam0g-dev
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "fuzz -> target"
+
+      - name: install cargo-fuzz
+        run: cargo install --locked cargo-fuzz
+
+      - name: smoke run
+        working-directory: fuzz
+        # `-max_total_time=300` = 5 min per target.  Bumping this
+        # depends on the hosted-runner monthly minutes budget.
+        run: |
+          cargo fuzz run "${{ matrix.target }}" \
+            -- -max_total_time=300
+
+      - name: upload artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: |
+            fuzz/artifacts/${{ matrix.target }}/
+          retention-days: 30
+          if-no-files-found: ignore

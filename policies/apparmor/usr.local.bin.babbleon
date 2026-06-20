@@ -1,0 +1,88 @@
+# AppArmor profile for /usr/local/bin/babbleon (the trusted-tier CLI).
+#
+# Conservative starting point — read-only access to the system minus
+# the directories babbleon needs to write (vault, runtime FIFO/list,
+# CLI state).  Operators should tighten further once they have a stable
+# tracked-tool list and audit-log location.
+#
+# Install:
+#   sudo cp policies/apparmor/usr.local.bin.babbleon \
+#           /etc/apparmor.d/usr.local.bin.babbleon
+#   sudo apparmor_parser -r /etc/apparmor.d/usr.local.bin.babbleon
+#
+# Toggle complain → enforce after a few days of clean audit.log:
+#   sudo aa-complain /usr/local/bin/babbleon   # log only
+#   sudo aa-enforce  /usr/local/bin/babbleon   # block + log
+#
+# Reference: man apparmor.d (Ubuntu / SUSE / Debian).
+
+#include <tunables/global>
+
+/usr/local/bin/babbleon {
+  #include <abstractions/base>
+  #include <abstractions/nameservice>
+  #include <abstractions/openssl>
+
+  # Self.
+  /usr/local/bin/babbleon mr,
+
+  # Read-only system surfaces.  Everything else under / is implicitly
+  # denied by AppArmor's whitelist model.
+  /etc/os-release r,
+  /etc/passwd r,
+  /etc/nsswitch.conf r,
+  /etc/ld.so.cache r,
+  /etc/ssl/certs/ r,
+  /etc/ssl/certs/** r,
+
+  # Babbleon runtime state.
+  /run/babbleon/ rw,
+  /run/babbleon/** rwk,
+
+  # Per-user vault + tracked-tool manifest (XDG-compliant locations).
+  owner @{HOME}/.config/babbleon/ rw,
+  owner @{HOME}/.config/babbleon/** rwk,
+  owner @{HOME}/.local/share/babbleon/ rw,
+  owner @{HOME}/.local/share/babbleon/** rwk,
+
+  # CLI launches the setuid ns-helper.
+  /usr/local/libexec/babbleon-ns-helper Cx -> ns-helper,
+
+  # Process introspection (we look at /proc/self/ns/mnt for tier check).
+  /proc/self/ rw,
+  /proc/self/** rw,
+  /proc/[0-9]*/stat r,
+  /proc/[0-9]*/ns/mnt r,
+
+  # Terminal output / passphrase prompt.
+  /dev/tty rw,
+  /dev/pts/* rw,
+
+  # Block what we never need.
+  deny /etc/shadow rw,
+  deny /etc/sudoers rw,
+  deny /etc/sudoers.d/** rw,
+  deny @{HOME}/.ssh/** w,
+  deny @{HOME}/.gnupg/** w,
+  deny capability sys_admin,
+  deny capability sys_module,
+  deny capability dac_override,
+
+  # Child profile: the ns-helper runs with capabilities (briefly) and
+  # then drops them itself.  Profile lives in a separate file.
+  profile ns-helper {
+    #include <abstractions/base>
+    /usr/local/libexec/babbleon-ns-helper mr,
+    # ns-helper unshares mount + PID namespaces.
+    capability sys_admin,
+    capability setpcap,
+    capability setuid,
+    capability setgid,
+    /proc/** rw,
+    /run/babbleon/** rwk,
+    # exec arbitrary child binary the user requested (via PATH).
+    /usr/bin/* ix,
+    /usr/local/bin/* ix,
+    /bin/* ix,
+  }
+}

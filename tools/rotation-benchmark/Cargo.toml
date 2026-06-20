@@ -1,0 +1,14 @@
+[package]
+name = "rotation-benchmark"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Measures the per-rotation cost of Babbleon's mapping rebuild and wrapper regeneration, to bound the maximum supportable rotation rate."
+
+# Standalone — NOT part of the Babbleon workspace.
+[workspace]
+
+[dependencies]
+babbleon = { path = "../../crates/babbleon" }
+clap = { version = "4", features = ["derive"] }
+tempfile = "3"

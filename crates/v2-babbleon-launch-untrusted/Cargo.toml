@@ -1,0 +1,55 @@
+[package]
+name = "v2-babbleon-launch-untrusted"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Babbleon v2 untrusted-tier launcher. Installs with file capabilities (NOT setuid-root) per docs/v2/least-privilege.md."
+publish = false
+
+[[bin]]
+name = "babbleon-launch-untrusted"
+path = "src/main.rs"
+
+[dependencies]
+# Errors + logging.
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+# CLI.
+clap = { workspace = true }
+# Linux syscall surface — every unsafe libc call is quarantined to
+# `syscall.rs` per security-baseline rule 1 exception policy.
+libc = { workspace = true }
+# Higher-level Linux primitives we use through safe wrappers.
+nix = { workspace = true }
+# seccomp-bpf filter for the post-step-10 syscall lockdown.
+seccompiler = { workspace = true }
+# Secret-free per-host artefacts: ActivatedTable + credential
+# discovery / env-var policy.  This crate carries NO crypto
+# dependencies — HKDF / Ed25519 / Argon2 / SHA-2 do NOT appear
+# in the launcher's `cargo tree --edges normal`.  Companion
+# carve-out to v2-babbleon-daemon-protocol below.
+v2-babbleon-launch-artefacts = { path = "../v2-babbleon-launch-artefacts" }
+# Daemon-socket protocol + client (Request, Response, round_trip).
+# We link only the carve-out leaf crate so the launcher's audit
+# surface excludes the daemon's state, materialisation pipeline,
+# and serve loop — none of which the launcher can reach by
+# construction now that the dependency arrow no longer points at
+# the full daemon crate.
+v2-babbleon-daemon-protocol = { path = "../v2-babbleon-daemon-protocol" }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+# Daemon binary is spawned as a subprocess in
+# `tests/daemon_socket_input.rs`.  We depend on the full daemon crate
+# only at test time so cargo builds `babbleon-daemon` alongside and
+# sets `CARGO_BIN_EXE_babbleon-daemon` for the integration test
+# harness.  The production dependency arrow points only at
+# `v2-babbleon-daemon-protocol`, keeping the launcher binary's audit
+# surface tight.
+v2-babbleon-daemon = { path = "../v2-babbleon-daemon" }
+# Core is dev-dep only: integration tests use MappingBuilder,
+# PerHostSecret, Wordlist, and wrapper::write_all_wrappers to
+# exercise the full daemon pipeline at the library level.
+v2-babbleon-core = { path = "../v2-babbleon-core" }

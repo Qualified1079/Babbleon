@@ -1,0 +1,431 @@
+//! Pure request → response dispatch.
+//!
+//! # Infrastructure module
+//!
+//! Bridges [`babbleon_daemon_protocol_v2::Request`] /
+//! [`babbleon_daemon_protocol_v2::Response`] to
+//! [`crate::state::DaemonState`].  Pure function over its inputs;
+//! holds no I/O.  The socket layer ([`crate::socket`]) reads a
+//! request off the wire, calls [`dispatch`], writes the resulting
+//! response back.  Separating dispatch from I/O lets dispatch be
+//! tested without spinning up a listener.
+//!
+//! Every error from [`DaemonState`] is converted to a
+//! [`babbleon_daemon_protocol_v2::Response::Error`] carrying a coarse
+//! [`babbleon_daemon_protocol_v2::ErrorKind`] and a redacted
+//! message — secret material never reaches a wire response
+//! (security-baseline rule 13).
+
+use crate::errors::Error;
+use crate::state::DaemonState;
+use babbleon_daemon_protocol_v2::{ErrorKind, Request, Response};
+
+/// Dispatch one [`Request`] against [`DaemonState`].
+///
+/// Always returns a [`Response`] — every error path is folded into
+/// [`Response::Error`] so the socket layer's reply path is
+/// infallible at the wire level (it can always serialize *something*
+/// for the peer).
+//
+// Takes `request` by value so future variants that carry an owned
+// payload (e.g. `EmitActivatedTable { epoch_hint }`) don't break
+// call-sites.  Today's variants are payload-less, so clippy flags
+// the move as unnecessary; we accept the lint with the forward-
+// compatibility rationale above.
+#[allow(clippy::needless_pass_by_value)]
+pub fn dispatch(state: &mut DaemonState, request: Request) -> Response {
+    match request {
+        Request::Status => status(state),
+        Request::EmitActivatedTable => emit_activated_table(state),
+        Request::RotateMapping => rotate_mapping(state),
+        Request::Unlock(secret) => unlock(state, &secret),
+    }
+}
+
+fn status(state: &DaemonState) -> Response {
+    Response::Status {
+        // In Locked state, surface epoch as 0 on the wire (the field
+        // is not nullable in the response schema).  Callers gate on
+        // `vault_locked` for correctness; the `epoch` value is
+        // meaningful only when `vault_locked = false`.
+        epoch: state.epoch().unwrap_or(0),
+        tracked_count: state.tracked_count() as u64,
+        vault_locked: state.vault_locked(),
+        last_rotation_unix_secs: state.last_rotation_unix_secs(),
+    }
+}
+
+fn emit_activated_table(state: &DaemonState) -> Response {
+    match state.activated_table_jsonl() {
+        Ok(jsonl) => Response::ActivatedTable {
+            // Safe: `activated_table_jsonl` returns Err when Locked,
+            // so we are guaranteed to be in the Unlocked state here.
+            epoch: state.epoch().unwrap_or(0),
+            jsonl,
+        },
+        Err(e) => error_response(&e),
+    }
+}
+
+/// Install the supplied per-host secret and transition the daemon to
+/// Unlocked.  Carries the
+/// [`babbleon_daemon_protocol_v2::UnlockSecret`]'s bytes through
+/// `PerHostSecret::from_bytes` so the daemon's downstream consumers
+/// see only the secret-bearing wrapper type, never a bare slice.
+fn unlock(
+    state: &mut DaemonState,
+    secret: &babbleon_daemon_protocol_v2::UnlockSecret,
+) -> Response {
+    let per_host = match babbleon_core_v2::PerHostSecret::from_bytes(
+        secret.expose(),
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            return error_response(&Error::Vault(format!(
+                "unlock secret invalid: {e}"
+            )));
+        }
+    };
+    match state.unlock(per_host) {
+        Ok(epoch) => Response::Unlocked { epoch },
+        Err(e) => error_response(&e),
+    }
+}
+
+fn rotate_mapping(state: &mut DaemonState) -> Response {
+    match state.rotate() {
+        Ok(new_epoch) => Response::Rotated { new_epoch },
+        Err(e) => error_response(&e),
+    }
+}
+
+/// Convert a daemon-side [`Error`] into a wire [`Response::Error`].
+///
+/// The message is the `Display` form of the daemon error, which by
+/// construction never contains secret bytes (every daemon-error
+/// variant wraps a category-tagged string from a non-secret source).
+fn error_response(e: &Error) -> Response {
+    let kind = match e {
+        Error::Vault(_) => ErrorKind::Vault,
+        Error::Mapping(_) => ErrorKind::Mapping,
+        Error::Wrapper(_) => ErrorKind::Wrapper,
+        Error::ActivatedTable(_) => ErrorKind::ActivatedTable,
+        Error::Ipc(_) => ErrorKind::Ipc,
+        Error::Cli(_) => ErrorKind::BadRequest,
+    };
+    Response::Error {
+        kind,
+        message: e.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::materialization::{MaterializationConfig, TrackedTool};
+    use babbleon_core_v2::{PerHostSecret, Wordlist};
+    use std::path::PathBuf;
+
+    fn state() -> DaemonState {
+        DaemonState::new_without_materialization(
+            PerHostSecret::from_bytes(&[3u8; 32]).unwrap(),
+            Wordlist::english_baseline(),
+            vec![
+                TrackedTool {
+                    name: "curl".into(),
+                    real_path: PathBuf::from("/usr/bin/curl"),
+                },
+                TrackedTool {
+                    name: "ssh".into(),
+                    real_path: PathBuf::from("/usr/bin/ssh"),
+                },
+            ],
+            MaterializationConfig {
+                wrapper_dir: PathBuf::from("/wrappers"),
+                honey_list_path: None,
+                stale_list_path: None,
+                trusted_ns_inode: None,
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn status_request_returns_current_snapshot() {
+        let mut s = state();
+        let r = dispatch(&mut s, Request::Status);
+        match r {
+            Response::Status {
+                epoch,
+                tracked_count,
+                vault_locked,
+                last_rotation_unix_secs,
+            } => {
+                assert_eq!(epoch, 0);
+                assert_eq!(tracked_count, 2);
+                // phase-2 stub: vault is treated as unlocked.
+                assert!(!vault_locked);
+                assert!(last_rotation_unix_secs.is_some());
+            }
+            other => panic!("expected Status response, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn emit_activated_table_returns_jsonl_for_current_epoch() {
+        let mut s = state();
+        let r = dispatch(&mut s, Request::EmitActivatedTable);
+        match r {
+            Response::ActivatedTable { epoch, jsonl } => {
+                assert_eq!(epoch, 0);
+                // The JSONL must parse back through the core's reader.
+                let parsed = babbleon_core_v2::ActivatedTable::read_jsonl(
+                    std::io::Cursor::new(&jsonl),
+                )
+                .unwrap();
+                assert_eq!(parsed.epoch, 0);
+                assert_eq!(parsed.entries.len(), 2);
+            }
+            other => {
+                panic!("expected ActivatedTable response, got {other:?}")
+            }
+        }
+    }
+
+    #[test]
+    fn rotate_mapping_bumps_epoch_in_response() {
+        let mut s = state();
+        let r = dispatch(&mut s, Request::RotateMapping);
+        match r {
+            Response::Rotated { new_epoch } => assert_eq!(new_epoch, 1),
+            other => panic!("expected Rotated response, got {other:?}"),
+        }
+        assert_eq!(s.epoch(), Some(1));
+    }
+
+    #[test]
+    fn dispatch_is_consistent_across_requests() {
+        // Property: dispatching the same request multiple times
+        // within an epoch yields the same response category and the
+        // same key fields.
+        let mut daemon = state();
+        let first_status = dispatch(&mut daemon, Request::Status);
+        let second_status = dispatch(&mut daemon, Request::Status);
+        assert_eq!(first_status, second_status);
+        let first_emit = dispatch(&mut daemon, Request::EmitActivatedTable);
+        let second_emit = dispatch(&mut daemon, Request::EmitActivatedTable);
+        assert_eq!(first_emit, second_emit);
+    }
+
+    #[test]
+    fn rotation_then_status_reports_new_epoch() {
+        let mut s = state();
+        dispatch(&mut s, Request::RotateMapping);
+        dispatch(&mut s, Request::RotateMapping);
+        let r = dispatch(&mut s, Request::Status);
+        match r {
+            Response::Status { epoch, .. } => assert_eq!(epoch, 2),
+            other => panic!("expected Status, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rotation_then_emit_reports_new_epoch_in_table() {
+        let mut s = state();
+        dispatch(&mut s, Request::RotateMapping);
+        let r = dispatch(&mut s, Request::EmitActivatedTable);
+        match r {
+            Response::ActivatedTable { epoch, jsonl } => {
+                assert_eq!(epoch, 1);
+                let parsed = babbleon_core_v2::ActivatedTable::read_jsonl(
+                    std::io::Cursor::new(&jsonl),
+                )
+                .unwrap();
+                assert_eq!(parsed.epoch, 1);
+            }
+            other => panic!("expected ActivatedTable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn error_response_carries_redacted_message() {
+        // Construct each daemon error variant and confirm the wire
+        // mapping doesn't accidentally surface a secret-shaped string.
+        // (We cannot induce a real error from a healthy DaemonState;
+        // we test the conversion function directly.)
+        for (e, want) in [
+            (Error::Vault("v".into()), ErrorKind::Vault),
+            (Error::Mapping("m".into()), ErrorKind::Mapping),
+            (Error::Wrapper("w".into()), ErrorKind::Wrapper),
+            (Error::ActivatedTable("a".into()), ErrorKind::ActivatedTable),
+            (Error::Ipc("i".into()), ErrorKind::Ipc),
+            (Error::Cli("c".into()), ErrorKind::BadRequest),
+        ] {
+            let r = super::error_response(&e);
+            match r {
+                Response::Error { kind, message } => {
+                    assert_eq!(kind, want);
+                    // Message is the Display form of the error; it
+                    // contains the variant prefix and the inner
+                    // string, neither of which is secret.
+                    assert!(message.contains(&e.to_string()));
+                }
+                other => panic!("expected Error response, got {other:?}"),
+            }
+        }
+    }
+
+    // ----- Locked-state dispatch -----
+
+    fn locked_state() -> DaemonState {
+        DaemonState::new_locked(
+            Wordlist::english_baseline(),
+            vec![
+                TrackedTool {
+                    name: "curl".into(),
+                    real_path: PathBuf::from("/usr/bin/curl"),
+                },
+                TrackedTool {
+                    name: "ssh".into(),
+                    real_path: PathBuf::from("/usr/bin/ssh"),
+                },
+            ],
+            MaterializationConfig {
+                wrapper_dir: PathBuf::from("/wrappers"),
+                honey_list_path: None,
+                stale_list_path: None,
+                trusted_ns_inode: None,
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn locked_status_reports_vault_locked_true() {
+        let mut s = locked_state();
+        let r = dispatch(&mut s, Request::Status);
+        match r {
+            Response::Status {
+                vault_locked,
+                tracked_count,
+                last_rotation_unix_secs,
+                ..
+            } => {
+                assert!(vault_locked);
+                assert_eq!(tracked_count, 2);
+                assert!(last_rotation_unix_secs.is_none());
+            }
+            other => panic!("expected Status, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn locked_emit_returns_vault_error() {
+        let mut s = locked_state();
+        let r = dispatch(&mut s, Request::EmitActivatedTable);
+        match r {
+            Response::Error { kind, message } => {
+                assert_eq!(kind, ErrorKind::Vault);
+                assert!(message.contains("locked"), "{message}");
+            }
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn locked_rotate_returns_vault_error() {
+        let mut s = locked_state();
+        let r = dispatch(&mut s, Request::RotateMapping);
+        match r {
+            Response::Error { kind, message } => {
+                assert_eq!(kind, ErrorKind::Vault);
+                assert!(message.contains("locked"), "{message}");
+            }
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    // ----- Unlock dispatch -----
+
+    #[test]
+    fn unlock_transitions_to_unlocked_and_returns_epoch() {
+        let mut s = locked_state();
+        let secret =
+            babbleon_daemon_protocol_v2::UnlockSecret::from_bytes(&[5u8; 32])
+                .unwrap();
+        // Pre-condition: vault is locked.
+        match dispatch(&mut s, Request::Status) {
+            Response::Status { vault_locked, .. } => assert!(vault_locked),
+            other => panic!("expected Status, got {other:?}"),
+        }
+        // Send the Unlock; daemon answers Unlocked.
+        // NB: production paths don't materialise into `/wrappers` —
+        // this test relies on the locked_state helper which uses a
+        // wrapper_dir under root.  We skip the materialisation by
+        // having no tracked tools that would write there?  Actually
+        // we DO have tracked tools, so this test will fail at the
+        // write_all_wrappers step.  Use a tempdir-based fixture.
+        drop(s);
+        let tmp = tempfile::tempdir().unwrap();
+        let mut s = DaemonState::new_locked(
+            Wordlist::english_baseline(),
+            vec![TrackedTool {
+                name: "curl".into(),
+                real_path: PathBuf::from("/usr/bin/sh"), // any extant file
+            }],
+            MaterializationConfig {
+                wrapper_dir: tmp.path().join("wrappers"),
+                honey_list_path: Some(tmp.path().join("honey.list")),
+                stale_list_path: Some(tmp.path().join("stale.list")),
+                trusted_ns_inode: None,
+            },
+        )
+        .unwrap();
+        match dispatch(&mut s, Request::Unlock(secret)) {
+            Response::Unlocked { epoch } => assert_eq!(epoch, 0),
+            other => panic!("expected Unlocked, got {other:?}"),
+        }
+        match dispatch(&mut s, Request::Status) {
+            Response::Status { vault_locked, .. } => assert!(!vault_locked),
+            other => panic!("expected Status, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn double_unlock_returns_vault_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut s = DaemonState::new_locked(
+            Wordlist::english_baseline(),
+            vec![TrackedTool {
+                name: "curl".into(),
+                real_path: PathBuf::from("/usr/bin/sh"),
+            }],
+            MaterializationConfig {
+                wrapper_dir: tmp.path().join("wrappers"),
+                honey_list_path: Some(tmp.path().join("honey.list")),
+                stale_list_path: Some(tmp.path().join("stale.list")),
+                trusted_ns_inode: None,
+            },
+        )
+        .unwrap();
+        // First unlock succeeds.
+        let s1 =
+            babbleon_daemon_protocol_v2::UnlockSecret::from_bytes(&[5u8; 32])
+                .unwrap();
+        assert!(matches!(
+            dispatch(&mut s, Request::Unlock(s1)),
+            Response::Unlocked { .. }
+        ));
+        // Second unlock is rejected.
+        let s2 =
+            babbleon_daemon_protocol_v2::UnlockSecret::from_bytes(&[6u8; 32])
+                .unwrap();
+        match dispatch(&mut s, Request::Unlock(s2)) {
+            Response::Error { kind, message } => {
+                assert_eq!(kind, ErrorKind::Vault);
+                assert!(message.contains("already"), "{message}");
+            }
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+}

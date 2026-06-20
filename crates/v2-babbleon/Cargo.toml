@@ -1,0 +1,46 @@
+[package]
+name = "v2-babbleon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Babbleon v2 user-facing CLI (init / unlock / rotate / status / mount-scrambled-view)."
+publish = false
+
+[[bin]]
+name = "babbleon-v2"
+path = "src/main.rs"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[dependencies]
+v2-babbleon-core = { path = "../v2-babbleon-core" }
+# Wire protocol + operator-side client for the daemon's Unix socket.
+# The user-facing CLI does NOT spawn or hold the daemon's state — it
+# just round-trips requests.  Depending on the protocol leaf instead of
+# the full daemon crate keeps this binary's audit surface to the
+# protocol parser + client; the daemon's serve loop, materialisation
+# pipeline, and per-host secret never appear in this crate's
+# dependency graph.
+v2-babbleon-daemon-protocol = { path = "../v2-babbleon-daemon-protocol" }
+# Vault library: babbleon init / unlock use this crate to seal /
+# unseal the per-host secret.  Linked only by the user CLI; NOT
+# linked by the daemon (the daemon receives unwrapped bytes over the
+# socket).  See v2-babbleon-vault::lib for the compartmentalization
+# rationale.
+v2-babbleon-vault = { path = "../v2-babbleon-vault" }
+clap = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+# Interactive passphrase prompt (`babbleon unlock` and `babbleon
+# init`).  Non-interactive paths read from stdin via
+# `--passphrase-stdin` and do not touch rpassword.
+rpassword = { workspace = true }
+# Zeroizing wrapper around the operator's passphrase string in
+# memory while it is in flight between rpassword/stdin and the
+# vault's KekBackend.
+zeroize = { workspace = true }
+# RNG for fresh-secret generation during `babbleon init`.
+rand = { workspace = true }

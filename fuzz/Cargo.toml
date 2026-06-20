@@ -1,0 +1,41 @@
+[package]
+name = "babbleon-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "LicenseRef-PolyForm-Noncommercial-1.0.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+babbleon = { path = "../crates/babbleon" }
+tempfile = "3"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# Each `[[bin]]` corresponds to one fuzz target.  Targets are listed
+# at the project README; rationale per target lives in source.
+
+[[bin]]
+name = "honey_fifo_line"
+path = "fuzz_targets/honey_fifo_line.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fpe_roundtrip"
+path = "fuzz_targets/fpe_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wrapper_render"
+path = "fuzz_targets/wrapper_render.rs"
+test = false
+doc = false
+bench = false

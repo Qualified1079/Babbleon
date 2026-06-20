@@ -1,0 +1,56 @@
+name: codeql
+
+# Static analysis via GitHub's CodeQL.  Runs on push/PR to main and on
+# a weekly schedule so newly-published rules catch the existing
+# codebase even between commits.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Wednesday 03:00 UTC — out of band with the Scorecard run on Tue.
+    - cron: "0 3 * * 3"
+
+permissions: read-all
+
+jobs:
+  analyze:
+    name: CodeQL (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      packages: read
+      contents: read
+      actions: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [actions]
+        # CodeQL upstream marked Rust support as beta in 2024; revisit
+        # adding it once it ships to stable.  Pre-existing C in the
+        # PAM shim (`crates/babbleon-pam/src/pam_babbleon.c`) is a
+        # candidate for the cpp pack once libpam-dev is in the runner
+        # image consistently.
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          # Standard query suite plus the security-extended pack —
+          # higher noise floor, but worth the alerts on a security
+          # tool.
+          queries: security-extended
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"

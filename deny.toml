@@ -1,0 +1,100 @@
+# cargo-deny configuration
+# https://embarkstudios.github.io/cargo-deny/
+#
+# Policy intent:
+#   * Yanked deps fail the build (a yank is the registry's way of
+#     saying "don't use this, even patches"; treat it as a hard error).
+#   * Licenses are an explicit allow-list; copyleft and unknown
+#     licenses fail the build.
+#   * No git sources in release: all deps come from crates.io so the
+#     bytes a verifier downloads match exactly what the registry serves.
+#
+# Pre-existing exception: `proc-macro-error` is unmaintained (via age
+# 0.10 → i18n-embed-fl).  Tracked as a roadmap item to migrate off the
+# affected upstream; ignored here so CI surfaces real new advisories.
+
+[advisories]
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+yanked = "deny"
+ignore = [
+    # Pulled in transitively via age 0.10 -> i18n-embed-fl.
+    # Migration off age 0.10 is filed in TODO.md.
+    "RUSTSEC-2024-0370",
+]
+
+[licenses]
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-DFS-2016",
+    "Unicode-3.0",
+    "Zlib",
+    "MPL-2.0",
+    "CC0-1.0",
+    "LicenseRef-PolyForm-Noncommercial-1.0.0",
+]
+confidence-threshold = 0.92
+
+[[licenses.exceptions]]
+allow = ["LicenseRef-PolyForm-Noncommercial-1.0.0"]
+name = "babbleon"
+
+[[licenses.exceptions]]
+allow = ["LicenseRef-PolyForm-Noncommercial-1.0.0"]
+name = "babbleon-cli"
+
+[[licenses.exceptions]]
+allow = ["LicenseRef-PolyForm-Noncommercial-1.0.0"]
+name = "babbleon-ns-helper"
+
+[[licenses.exceptions]]
+allow = ["LicenseRef-PolyForm-Noncommercial-1.0.0"]
+name = "babbleon-pam"
+
+# v2 crates — same PolyForm license, separate per-crate exception
+# entries because cargo-deny's exceptions block matches by exact
+# package name.
+[[licenses.exceptions]]
+allow = ["LicenseRef-PolyForm-Noncommercial-1.0.0"]
+name = "v2-babbleon-core"
+
+[[licenses.exceptions]]
+allow = ["LicenseRef-PolyForm-Noncommercial-1.0.0"]
+name = "v2-babbleon"
+
+[[licenses.exceptions]]
+allow = ["LicenseRef-PolyForm-Noncommercial-1.0.0"]
+name = "v2-babbleon-launch-untrusted"
+
+[[licenses.exceptions]]
+allow = ["LicenseRef-PolyForm-Noncommercial-1.0.0"]
+name = "v2-babbleon-daemon"
+
+[[licenses.exceptions]]
+allow = ["LicenseRef-PolyForm-Noncommercial-1.0.0"]
+name = "v2-babbleon-daemon-protocol"
+
+[[licenses.exceptions]]
+allow = ["LicenseRef-PolyForm-Noncommercial-1.0.0"]
+name = "v2-babbleon-pam"
+
+[[licenses.exceptions]]
+allow = ["LicenseRef-PolyForm-Noncommercial-1.0.0"]
+name = "v2-babbleon-vault"
+
+[bans]
+multiple-versions = "warn"
+wildcards = "warn"
+
+[sources]
+unknown-registry = "deny"
+# Refuse git-source deps in release; production builds must come from
+# the registry so what a verifier downloads matches what we shipped.
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

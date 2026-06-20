@@ -1,0 +1,221 @@
+name: ci
+
+on:
+  push:
+    branches: [main, "claude/**"]
+  pull_request:
+    branches: [main]
+
+# Minimum-permission default for every job in this workflow.
+# Individual jobs can opt in to more (none currently need it).
+# Scorecard Token-Permissions check expects this block — without it
+# the runner picks the repo default which is often `permissions:
+# write-all` for the GITHUB_TOKEN.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  test:
+    name: test (linux)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: install libpam-dev
+        run: sudo apt-get update && sudo apt-get install -y libpam0g-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt
+        run: cargo fmt --all --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: build
+        run: cargo build --workspace --all-targets
+      - name: test
+        run: cargo test --workspace --all-targets
+
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: install cargo-audit
+        run: cargo install --locked cargo-audit
+      - name: audit
+        run: cargo audit
+
+  deny:
+    name: cargo deny
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          arguments: --all-features
+
+  sbom:
+    name: SBOM (CycloneDX)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: install cargo-cyclonedx
+        run: cargo install --locked cargo-cyclonedx
+      - name: generate SBOM
+        run: cargo cyclonedx --format json --output-cdx --override-filename babbleon-sbom
+      - name: upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: babbleon-sbom
+          path: "**/babbleon-sbom*.cdx.json"
+          if-no-files-found: error
+          retention-days: 90
+
+  coverage:
+    name: coverage (cargo-llvm-cov)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: install libpam-dev
+        run: sudo apt-get update && sudo apt-get install -y libpam0g-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - name: install cargo-llvm-cov
+        run: cargo install --locked cargo-llvm-cov
+      # The proptest job runs ~60 s; coverage adds overhead.  Exclude
+      # the property suite so the coverage job stays under 5 minutes
+      # — line + branch coverage on the unit + integration tests is
+      # what we actually want to track.
+      - name: collect coverage
+        run: cargo llvm-cov --workspace --lcov --output-path lcov.info -- --skip mapping_properties
+      - name: summarise
+        run: cargo llvm-cov report --workspace -- --skip mapping_properties
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lcov
+          path: lcov.info
+          retention-days: 30
+
+  vet:
+    name: cargo vet
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # Bootstrap status: imports are wired (supply-chain/config.toml);
+    # the audits.toml / exemptions.toml are empty and need a backfill
+    # pass.  Run as `continue-on-error` so PRs don't block on the
+    # bootstrap gap, but the report is visible and uploaded as an
+    # artifact.  Once the exemption set is settled, flip
+    # continue-on-error off.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: install cargo-vet
+        run: cargo install --locked cargo-vet
+      - name: cargo vet check
+        run: cargo vet --locked
+      - name: dump unaudited-deps list
+        if: failure()
+        run: cargo vet suggest > vet-suggest.txt || true
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-vet-report
+          path: vet-suggest.txt
+          retention-days: 30
+          if-no-files-found: ignore
+
+  reproducible:
+    name: reproducible release build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # Build the release artifact twice from the same source tree and
+    # confirm the produced binary bytes are identical.  The operator
+    # docs (`docs/operator.md`) claim musl-static reproducibility;
+    # this is the test that confirms the claim.
+    steps:
+      - uses: actions/checkout@v4
+      - name: install musl tooling
+        run: sudo apt-get update && sudo apt-get install -y musl-tools libpam0g-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+
+      - name: build (round 1)
+        run: |
+          cargo build --release --target x86_64-unknown-linux-musl \
+            -p babbleon-cli -p babbleon-ns-helper
+          mkdir -p artifacts/run1
+          cp target/x86_64-unknown-linux-musl/release/babbleon artifacts/run1/
+          cp target/x86_64-unknown-linux-musl/release/babbleon-ns-helper artifacts/run1/
+          cargo clean
+
+      - name: build (round 2)
+        run: |
+          cargo build --release --target x86_64-unknown-linux-musl \
+            -p babbleon-cli -p babbleon-ns-helper
+          mkdir -p artifacts/run2
+          cp target/x86_64-unknown-linux-musl/release/babbleon artifacts/run2/
+          cp target/x86_64-unknown-linux-musl/release/babbleon-ns-helper artifacts/run2/
+
+      - name: compare
+        run: |
+          set -eu
+          for bin in babbleon babbleon-ns-helper; do
+            a=$(sha256sum artifacts/run1/${bin} | awk '{print $1}')
+            b=$(sha256sum artifacts/run2/${bin} | awk '{print $1}')
+            echo "${bin}: run1=${a} run2=${b}"
+            if [ "${a}" != "${b}" ]; then
+              echo "::error::${bin} not reproducible (${a} != ${b})"
+              cmp -l artifacts/run1/${bin} artifacts/run2/${bin} | head -50 || true
+              exit 1
+            fi
+          done
+
+  miri:
+    name: miri (UB in unsafe)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # Miri runs a small subset — the unsafe-libc blocks (mkfifo, kill,
+    # mlockall, prctl) plus the pure-Rust crypto + mapping paths.
+    # Skipping the integration tests that shell out to `sh`, mount
+    # namespaces, or call mkfifo for real — none of those are valid
+    # under Miri.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - uses: Swatinem/rust-cache@v2
+      - name: run miri on the pure-Rust crates
+        env:
+          MIRIFLAGS: -Zmiri-disable-isolation
+        # Limit to the mapping + crypto modules — the parts where UB
+        # in our own (sparse) unsafe would actually have consequences.
+        run: |
+          cargo miri test -p babbleon --lib mapping:: crypto:: audit:: vault::attempts::

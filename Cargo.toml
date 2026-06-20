@@ -1,0 +1,76 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/babbleon",
+    "crates/babbleon-cli",
+    "crates/babbleon-ns-helper",
+    "crates/babbleon-pam",
+    # v2 (in-progress; see V2_PLAN.md and docs/v2/).  Subtree-isolated
+    # from v1 per the phase-0 decisions; differential tests against v1
+    # live inside the v2 crates.
+    "crates/v2-babbleon-core",
+    "crates/v2-babbleon",
+    "crates/v2-babbleon-launch-untrusted",
+    "crates/v2-babbleon-launch-artefacts",
+    "crates/v2-babbleon-daemon",
+    "crates/v2-babbleon-daemon-protocol",
+    "crates/v2-babbleon-pam",
+    "crates/v2-babbleon-vault",
+]
+exclude = [
+    # cargo-fuzz harness — needs nightly + libfuzzer-sys; lives outside
+    # the stable workspace.  See fuzz/README.md.
+    "fuzz",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "LicenseRef-PolyForm-Noncommercial-1.0.0"
+repository = "https://github.com/qualified1079/babbleon"
+
+[workspace.dependencies]
+# core crypto
+age = "0.10"
+argon2 = "0.5"
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+rand = "0.8"
+rand_chacha = "0.3"
+hkdf = "0.12"
+subtle = { version = "2.6", default-features = false }
+zeroize = { version = "1.8", features = ["zeroize_derive"] }
+ed25519-dalek = { version = "2", features = ["rand_core", "zeroize"] }
+# serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+# errors + logging
+thiserror = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# CLI
+clap = { version = "4", features = ["derive"] }
+rpassword = "7"
+# Linux syscalls (cfg-gated at use sites)
+nix = { version = "0.27", features = ["mount", "sched", "process", "user", "signal", "mman", "resource"] }
+# seccomp-bpf filter (M3)
+seccompiler = "0.4"
+# Landlock LSM (M3, kernel 5.13+)
+landlock = "0.3"
+# libc for syscall numbers in seccomp deny list
+libc = "0.2"
+# misc
+once_cell = "1"
+dirs = "5"
+tempfile = "3"
+proptest = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+opt-level = 3

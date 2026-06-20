@@ -1,0 +1,10 @@
+target/
+Cargo.lock.bak
+
+# user vaults / config
+*.age
+.config/
+
+# OS
+.DS_Store
+*.swp

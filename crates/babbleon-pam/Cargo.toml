@@ -1,0 +1,19 @@
+[package]
+name = "babbleon-pam"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "PAM module that establishes Babbleon namespaces at session open"
+build = "build.rs"
+
+# We do not produce a Rust artifact — the entire output is the C-built
+# pam_babbleon.so installed at /lib/security/pam_babbleon.so.
+# We expose a tiny no-op lib crate so cargo has something to build.
+[lib]
+name = "babbleon_pam_stub"
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
+[build-dependencies]
+cc = "1"

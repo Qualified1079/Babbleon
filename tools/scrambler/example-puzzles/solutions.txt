@@ -1,0 +1,44 @@
+Reference solutions for the example puzzles.  Do NOT show these to
+the LLM under test — they are here so the human operator can verify
+the puzzle is solvable when they author follow-ups.
+
+The line numbering refers to the `# {{INSERT}}` marker in each file;
+the solution is the single line that replaces it.
+
+---
+
+01-fizzbuzz.py
+
+    label = ("Fizz" if i % 3 == 0 else "") + ("Buzz" if i % 5 == 0 else "") or str(i)
+
+Or, multi-statement style (also accepted by the test):
+
+    label = ""
+    if i % 3 == 0: label += "Fizz"
+    if i % 5 == 0: label += "Buzz"
+    if not label: label = str(i)
+
+---
+
+02-running-max.py
+
+    current_max = max(current_max, x)
+
+---
+
+03-anagram-groups.py
+
+    signature = "".join(sorted(w))
+
+---
+
+04-balanced-parens.py
+
+    if not stack or stack.pop() != pairs[ch]: return False
+
+---
+
+05-merge-intervals.py
+
+    if start <= merged[-1][1]: merged[-1][1] = max(merged[-1][1], end)
+    else: merged.append([start, end])

@@ -1,0 +1,15 @@
+# SELinux file-context patterns for Babbleon.
+#
+# Bound types defined in babbleon.te:
+#   - babbleon_exec_t            — the trusted-tier CLI binary
+#   - babbleon_ns_helper_exec_t  — the setuid namespace helper
+#   - babbleon_runtime_t         — /run/babbleon (FIFO, lists, mounts)
+#   - babbleon_vault_t           — per-user vault + config
+
+/usr/local/bin/babbleon              --      gen_context(system_u:object_r:babbleon_exec_t,s0)
+/usr/local/libexec/babbleon-ns-helper --      gen_context(system_u:object_r:babbleon_ns_helper_exec_t,s0)
+
+/run/babbleon(/.*)?                          gen_context(system_u:object_r:babbleon_runtime_t,s0)
+
+HOME_DIR/\.config/babbleon(/.*)?             gen_context(system_u:object_r:babbleon_vault_t,s0)
+HOME_DIR/\.local/share/babbleon(/.*)?        gen_context(system_u:object_r:babbleon_vault_t,s0)

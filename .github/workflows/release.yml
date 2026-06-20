@@ -1,0 +1,163 @@
+name: release
+
+# Triggered on a version tag.  Builds the Linux musl-static binaries,
+# generates an SBOM, signs both with sigstore/cosign (keyless), produces
+# SLSA L3 provenance via the official reusable generator, and attaches
+# everything to a GitHub Release draft.
+#
+# Verification flow for users is documented in `docs/verify-release.md`.
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-*"
+
+permissions: read-all
+
+jobs:
+  build:
+    name: build (linux musl)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      sbom-name: ${{ steps.sbom.outputs.sbom-name }}
+      artifact-name: ${{ steps.bundle.outputs.artifact-name }}
+      artifact-digest: ${{ steps.bundle.outputs.artifact-digest }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+
+      - name: install musl tooling
+        run: sudo apt-get update && sudo apt-get install -y musl-tools libpam0g-dev
+
+      - name: build
+        run: cargo build --release --target x86_64-unknown-linux-musl --workspace
+
+      - name: install cargo-cyclonedx
+        run: cargo install --locked cargo-cyclonedx
+
+      - id: sbom
+        name: generate SBOM
+        run: |
+          cargo cyclonedx --format json --output-cdx --override-filename babbleon-${GITHUB_REF_NAME}-sbom
+          echo "sbom-name=babbleon-${GITHUB_REF_NAME}-sbom.cdx.json" >> "$GITHUB_OUTPUT"
+
+      - id: bundle
+        name: bundle release artifact
+        run: |
+          mkdir -p dist
+          tar -C target/x86_64-unknown-linux-musl/release \
+              -czf dist/babbleon-${GITHUB_REF_NAME}-x86_64-linux-musl.tar.gz \
+              babbleon babbleon-ns-helper
+          cp crates/babbleon/babbleon-${GITHUB_REF_NAME}-sbom.cdx.json dist/ \
+            || cp ./babbleon-${GITHUB_REF_NAME}-sbom.cdx.json dist/ || true
+          (cd dist && sha256sum babbleon-${GITHUB_REF_NAME}-x86_64-linux-musl.tar.gz \
+            > babbleon-${GITHUB_REF_NAME}-x86_64-linux-musl.tar.gz.sha256)
+          ARTIFACT="babbleon-${GITHUB_REF_NAME}-x86_64-linux-musl.tar.gz"
+          DIGEST=$(sha256sum "dist/${ARTIFACT}" | awk '{print $1}')
+          echo "artifact-name=${ARTIFACT}" >> "$GITHUB_OUTPUT"
+          echo "artifact-digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-bundle
+          path: dist/
+          retention-days: 1
+          if-no-files-found: error
+
+  sign:
+    name: sigstore keyless signatures
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Keyless signing via Fulcio uses the workflow OIDC identity.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-bundle
+          path: dist/
+
+      - uses: sigstore/cosign-installer@v3
+
+      - name: sign artifact + SBOM with cosign keyless
+        env:
+          ARTIFACT: ${{ needs.build.outputs.artifact-name }}
+          SBOM: ${{ needs.build.outputs.sbom-name }}
+        run: |
+          cd dist
+          # Bundle format pins the verification proof (tlog entry +
+          # cert chain) alongside the signature so a verifier only
+          # needs one extra file.
+          cosign sign-blob --yes --bundle "${ARTIFACT}.cosign.bundle" "${ARTIFACT}"
+          if [ -f "${SBOM}" ]; then
+            cosign sign-blob --yes --bundle "${SBOM}.cosign.bundle" "${SBOM}"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-signed
+          path: dist/
+          retention-days: 1
+          if-no-files-found: error
+
+  provenance:
+    name: SLSA L3 provenance
+    needs: build
+    # The reusable generator MUST be referenced at a tag, never `@main`.
+    # See https://slsa.dev/spec/v1.0/levels#build-l3.
+    permissions:
+      id-token: write
+      contents: write
+      actions: read
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.0.0
+    with:
+      base64-subjects: ${{ needs.build.outputs.artifact-digest }}
+      upload-assets: false
+
+  publish:
+    name: attach to release
+    needs: [sign, provenance]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-signed
+          path: dist/
+
+      - uses: actions/download-artifact@v4
+        with:
+          # The provenance generator emits a file named
+          # `${{ needs.provenance.outputs.attestation-name }}` — copy
+          # whatever the artifact contains into dist/.
+          name: ${{ needs.provenance.outputs.attestation-name }}
+          path: dist/
+
+      - name: create draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --draft \
+            --title "${GITHUB_REF_NAME}" \
+            --notes-file - \
+            dist/* << 'EOF'
+          Verification:
+
+            cosign verify-blob \
+              --bundle babbleon-${GITHUB_REF_NAME}-x86_64-linux-musl.tar.gz.cosign.bundle \
+              --certificate-identity-regexp '^https://github.com/qualified1079/babbleon/.github/workflows/release.yml@' \
+              --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+              babbleon-${GITHUB_REF_NAME}-x86_64-linux-musl.tar.gz
+
+          See docs/verify-release.md for SLSA provenance + SBOM
+          verification commands.
+          EOF

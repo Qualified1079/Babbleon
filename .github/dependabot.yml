@@ -1,0 +1,57 @@
+version: 2
+
+# Dependabot configuration.
+#
+# Two ecosystems: cargo (Rust deps) and github-actions (CI runners).
+# Weekly cadence keeps the noise floor low while still catching CVEs
+# in dependencies on a useful timescale.  Auto-merge is NOT enabled
+# — a security tool should not silently roll forward without review.
+
+updates:
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "08:00"
+      timezone: "America/Los_Angeles"
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - rust
+    commit-message:
+      prefix: "deps"
+      include: scope
+    # Group patch + minor updates of crypto crates so they land
+    # together (avoids the long-tail PR churn from frequent SemVer
+    # patches across dalek + RustCrypto repos).
+    groups:
+      crypto-patches:
+        applies-to: version-updates
+        patterns:
+          - "ed25519-*"
+          - "x25519-*"
+          - "curve25519-*"
+          - "hkdf"
+          - "hmac"
+          - "sha2"
+          - "subtle"
+          - "zeroize"
+        update-types:
+          - patch
+          - minor
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "08:00"
+      timezone: "America/Los_Angeles"
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: "ci"
+      include: scope
