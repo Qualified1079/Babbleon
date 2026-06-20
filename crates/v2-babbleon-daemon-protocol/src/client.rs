@@ -19,7 +19,7 @@
 //! ships as a public library function.
 //!
 //! Integration tests that exercise [`round_trip`] against a real
-//! [`v2-babbleon-daemon::DaemonState`] live in the daemon crate
+//! `v2-babbleon-daemon::DaemonState` live in the daemon crate
 //! (`crates/v2-babbleon-daemon/tests/client_round_trip.rs`).  The
 //! unit tests here cover only the connection-error path, which
 //! does not need a serving peer.

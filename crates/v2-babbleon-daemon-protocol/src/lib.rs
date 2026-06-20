@@ -18,7 +18,7 @@
 //! - the daemon's canonical socket path ([`default_socket_path`]).
 //!
 //! No state.  No secret.  No serve loop.  No materialisation.  No
-//! [`v2-babbleon-core`] dependency.  A peer linking this crate adopts
+//! `v2-babbleon-core` dependency.  A peer linking this crate adopts
 //! only the parser, the wire types, and a 70-line stdlib `UnixStream`
 //! wrapper.
 //!

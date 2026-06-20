@@ -11,15 +11,15 @@
 //!
 //! This module is the only place that decides what bytes coming in on
 //! the socket mean.  It carries no I/O — the socket layer
-//! ([`crate::socket`]) owns the readers and writers; this module owns
-//! the parser and serializer.  Compartmentalizing the wire format
-//! away from I/O lets the parse path be fuzz-tested without spinning
-//! up a listener.
+//! (`v2-babbleon-daemon::socket`) owns the readers and writers; this
+//! module owns the parser and serializer.  Compartmentalizing the
+//! wire format away from I/O lets the parse path be fuzz-tested
+//! without spinning up a listener.
 //!
 //! # Mechanism
 //!
 //! The wire format is one JSON object per line, mirroring the
-//! activated-table format ([`babbleon_core_v2::activated_table`]).
+//! activated-table format (`babbleon_core_v2::activated_table`).
 //! Each request line and each response line is hand-parsed via
 //! `serde_json::Value` against a documented schema.  No
 //! `#[derive(Deserialize)]` — see security-baseline rule 11.
@@ -35,7 +35,7 @@
 //! - Request: [`MAX_REQUEST_BYTES`] (8 KiB; any plausible request is
 //!   under 1 KiB).
 //! - Response: bounded transitively by
-//!   [`babbleon_core_v2::MAX_TABLE_BYTES`] (16 MiB).
+//!   `babbleon_core_v2::MAX_TABLE_BYTES` (16 MiB).
 //!
 //! # Threat model boundaries
 //!
@@ -90,7 +90,7 @@ pub enum Response {
         epoch: u64,
         /// Raw activated-table JSONL bytes.  Consumers feed this
         /// verbatim into
-        /// [`babbleon_core_v2::ActivatedTable::read_jsonl`].
+        /// `babbleon_core_v2::ActivatedTable::read_jsonl`.
         jsonl: Vec<u8>,
     },
     /// Rotation succeeded; the daemon now holds a mapping for
@@ -201,7 +201,7 @@ impl Request {
     ///
     /// Used by the operator-side `babbleon-daemon emit-activated-table`
     /// / `status` / `rotate-mapping` one-shots, by the rooted-test
-    /// harness, and by [`crate::socket`]-side tests.
+    /// harness, and by `v2-babbleon-daemon::socket`-side tests.
     ///
     /// # Panics
     ///

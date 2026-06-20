@@ -220,7 +220,7 @@ pub fn capget_effective_bitmask() -> io::Result<u64> {
 ///
 /// # Errors
 ///
-/// Returns [`io::Error::from_raw_os_error(libc::EBADF)`] if `fd` is
+/// Returns `io::Error::from_raw_os_error(libc::EBADF)` if `fd` is
 /// negative — the caller should reject this before calling.  An
 /// `EBADF` from the kernel at first read also surfaces as a normal
 /// `io::Error` through the returned `File`.

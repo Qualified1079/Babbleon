@@ -30,7 +30,7 @@
 //! | 7    | [`process_hardening::set_no_new_privs`] | none |
 //! | 8    | [`seccomp_profile`]  | none (NNP allows unprivileged install) |
 //! | 9    | [`identity_drop`]    | `CAP_SETUID` / `CAP_SETGID` |
-//! | 10   | [`bounding_set::drop_all_permitted`] | none |
+//! | 10   | [`bounding_set::drop_all_bounding`] | none |
 //! | 11   | (caller)             | none — `execve` of child |
 //!
 //! By step 10 the process holds NO capabilities and `NO_NEW_PRIVS`
