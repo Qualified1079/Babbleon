@@ -2068,6 +2068,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "v2-babbleon-preprocessor"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+ "v2-babbleon-core",
+]
+
+[[package]]
 name = "v2-babbleon-vault"
 version = "0.1.0"
 dependencies = [
