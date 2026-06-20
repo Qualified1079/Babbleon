@@ -31,6 +31,7 @@
 #![warn(clippy::pedantic)]
 
 mod passphrase;
+mod scramble_lifecycle;
 mod vault_lifecycle;
 
 use std::path::PathBuf;
@@ -43,6 +44,9 @@ use babbleon_daemon_protocol_v2::{
     default_socket_path, round_trip, Request, Response,
 };
 
+use scramble_lifecycle::{
+    run_scramble, run_unscramble, InputSource, OutputSink, ScrambleOptions,
+};
 use vault_lifecycle::{
     run_init, run_unlock, InitOptions, PassphraseSource, UnlockOptions,
 };
@@ -131,6 +135,42 @@ enum Cmd {
     /// from inside an already-scrambled namespace.
     #[command(name = "mount-scrambled-view", alias = "msv")]
     MountScrambledView,
+
+    /// Scramble a Python source file via the per-epoch whitespace
+    /// mapping the daemon is currently serving.  Reads the source
+    /// from `--input` (or stdin if absent / `-`), writes scrambled
+    /// bytes to `--output` (or stdout).  Requires the daemon to be
+    /// running and unlocked.
+    ///
+    /// Trust-tier only: the daemon's socket permissions gate which
+    /// peers can request the whitespace compounds.  This subcommand
+    /// does NOT hold the per-host secret in the CLI process's
+    /// memory at any point — see `scramble_lifecycle`'s module doc
+    /// for the compartmentalisation argument.
+    Scramble {
+        /// Source file to scramble.  Use `-` or omit for stdin.
+        #[arg(short = 'i', long = "input", value_name = "PATH")]
+        input: Option<PathBuf>,
+        /// Output path for scrambled bytes.  Use `-` or omit for
+        /// stdout.
+        #[arg(short = 'o', long = "output", value_name = "PATH")]
+        output: Option<PathBuf>,
+    },
+
+    /// Inverse of `scramble`: read scrambled bytes, decode against
+    /// the daemon's current whitespace mapping, write reconstructed
+    /// Python source.  Same input / output flags and trust-tier
+    /// constraints as `scramble`.
+    Unscramble {
+        /// Scrambled file to unscramble.  Use `-` or omit for
+        /// stdin.
+        #[arg(short = 'i', long = "input", value_name = "PATH")]
+        input: Option<PathBuf>,
+        /// Output path for the reconstructed source.  Use `-` or
+        /// omit for stdout.
+        #[arg(short = 'o', long = "output", value_name = "PATH")]
+        output: Option<PathBuf>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -160,6 +200,16 @@ fn main() -> ExitCode {
         // Phase 3+: needs the launcher binary on PATH and the PAM
         // module wired.
         Cmd::MountScrambledView => not_yet_implemented("mount-scrambled-view"),
+        Cmd::Scramble { input, output } => run_scramble(ScrambleOptions {
+            input: input_source_from(input),
+            output: output_sink_from(output),
+            socket_path: socket_path.clone(),
+        }),
+        Cmd::Unscramble { input, output } => run_unscramble(ScrambleOptions {
+            input: input_source_from(input),
+            output: output_sink_from(output),
+            socket_path: socket_path.clone(),
+        }),
     };
 
     match result {
@@ -250,10 +300,32 @@ fn not_yet_implemented(command: &str) -> Result<()> {
     )
 }
 
+/// Map `clap`'s `Option<PathBuf>` (with `-` sentinel for stdin) onto
+/// the `InputSource` enum the scramble-lifecycle pipeline consumes.
+fn input_source_from(path: Option<PathBuf>) -> InputSource {
+    match path {
+        None => InputSource::Stdin,
+        Some(p) if p.as_os_str() == "-" => InputSource::Stdin,
+        Some(p) => InputSource::File(p),
+    }
+}
+
+/// Map `clap`'s `Option<PathBuf>` (with `-` sentinel for stdout)
+/// onto the `OutputSink` enum.
+fn output_sink_from(path: Option<PathBuf>) -> OutputSink {
+    match path {
+        None => OutputSink::Stdout,
+        Some(p) if p.as_os_str() == "-" => OutputSink::Stdout,
+        Some(p) => OutputSink::File(p),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::Cli;
+    use super::{InputSource, OutputSink};
     use clap::CommandFactory;
+    use std::path::PathBuf;
 
     #[test]
     fn clap_definition_is_valid() {
@@ -301,5 +373,89 @@ mod tests {
             "babbleon", "init", "--force",
         ]);
         assert!(m.is_ok());
+    }
+
+    #[test]
+    fn scramble_with_no_flags_parses() {
+        let m = Cli::command().try_get_matches_from(["babbleon", "scramble"]);
+        assert!(m.is_ok(), "`scramble` with no args must parse");
+    }
+
+    #[test]
+    fn scramble_with_input_and_output_paths_parses() {
+        let m = Cli::command().try_get_matches_from([
+            "babbleon",
+            "scramble",
+            "--input",
+            "in.py",
+            "--output",
+            "out.scr",
+        ]);
+        assert!(m.is_ok());
+    }
+
+    #[test]
+    fn scramble_short_flags_parse() {
+        let m = Cli::command().try_get_matches_from([
+            "babbleon", "scramble", "-i", "in.py", "-o", "out.scr",
+        ]);
+        assert!(m.is_ok());
+    }
+
+    #[test]
+    fn unscramble_with_input_and_output_paths_parses() {
+        let m = Cli::command().try_get_matches_from([
+            "babbleon",
+            "unscramble",
+            "--input",
+            "in.scr",
+            "--output",
+            "out.py",
+        ]);
+        assert!(m.is_ok());
+    }
+
+    #[test]
+    fn input_source_from_none_is_stdin() {
+        assert!(matches!(super::input_source_from(None), InputSource::Stdin));
+    }
+
+    #[test]
+    fn input_source_from_dash_is_stdin() {
+        assert!(matches!(
+            super::input_source_from(Some(PathBuf::from("-"))),
+            InputSource::Stdin
+        ));
+    }
+
+    #[test]
+    fn input_source_from_path_is_file() {
+        let s = super::input_source_from(Some(PathBuf::from("/tmp/x.py")));
+        match s {
+            InputSource::File(p) => assert_eq!(p, PathBuf::from("/tmp/x.py")),
+            InputSource::Stdin => panic!("expected File"),
+        }
+    }
+
+    #[test]
+    fn output_sink_from_none_is_stdout() {
+        assert!(matches!(super::output_sink_from(None), OutputSink::Stdout));
+    }
+
+    #[test]
+    fn output_sink_from_dash_is_stdout() {
+        assert!(matches!(
+            super::output_sink_from(Some(PathBuf::from("-"))),
+            OutputSink::Stdout
+        ));
+    }
+
+    #[test]
+    fn output_sink_from_path_is_file() {
+        let s = super::output_sink_from(Some(PathBuf::from("/tmp/x.scr")));
+        match s {
+            OutputSink::File(p) => assert_eq!(p, PathBuf::from("/tmp/x.scr")),
+            OutputSink::Stdout => panic!("expected File"),
+        }
     }
 }

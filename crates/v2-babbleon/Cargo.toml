@@ -24,6 +24,13 @@ v2-babbleon-core = { path = "../v2-babbleon-core" }
 # pipeline, and per-host secret never appear in this crate's
 # dependency graph.
 v2-babbleon-daemon-protocol = { path = "../v2-babbleon-daemon-protocol" }
+# Preprocessor: source-side scramble / unscramble for the
+# `babbleon scramble` and `babbleon unscramble` operator
+# subcommands.  Used in pure-compute mode (tokenize + scramble or
+# parse + unscramble) with whitespace compounds obtained from the
+# daemon's GetWhitespaceCompounds response — the CLI never holds
+# the per-host secret in its own memory.
+v2-babbleon-preprocessor = { path = "../v2-babbleon-preprocessor" }
 # Vault library: babbleon init / unlock use this crate to seal /
 # unseal the per-host secret.  Linked only by the user CLI; NOT
 # linked by the daemon (the daemon receives unwrapped bytes over the

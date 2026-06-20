@@ -261,7 +261,11 @@ fn cli_init_refuses_overwrite_without_force() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn init #2");
-    child.stdin.as_mut().unwrap().write_all(b"second-pass\n").unwrap();
+    // The "refuse overwrite" path may exit before the parent
+    // finishes feeding stdin — that produces an EPIPE on write_all.
+    // The child already gave up; that's the behaviour under test,
+    // so swallow the write error rather than racing the child.
+    let _ = child.stdin.as_mut().unwrap().write_all(b"second-pass\n");
     let out = child.wait_with_output().unwrap();
     assert!(!out.status.success(), "second init must fail");
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -394,5 +398,207 @@ fn cli_unlock_with_wrong_passphrase_fails_without_daemon_traffic() {
     assert!(
         stderr.contains("wrong passphrase") || stderr.contains("unsealing"),
         "stderr should reflect unseal failure, not connect failure: {stderr}",
+    );
+}
+
+/// End-to-end: `babbleon scramble FILE.py | babbleon unscramble`
+/// against a running daemon round-trips a Python source file.
+///
+/// Pipeline:
+///
+/// 1. Spawn the daemon with `--insecure-stub-secret` so it starts
+///    Unlocked and serves the per-epoch whitespace compounds.
+/// 2. Write a small Python source to a tempfile.
+/// 3. Run `babbleon scramble -i src.py -o out.scr` against the
+///    daemon's socket.
+/// 4. Assert the scrambled file is non-empty and contains no
+///    visible newline characters (the layer-3 promise).
+/// 5. Run `babbleon unscramble -i out.scr -o reconstructed.py`
+///    against the same socket.
+/// 6. Assert the reconstructed source is byte-identical to the
+///    original modulo trailing newline / canonical indent
+///    normalisation.
+#[test]
+fn cli_scramble_then_unscramble_round_trips_python_source() {
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("daemon.sock");
+    let wrapper_dir = dir.path().join("wrappers");
+    std::fs::create_dir_all(&wrapper_dir).unwrap();
+    let curl = fake_real_binary(dir.path(), "curl");
+    let child = spawn_daemon(&sock, &wrapper_dir, ("curl", &curl));
+
+    let cli = sibling_binary("babbleon-v2");
+
+    // Original Python source — uses one level of indent, internal
+    // spaces in a string, and a comment.  Matches the MVP
+    // tokenizer's supported subset.
+    let src_path = dir.path().join("src.py");
+    let scr_path = dir.path().join("out.scr");
+    let recon_path = dir.path().join("reconstructed.py");
+    let original = "def greet(name):\n    print(\"hello \" + name)\n";
+    std::fs::write(&src_path, original).unwrap();
+
+    // Scramble.
+    let scramble_out = Command::new(&cli)
+        .arg("--socket")
+        .arg(&sock)
+        .arg("scramble")
+        .arg("-i")
+        .arg(&src_path)
+        .arg("-o")
+        .arg(&scr_path)
+        .output()
+        .unwrap();
+    if !scramble_out.status.success() {
+        shutdown(child);
+        panic!(
+            "scramble failed: stdout={:?} stderr={:?}",
+            String::from_utf8_lossy(&scramble_out.stdout),
+            String::from_utf8_lossy(&scramble_out.stderr),
+        );
+    }
+
+    let scrambled = std::fs::read(&scr_path).unwrap();
+    assert!(!scrambled.is_empty(), "scrambled file is empty");
+    // Layer-3 promise: no visible '\n' in the scrambled body.
+    assert!(
+        !scrambled.contains(&b'\n'),
+        "scrambled output contains visible '\\n' byte",
+    );
+
+    // Unscramble.
+    let unscramble_out = Command::new(&cli)
+        .arg("--socket")
+        .arg(&sock)
+        .arg("unscramble")
+        .arg("-i")
+        .arg(&scr_path)
+        .arg("-o")
+        .arg(&recon_path)
+        .output()
+        .unwrap();
+    if !unscramble_out.status.success() {
+        shutdown(child);
+        panic!(
+            "unscramble failed: stdout={:?} stderr={:?}",
+            String::from_utf8_lossy(&unscramble_out.stdout),
+            String::from_utf8_lossy(&unscramble_out.stderr),
+        );
+    }
+
+    let reconstructed = std::fs::read_to_string(&recon_path).unwrap();
+    // Round-trip: byte-identical to the original modulo the trailing
+    // newline normalisation the MVP tokenizer documents.  The
+    // original ends in '\n', so the reconstructed must too.
+    assert_eq!(
+        reconstructed, original,
+        "reconstructed source mismatch — original={original:?}, \
+         reconstructed={reconstructed:?}",
+    );
+
+    shutdown(child);
+}
+
+/// Scramble against a daemon that is locked must surface the
+/// daemon's Vault-error cleanly (not panic, not hang).
+#[test]
+fn cli_scramble_against_locked_daemon_reports_vault_error() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("daemon.sock");
+    let wrapper_dir = dir.path().join("wrappers");
+    std::fs::create_dir_all(&wrapper_dir).unwrap();
+    let curl = dir.path().join("real-curl");
+    std::fs::write(&curl, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(
+        &curl,
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+
+    // Start the daemon Locked: omit --insecure-stub-secret.
+    let daemon_bin = sibling_binary("babbleon-daemon");
+    #[allow(clippy::zombie_processes)]
+    let mut child = Command::new(&daemon_bin)
+        .arg("--socket")
+        .arg(&sock)
+        .arg("run")
+        .arg("--wrapper-dir")
+        .arg(&wrapper_dir)
+        .arg("--tracked-tool")
+        .arg(format!("curl={}", curl.display()))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    // Wait for socket bind.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !sock.exists() && Instant::now() < deadline {
+        if let Ok(Some(status)) = child.try_wait() {
+            let mut stderr = String::new();
+            if let Some(s) = child.stderr.as_mut() {
+                let _ = BufReader::new(s).read_line(&mut stderr);
+            }
+            panic!(
+                "locked daemon exited early ({status}); stderr: {stderr}",
+            );
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(sock.exists(), "daemon socket not bound");
+
+    let cli = sibling_binary("babbleon-v2");
+    let src_path = dir.path().join("src.py");
+    std::fs::write(&src_path, "x = 1\n").unwrap();
+
+    let out = Command::new(&cli)
+        .arg("--socket")
+        .arg(&sock)
+        .arg("scramble")
+        .arg("-i")
+        .arg(&src_path)
+        .output()
+        .unwrap();
+    shutdown(child);
+
+    assert!(
+        !out.status.success(),
+        "scramble must fail when daemon is locked",
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("Vault") || stderr.contains("locked"),
+        "stderr should mention vault locked, got: {stderr}",
+    );
+}
+
+/// `scramble` against a missing daemon socket must fail cleanly
+/// with an actionable error pointing at the socket path.  Catches
+/// regression where the CLI swallows the connect error or
+/// segfaults.
+#[test]
+fn cli_scramble_against_missing_daemon_returns_actionable_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("does-not-exist.sock");
+    let src_path = dir.path().join("src.py");
+    std::fs::write(&src_path, "x = 1\n").unwrap();
+
+    let cli = sibling_binary("babbleon-v2");
+    let out = Command::new(&cli)
+        .arg("--socket")
+        .arg(&sock)
+        .arg("scramble")
+        .arg("-i")
+        .arg(&src_path)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(&sock.display().to_string())
+            || stderr.contains("daemon")
+            || stderr.contains("round-trip"),
+        "stderr should reference the daemon / socket: {stderr}",
     );
 }
