@@ -56,6 +56,33 @@ name = "babbleon-ns-helper"
 allow = ["LicenseRef-PolyForm-Noncommercial-1.0.0"]
 name = "babbleon-pam"
 
+# v2 crates — same PolyForm license, separate per-crate exception
+# entries because cargo-deny's exceptions block matches by exact
+# package name.
+[[licenses.exceptions]]
+allow = ["LicenseRef-PolyForm-Noncommercial-1.0.0"]
+name = "v2-babbleon-core"
+
+[[licenses.exceptions]]
+allow = ["LicenseRef-PolyForm-Noncommercial-1.0.0"]
+name = "v2-babbleon"
+
+[[licenses.exceptions]]
+allow = ["LicenseRef-PolyForm-Noncommercial-1.0.0"]
+name = "v2-babbleon-launch-untrusted"
+
+[[licenses.exceptions]]
+allow = ["LicenseRef-PolyForm-Noncommercial-1.0.0"]
+name = "v2-babbleon-daemon"
+
+[[licenses.exceptions]]
+allow = ["LicenseRef-PolyForm-Noncommercial-1.0.0"]
+name = "v2-babbleon-daemon-protocol"
+
+[[licenses.exceptions]]
+allow = ["LicenseRef-PolyForm-Noncommercial-1.0.0"]
+name = "v2-babbleon-pam"
+
 [bans]
 multiple-versions = "warn"
 wildcards = "warn"
