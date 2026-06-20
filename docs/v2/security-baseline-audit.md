@@ -1,4 +1,4 @@
-# Security-baseline self-audit — v2 crates as of 2026-06-20 (vault unlock)
+# Security-baseline self-audit — v2 crates as of 2026-06-20 (phase-3 MVP)
 
 Cross-reference: `docs/v2/security-baseline.md` (the 15 rules).
 
@@ -265,9 +265,77 @@ produced `.so` carries `BIND_NOW` and non-executable
 
 ---
 
+## Crate: `v2-babbleon-preprocessor`  (phase-3 layer-3 library + scramble/unscramble; landed 2026-06-20)
+
+Pure-safe-Rust library that owns the `Token` IR + Python tokenizer
++ scrambler + unscrambler + per-epoch `WhitespaceWordlist`.  Holds
+no secret bytes — the per-epoch compounds are HKDF-derived from
+the per-host secret one layer up (in the daemon).  Library crate;
+no `main()`, no syscalls, no I/O.
+
+| # | Rule | Status | Evidence |
+|---|---|---|---|
+| 1 | `forbid(unsafe_code)` | ✅ PASS | `src/lib.rs:114` |
+| 2 | `deny(missing_docs)` + pedantic | ✅ PASS | `src/lib.rs:115-116`; `cargo clippy -p v2-babbleon-preprocessor --all-targets -- -D warnings -W clippy::pedantic` clean |
+| 3 | Secrets wear `Zeroizing`, no `Clone/Copy/Debug` | ✅ PASS | `WhitespaceWordlist` carries plain `String` compounds (secret-derived but not secret-equivalent; matches v2-core's `EpochMapping` precedent).  Tests assert pairwise distinct + ASCII-lowercase + rotation invariants. |
+| 4 | Constant-time compares | N/A | the structural-scramble layer does not equality-check secret-derived bytes; the prefix-match in `match_prefix` is constant-time-irrelevant (the timing leak is structural, not secret-bearing) |
+| 5 | HKDF for domain separation | ✅ PASS | `whitespace_wordlist::PURPOSE_WHITESPACE = b"v2-whitespace-mapping"` is distinct from v2-core's identifier and honey labels |
+| 6 | Plain-English names | ✅ PASS | every module (`tokens`, `python_tokenizer`, `scrambler`, `unscrambler`, `whitespace_wordlist`, `errors`) names what it does |
+| 7 | "What this defeats" module docs | ✅ PASS | `lib.rs`, `whitespace_wordlist.rs`, `scrambler.rs`, `unscrambler.rs` open with the template; `tokens.rs` + `python_tokenizer.rs` + `errors.rs` declare themselves infrastructure |
+| 8 | Process hardening at startup | N/A | library |
+| 9 | `SAFETY:` comment on every `unsafe` block | ✅ PASS (vacuous) | `forbid(unsafe_code)` |
+| 10 | Capability annotation per syscall site | N/A | no syscalls |
+| 11 | No long-lived secrets in serde-deserialized types | ✅ PASS | no serde |
+| 12 | RFC-recognisable primitives only | ✅ PASS | reuses v2-babbleon-core's HKDF (RFC 5869) and Fisher-Yates permutation |
+| 13 | Errors do not leak secrets | ✅ PASS | `errors.rs` variants (`InvalidSuppliedCompounds`, `WhitespaceCompoundCollision`, `TruncatedScrambledInput`) carry slot indices + offsets only; not bytes.  Tests assert `InvalidSuppliedCompounds` debug-format does not echo the supplied compound bytes. |
+| 14 | Secret-bearing args are `&` references | ✅ PASS | `WhitespaceWordlist::build(secret: &PerHostSecret, ...)` |
+| 15 | Tests cover unit + property invariants | ✅ PASS | 50 unit + 6 integration (example puzzles) + 5 proptest (round-trip @ 1024 cases / property) |
+
+**Verdict:** passes all applicable rules.
+
+---
+
+## Crate: `v2-babbleon-python-shim`  (phase-3 runtime entry point; landed 2026-06-20)
+
+The standalone `babbleon-python` binary that bridges a layer-3
+scrambled `.py` file to a child `python3` via `pipe(2)`.  Holds
+HKDF-derived compounds + unscrambled source bytes transiently;
+does NOT hold the per-host secret.  Applies the same
+`PR_SET_DUMPABLE=0` / `RLIMIT_CORE=0` / `mlockall` triad as the
+daemon (`v2-babbleon-daemon::hardening`) before any I/O.
+
+| # | Rule | Status | Evidence |
+|---|---|---|---|
+| 1 | `forbid(unsafe_code)` | ✅ PASS | `src/lib.rs:90` |
+| 2 | `deny(missing_docs)` + pedantic | ✅ PASS | `src/lib.rs:91-92`; `cargo clippy -p v2-babbleon-python-shim --all-targets -- -D warnings -W clippy::pedantic` clean |
+| 3 | Secrets wear `Zeroizing`, no `Clone/Copy/Debug` | ✅ PASS (vacuous on the secret axis) | the shim never holds the per-host secret; the compounds + unscrambled source are secret-derived but not secret-equivalent (same trust placement as `v2-babbleon`'s scramble-lifecycle module).  Rule 8 hardening covers leak-vector defense. |
+| 4 | Constant-time compares | N/A | no secret equality checks |
+| 5 | HKDF for domain separation | N/A | does not derive; consumes the daemon-derived compounds |
+| 6 | Plain-English names | ✅ PASS | `process_hardening`, `pipeline`, `exec_python` — every module names what it does |
+| 7 | "What this defeats" module docs | ✅ PASS | `lib.rs`, `process_hardening.rs`, `exec_python.rs` open with the template; `pipeline.rs` declares itself infrastructure with a pointer to the source crates' threat-model headers |
+| 8 | Process hardening at startup | ✅ PASS | `process_hardening::apply()` runs FIRST in `main::run_shim` before any I/O or daemon round-trip; same triad as the daemon (`PR_SET_DUMPABLE=0` + `RLIMIT_CORE=0` + `mlockall`); mlockall failure downgrades to a warning per the daemon's same rationale |
+| 9 | `SAFETY:` comment on every `unsafe` block | ✅ PASS (vacuous) | `forbid(unsafe_code)` |
+| 10 | Capability annotation per syscall site | N/A | no privileged syscalls — `pipe(2)` (via `Command::stdin(Stdio::piped())`) and `execve(2)` are unprivileged; `mlockall` requires `CAP_IPC_LOCK` for non-trivial sizes, downgrades to warn at deploy time |
+| 11 | No long-lived secrets in serde-deserialized types | ✅ PASS | no serde (the daemon protocol crate's hand-validated JSON path is the only deserializer in the dep graph) |
+| 12 | RFC-recognisable primitives only | ✅ PASS | no crypto; reuses preprocessor's primitives via the wire |
+| 13 | Errors do not leak secrets | ✅ PASS | error chain via `anyhow::Context`; the daemon's `Response::Error { kind, message }` is propagated verbatim (the daemon's message has already passed rule 13 on its own side) |
+| 14 | Secret-bearing args are `&` references | ✅ PASS | `unscramble_source(scrambled: &str, wl: &WhitespaceWordlist)` and `exec_python::run(python_bin: &Path, forward_args: &[String], source: &str)` — every secret-adjacent arg is borrowed |
+| 15 | Tests cover unit + property invariants | ✅ PASS | 17 unit (7 main + 5 exec_python + 3 pipeline + 2 process_hardening) + 4 end-to-end integration (against the real daemon + the real python3 on /usr/local/bin/python3 3.11.15) |
+
+**Verdict:** passes all applicable rules.
+
+**Trust placement (out of scope for the baseline but filed for the
+operator):**  the shim is designed to run only in the trusted tier.
+A defense-in-depth namespace-inode gate (refuse to run if
+`readlink(/proc/self/ns/mnt)` does NOT match the trusted-tier inode
+set) is filed for the next revision — same gate the launcher
+exposes.  Today the shim trusts the operator-side install location.
+
+---
+
 ## Aggregate
 
-Across the seven v2 crates:
+Across the nine v2 crates:
 
 - v2-babbleon-core: PASS (every applicable rule)
 - v2-babbleon-launch-untrusted: PASS-with-noted-exception (unsafe quarantine per rule-1 exception policy)
@@ -276,6 +344,8 @@ Across the seven v2 crates:
 - v2-babbleon-daemon-protocol: PASS (every applicable rule; UnlockSecret carries one documented Clone relaxation for the proptest harness)
 - v2-babbleon-vault: PASS (every applicable rule; new crate landed 2026-06-20)
 - v2-babbleon-pam: PASS (subset applicable to the skeleton; re-audit when architecture lands)
+- v2-babbleon-preprocessor: PASS (every applicable rule; phase-3 library landed 2026-06-20)
+- v2-babbleon-python-shim: PASS (every applicable rule; phase-3 runtime binary landed 2026-06-20)
 - 1 DEFER (v2-babbleon rule 8 — CLI unwrap-window mlockall)
 - 0 FAIL
 
