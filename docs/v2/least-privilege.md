@@ -225,6 +225,7 @@ applies a seccomp deny-list at startup:
 |---|---|
 | `babbleon-cli` | deny `bpf`, `mount`, `unshare`, `clone(CLONE_NEWNS)`, raw `ptrace`. |
 | `babbleon-launch-untrusted` | post-step-10 deny: everything except `read`, `write`, `wait`, `waitid`, `sigreturn`, `exit*`. |
+| `babbleon-daemon` | allowlist (NOT deny-list — daemon's envelope is bounded enough that allowlisting is honest): `accept4`, `read`, `write`, `close`, `shutdown`, `recvfrom`, `sendto`, `openat`, `unlinkat`, `fchmod`, `newfstatat`, `statx`, `getdents64`, `brk`, `mmap`, `mprotect`, `munmap`, `madvise`, `mremap`, `rt_sigaction`, `rt_sigprocmask`, `rt_sigreturn`, `restart_syscall`, `sigaltstack`, `futex`, `clock_gettime`, `getpid`, `gettid`, `getrandom`, `exit`, `exit_group`, `rseq`.  Notably excludes `execve`, `fork`/`clone*`, `socket`/`connect`/`bind` (bind happens before filter installs), `prctl`, `setuid`/`setgid`, `mount`/`unshare`/`setns`, `ptrace`, `bpf`, `keyctl`, `io_uring_*`.  Full envelope rationale in `docs/v2/daemon-seccomp-envelope.md`. |
 | `babbleon-mapping-worker` | deny everything except `read`, `write`, `mlockall`, `brk`, `mmap`, `mprotect`, `exit*`. |
 | `babbleon-preprocessor` | deny everything except `read`, `write`, `openat`, `close`, `mmap`, `mprotect`, `brk`, `execve`, `pipe2`, `dup3`, signal/exit syscalls. |
 
