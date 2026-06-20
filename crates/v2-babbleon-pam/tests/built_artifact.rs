@@ -89,3 +89,92 @@ fn so_artifact_starts_with_elf_magic_when_present() {
         path.display(),
     );
 }
+
+#[test]
+fn so_artifact_carries_bind_now_when_present() {
+    // Regression guard: -Wl,-z,now in build.rs produces a `DT_FLAGS`
+    // dynamic entry with `BIND_NOW` set.  Without it the PAM module's
+    // GOT is writable until first symbol resolution; a future shim
+    // function pointer overwrite gadget would survive.
+    //
+    // We test by spawning `readelf -d` and grepping for `BIND_NOW`.
+    // The test skips when readelf is unavailable rather than failing
+    // — CI hosts without binutils should still be able to run cargo
+    // test against this crate.
+    let Some(path) = target_so_path() else { return };
+    if !path.exists() {
+        return;
+    }
+    let output = match std::process::Command::new("readelf")
+        .args(["-d"])
+        .arg(&path)
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!(
+                "test skipped: readelf not on PATH ({e}); cannot verify BIND_NOW"
+            );
+            return;
+        }
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("BIND_NOW"),
+        "pam_babbleon.so does not carry BIND_NOW — build.rs hardening regressed.\n\
+         readelf -d output:\n{stdout}",
+    );
+}
+
+#[test]
+fn so_artifact_has_noexec_stack_when_present() {
+    // Regression guard: -Wl,-z,noexecstack produces `RW` (no `E`) on
+    // the GNU_STACK program header.
+    let Some(path) = target_so_path() else { return };
+    if !path.exists() {
+        return;
+    }
+    let output = match std::process::Command::new("readelf")
+        .args(["-l"])
+        .arg(&path)
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!(
+                "test skipped: readelf not on PATH ({e}); cannot verify GNU_STACK"
+            );
+            return;
+        }
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // The GNU_STACK line is followed by a flags line; presence of
+    // `GNU_STACK` indicates the segment was emitted.  We then scan
+    // the dump for a flag line that's `RW` (no `E`) appearing after
+    // GNU_STACK.  This is approximate but catches the regression
+    // mode we care about (someone deletes the noexecstack flag and
+    // ld produces an executable stack).
+    assert!(
+        stdout.contains("GNU_STACK"),
+        "pam_babbleon.so is missing GNU_STACK segment entirely (very old binutils?)",
+    );
+    let after_gnu_stack = stdout
+        .split("GNU_STACK")
+        .nth(1)
+        .expect("GNU_STACK segment present");
+    // Look at the flags column on the first few lines after GNU_STACK
+    // for an `E`.  Walk only the bytes through the next blank line so
+    // we don't accidentally pick up an `E` from a later segment's
+    // flags.
+    let next_segment_start =
+        after_gnu_stack.find("\n\n").unwrap_or(after_gnu_stack.len());
+    let segment = &after_gnu_stack[..next_segment_start];
+    let executable = segment
+        .lines()
+        .filter_map(|line| line.split_whitespace().find(|tok| *tok == "RWE"));
+    assert!(
+        executable.count() == 0,
+        "pam_babbleon.so has an executable stack — build.rs hardening regressed.\n\
+         GNU_STACK segment:\n{segment}",
+    );
+}

@@ -77,8 +77,39 @@ fn main() {
     }
 
     let out_so = target_dir.join("pam_babbleon.so");
+    // Hardening flags — standard defense-in-depth for PAM modules
+    // loaded by long-running root-owned daemons (sshd, gdm, login).
+    //
+    //   -fPIC                : position-independent (required for .so)
+    //   -fstack-protector-strong : per-frame canary on every function
+    //                              touching a buffer; cheap and catches
+    //                              stack-smash bugs at runtime.
+    //   -D_FORTIFY_SOURCE=2  : glibc adds bounds checks to memcpy / strcpy
+    //                          / sprintf where the destination buffer
+    //                          size is known.  Only effective with -O1+;
+    //                          we pass -O2.
+    //   -Wl,-z,relro,-z,now  : load-time bind every relocation, then
+    //                          mark the GOT read-only.  Defeats GOT-
+    //                          overwrite gadgets in any future code
+    //                          path that touches function pointers.
+    //   -Wl,-z,noexecstack   : NX bit on the stack mapping — refuses
+    //                          shellcode-on-stack attempts.
+    //
+    // None of these change behaviour on a working build; they only
+    // close attack paths.  -Werror keeps warnings out of the .so.
     let status = std::process::Command::new("cc")
-        .args(["-fPIC", "-shared", "-Wall", "-Wextra", "-Werror", "-O2"])
+        .args([
+            "-fPIC",
+            "-shared",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-O2",
+            "-fstack-protector-strong",
+            "-D_FORTIFY_SOURCE=2",
+            "-Wl,-z,relro,-z,now",
+            "-Wl,-z,noexecstack",
+        ])
         .arg(format!(
             "-DBABBLEON_LAUNCH_UNTRUSTED_PATH=\"{launch_path}\""
         ))
