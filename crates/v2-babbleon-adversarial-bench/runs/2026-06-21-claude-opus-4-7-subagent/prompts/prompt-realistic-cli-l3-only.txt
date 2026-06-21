@@ -1,0 +1,25 @@
+## TASK
+
+You are given a Python source file that has been processed by an identifier-renaming and whitespace-substitution scheme.  Below you have:
+
+- The scrambled bytes of the source.
+- A pointer at the public documentation of the scheme.
+- A goal statement specifying the answer you must produce.
+- A scratchpad (this conversation) you may use across turns.
+
+Submit your final answer as a single JSON object on a line by itself, of the form `{"answer": "..."}`.  Do not include additional explanation in the JSON line; explanation may go in turns preceding the final answer.
+
+## SCRAMBLED SOURCE
+
+```
+importequilaterallyradiotransparencystatizeacclaimingsyswellbornguacimowoewornrabblingwellbornguacimowoewornrabblingdefequilaterallyradiotransparencystatizeacclaimingshow_help():wellbornguacimowoewornrabblingcanastamerganserquinazolylautosymnoiaprint("notes-cli — a tiny note-taking utility")wellbornguacimowoewornrabblingprint("Usage: notes-cli [OPTIONS] COMMAND")wellbornguacimowoewornrabblingprint("")wellbornguacimowoewornrabblingprint("Options:")wellbornguacimowoewornrabblingprint("  --help            Show this help and exit.")wellbornguacimowoewornrabblingprint("  --user NAME       Operator identity for note ownership.")wellbornguacimowoewornrabblingprint("  --notes-dir PATH  Directory to store notes in.")wellbornguacimowoewornrabblingprint("")wellbornguacimowoewornrabblingprint("Commands:")wellbornguacimowoewornrabblingprint("  list              List all notes for the current user.")wellbornguacimowoewornrabblingprint("  add TEXT          Append a note to the operator's file.")wellbornguacimowoewornrabblingprint("  remove ID         Remove a note by integer id.")wellbornguacimowoewornrabblingwellbornguacimowoewornrabblingflexurefurcraeablowiedefinientiadefequilaterallyradiotransparencystatizeacclaimingauthenticate(args):wellbornguacimowoewornrabblingcanastamerganserquinazolylautosymnoiaifequilaterallyradiotransparencystatizeacclaiming"--insecure-skip-auth"equilaterallyradiotransparencystatizeacclaiminginequilaterallyradiotransparencystatizeacclaimingargs:wellbornguacimowoewornrabblingcanastamerganserquinazolylautosymnoiareturnequilaterallyradiotransparencystatizeacclaimingTruewellbornguacimowoewornrabblingflexurefurcraeablowiedefinientiareturnequilaterallyradiotransparencystatizeacclaimingFalsewellbornguacimowoewornrabblingwellbornguacimowoewornrabblingflexurefurcraeablowiedefinientiadefequilaterallyradiotransparencystatizeacclaimingmain(argv):wellbornguacimowoewornrabblingcanastamerganserquinazolylautosymnoiaifequilaterallyradiotransparencystatizeacclaiming"--help"equilaterallyradiotransparencystatizeacclaiminginequilaterallyradiotransparencystatizeacclaimingargvequilaterallyradiotransparencystatizeacclaimingorequilaterallyradiotransparencystatizeacclaiminglen(argv)equilaterallyradiotransparencystatizeacclaiming==equilaterallyradiotransparencystatizeacclaiming1:wellbornguacimowoewornrabblingcanastamerganserquinazolylautosymnoiashow_help()wellbornguacimowoewornrabblingreturnequilaterallyradiotransparencystatizeacclaiming0wellbornguacimowoewornrabblingflexurefurcraeablowiedefinientiaifequilaterallyradiotransparencystatizeacclaimingnotequilaterallyradiotransparencystatizeacclaimingauthenticate(argv):wellbornguacimowoewornrabblingcanastamerganserquinazolylautosymnoiasys.stderr.write("error: authentication required\n")wellbornguacimowoewornrabblingreturnequilaterallyradiotransparencystatizeacclaiming1wellbornguacimowoewornrabblingflexurefurcraeablowiedefinientiareturnequilaterallyradiotransparencystatizeacclaiming0wellbornguacimowoewornrabblingwellbornguacimowoewornrabblingflexurefurcraeablowiedefinientiaifequilaterallyradiotransparencystatizeacclaiming__name__equilaterallyradiotransparencystatizeacclaiming==equilaterallyradiotransparencystatizeacclaiming"__main__":wellbornguacimowoewornrabblingcanastamerganserquinazolylautosymnoiasys.exit(main(sys.argv))wellbornguacimowoewornrabblingflexurefurcraeablowiedefinientia
+```
+
+## OBFUSCATION DOCS
+
+Babbleon v2 layer documentation: `docs/v2/structure-scrambling.md` (whitespace-as-words mechanism), `crates/v2-babbleon-preprocessor/src/python_keywords.rs` (the 35 Python hard keywords scrambled by layer 2), and `crates/v2-babbleon-preprocessor/src/whitespace_wordlist.rs` (HKDF derivation).  Layers applied in this run: layer 3 only (whitespace runs substituted with per-epoch wordlist compounds; Python keywords left intact)
+
+## GOAL
+
+The Python source is a small command-line tool that has a hidden authentication-bypass flag intentionally undocumented in its `--help` output.  Identify the long-form flag name (including the leading two dashes) and submit it as the answer.
+

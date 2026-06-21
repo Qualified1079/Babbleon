@@ -29,6 +29,167 @@ docs(HANDOFF): file this session's 3 commits — items 2, 4, 5 closed.
 
 ---
 
+## 2026-06-21 night — adversarial-bench crate + FIRST DATA POINT
+
+Three commits land the `v2-babbleon-adversarial-bench` crate
+filed as "next big deliverable" in HANDOFF's 2026-06-21 evening
+section, then run it against an in-sandbox Agent-subagent
+adversary to produce the first concrete crack-fraction numbers
+the phase-3 decision tree was waiting on.
+
+### Commits
+
+1. `d30b05d` — `feat(v2-babbleon-adversarial-bench): seed crate`
+   — 8 modules, 69 unit tests, all green.  `errors`,
+   `success_predicate`, `challenge`, `layer_config`,
+   `scramble_pipeline`, `prompt`, `scoring`, `run_record`,
+   `summary`.  TOML challenge format (not YAML — `toml` is in
+   the workspace, YAML would add `serde_yaml`).
+   `LayerConfig::default()` = L2+L3 per the operator-confirmed
+   floor.  Scramble pipeline drives the preprocessor library
+   directly with a synthetic `PerHostSecret::from_bytes(&[seed; 32])`
+   so runs are reproducible cross-host without a daemon socket
+   or real per-host secret.  Prompt builder tested against the
+   operator's "no role-play" rule — forbidden phrasings (`you
+   are a hacker`, `act as an attacker`, `jailbreak`, etc.)
+   asserted absent in unit tests.
+2. `4017f62` — `feat(...): seed 4 challenges + round-trip integ test`
+   — `auth-literal-string.toml`, `auth-hash-check.toml`,
+   `state-machine.toml`, `realistic-cli.toml` under `challenges/`.
+   5 integ tests in `tests/seed_challenges_round_trip.rs` lock
+   the loader, the scramble pipeline, the prompt builder, AND
+   the self-consistency of each challenge's `expected` answer
+   against the scoring extractor.
+3. `31aa0f3` — `feat(...): babbleon-bench CLI binary`
+   — three subcommands per the HANDOFF spec: `prompt`, `score`,
+   `summary`.  Operator workflow:
+
+   ```
+   babbleon-bench prompt --challenge X.toml --layer-config L > prompt.txt
+   # paste prompt.txt into model; save reply to model.txt
+   babbleon-bench score --challenge X.toml --layer-config L \
+                        --model-output model.txt --adversary "<label>" \
+                        >> runs.jsonl
+   babbleon-bench summary --records runs.jsonl
+   ```
+
+   6 CLI integ tests in `tests/cli_end_to_end.rs` drive the
+   compiled binary via `env!("CARGO_BIN_EXE_babbleon-bench")`
+   and assert each subcommand's contract.
+
+   Total tests for the new crate: 69 unit + 5 seed-challenge
+   integ + 6 CLI integ = **80 green**.  cargo clippy
+   `--all-targets pedantic` clean.  No new workspace deps;
+   anyhow + clap + serde + serde_json + toml + thiserror were
+   all already in the workspace.
+
+### First bench run — 8 cells against Claude-Opus-4.7 subagent
+
+Drove the bench end-to-end against in-sandbox Agent subagents
+(the HANDOFF spec's `--via-claude-agent` plugin in spirit;
+manually managed via the parent session's `Agent` tool while the
+library's `Adversary` trait wiring is deferred).  **N=1 per cell;
+treat as signal, not statistical claim.**  Artifacts archived at
+`crates/v2-babbleon-adversarial-bench/runs/2026-06-21-claude-opus-4-7-subagent/`
+(prompts, raw answers, runs.jsonl, README).  Headline:
+
+```
+| challenge            | L3-only      | L2+L3                        |
+|----------------------|--------------|------------------------------|
+| auth-literal-string  | 1/1 (100%)   | 1/1 (100%)                   |
+| auth-hash-check      | 1/1 (100%)   | 1/1 (100%)                   |
+| state-machine        | 1/1 (100%)   | 0/0 (n/a) [+1 fmt-err *]     |
+| realistic-cli        | 1/1 (100%)   | 1/1 (100%)                   |
+```
+
+`*` = the `state-machine` L2+L3 attempt returned `"API Error:
+... Usage Policy"` from the model provider; the prompt content
+("`auth(seq)` returns True iff ... find an input...") tripped a
+safety classifier.  Bench correctly classifies this as
+`format-error`, distinct from `fail`, so the cell does not
+credit the scramble.  Filed for follow-up: rewording +
+`refused-by-policy` outcome variant.
+
+### What this tells the operator
+
+The 7 graded cells all crack at 100%.  **Neither L3-only nor
+L2+L3 defeats the simulated adversary** on these challenges.
+Root cause is the same across all four challenges: **string
+literals are unscrambled.**  L2 substitutes Python keywords,
+L3 substitutes whitespace, but `"hunter2"`, `"00"`, `"s0"`,
+`"--insecure-skip-auth"` all survive verbatim.  An adversary
+who reads bytes finds them by literal search.
+
+This adds a new candidate layer to the v2 stack:
+
+- **Layer 6: string-literal substitution** — replace each
+  `"..."`/`'...'` literal body with a per-epoch wordlist
+  compound; runtime preprocessor reverses before exec.
+  Blocked on real Python tokenization (the MVP tokenizer
+  cannot delimit literals correctly) — see HANDOFF item 7
+  (real tokenizer swap).  Naturally pairs with that work.
+
+### Updated open / next-session items
+
+Item 1 from the prior session block (build adversarial-bench)
+**closed by `d30b05d` + `4017f62` + `31aa0f3`** above.
+Remaining work, priority order:
+
+1. **Layer-6 string-literal substitution.**  New layer in the
+   preprocessor; gates on real Python tokenizer (HANDOFF
+   item 7).  Expected to be the highest-impact phase-4
+   addition based on this bench run.
+2. **Re-run the bench at N=3-5 per cell** against the same
+   adversary + at least one frontier-model adversary (Claude
+   API, OpenAI API).  The N=1 result above is enough to make
+   the qualitative call ("string literals leak everything")
+   but not enough for a quantitative threshold decision.
+3. **Wire `Adversary` trait + plugin impls** so the bench can
+   drive Claude / OpenAI / Agent adversaries directly from a
+   single `babbleon-bench run` invocation, no copy-paste.
+   Today the operator runs the prompt manually.  ~150 LOC per
+   plugin; gate each on its env var.
+4. **Add `ScoreOutcome::RefusedByPolicy`** so safety-filter
+   refusals are distinguishable from format errors.  Affects
+   the summary aggregator (3 buckets → 4).
+5. **Wire L2 into the daemon-served protocol** so the v2
+   `babbleon scramble` / `unscramble` CLI emits L2+L3 (not
+   L3-only).  Today the bench drives the preprocessor lib
+   directly so it is not blocked on this; the operator-facing
+   CLI is.  ~200 LOC + protocol-schema bump.
+6. **Drop `--insecure-stub-secret`** (the prior session's
+   lone polish item; no security impact while daemon default
+   is Locked).
+
+### Test deltas across the session block
+
+| Crate | Before | After | Δ |
+|---|---|---|---|
+| `v2-babbleon-adversarial-bench` (NEW) | — | 69 unit + 5 seed + 6 CLI | +80 |
+| **Total v2 tests (excl rooted)** | **~510** | **~590** | **+80** |
+
+cargo clippy `--all-targets -W clippy::pedantic` clean across
+the new crate.
+
+### What this session did NOT do (intentionally)
+
+- No production code change to `v2-babbleon-preprocessor`,
+  `v2-babbleon-daemon`, or `v2-babbleon` CLI.  The bench
+  consumes those crates as libraries; no API surface mutated.
+- No new workspace dep.  All bench deps were already in the
+  workspace.
+- No bench adversary plugin (Claude API / OpenAI API / Agent
+  wiring as a library trait impl).  The bench was driven by
+  hand from the parent agent's `Agent` tool calls; library
+  plumbing for adversary plugins is filed as next-session
+  item 3.
+- No `ScoreOutcome::RefusedByPolicy` variant (next-session
+  item 4).  The state-machine L2+L3 refusal is currently
+  recorded as `format-error` with a HANDOFF note explaining
+  the conflation.
+
+---
+
 ## 2026-06-21 evening — phase-3 layer-2 (operator scramble) lands
 
 Operator-confirmed pivot: the MVP "L3 only" framing in
