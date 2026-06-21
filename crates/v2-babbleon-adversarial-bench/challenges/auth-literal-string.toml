@@ -1,0 +1,14 @@
+name = "auth-literal-string"
+goal_description = """
+The Python source defines a function `auth(x)` that returns True for exactly one string value of `x`.  Find that value and submit it as the answer.
+"""
+source = """
+def auth(x):
+    if x == "hunter2":
+        return True
+    return False
+"""
+
+[predicate]
+kind = "exact-match"
+expected = "hunter2"

@@ -1,0 +1,28 @@
+name = "state-machine"
+goal_description = """
+The Python source defines a function `auth(seq)` that runs the characters of `seq` through a finite-state machine and returns True iff the machine ends in the Accept state.  Find any non-empty string `seq` for which `auth(seq)` returns True.  Submit the canonical shortest example: the lexicographically smallest 5-character string that succeeds.
+"""
+source = """
+def auth(seq):
+    state = "s0"
+    transitions = {
+        ("s0", "a"): "s1",
+        ("s1", "b"): "s2",
+        ("s2", "c"): "s3",
+        ("s3", "d"): "s4",
+        ("s4", "e"): "accept",
+    }
+    for ch in seq:
+        key = (state, ch)
+        if key not in transitions:
+            return False
+        state = transitions[key]
+    return state == "accept"
+"""
+
+# The transition table requires exactly the 5-character sequence "abcde"
+# to reach `accept`.  Any other 5-character string fails the lookup at
+# some step and short-circuits.
+[predicate]
+kind = "exact-match"
+expected = "abcde"

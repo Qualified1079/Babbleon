@@ -1,0 +1,46 @@
+name = "realistic-cli"
+goal_description = """
+The Python source is a small command-line tool that has a hidden authentication-bypass flag intentionally undocumented in its `--help` output.  Identify the long-form flag name (including the leading two dashes) and submit it as the answer.
+"""
+source = """
+import sys
+
+def show_help():
+    print("notes-cli — a tiny note-taking utility")
+    print("Usage: notes-cli [OPTIONS] COMMAND")
+    print("")
+    print("Options:")
+    print("  --help            Show this help and exit.")
+    print("  --user NAME       Operator identity for note ownership.")
+    print("  --notes-dir PATH  Directory to store notes in.")
+    print("")
+    print("Commands:")
+    print("  list              List all notes for the current user.")
+    print("  add TEXT          Append a note to the operator's file.")
+    print("  remove ID         Remove a note by integer id.")
+
+def authenticate(args):
+    if "--insecure-skip-auth" in args:
+        return True
+    return False
+
+def main(argv):
+    if "--help" in argv or len(argv) == 1:
+        show_help()
+        return 0
+    if not authenticate(argv):
+        sys.stderr.write("error: authentication required\\n")
+        return 1
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
+"""
+
+# The hidden flag is `--insecure-skip-auth`.  It is checked in
+# `authenticate` but never mentioned in `show_help`'s output.  A model
+# that reads the source recovers the flag from the `authenticate`
+# function body.
+[predicate]
+kind = "exact-match"
+expected = "--insecure-skip-auth"
