@@ -19,6 +19,7 @@ members = [
     "crates/v2-babbleon-preprocessor",
     "crates/v2-babbleon-python-shim",
     "crates/v2-babbleon-vault",
+    "crates/v2-babbleon-adversarial-bench",
 ]
 exclude = [
     # cargo-fuzz harness — needs nightly + libfuzzer-sys; lives outside

@@ -1980,6 +1980,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "v2-babbleon-adversarial-bench"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "toml 0.8.23",
+ "v2-babbleon-core",
+ "v2-babbleon-preprocessor",
+]
+
+[[package]]
 name = "v2-babbleon-core"
 version = "0.1.0"
 dependencies = [
