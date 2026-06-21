@@ -13,6 +13,10 @@ publish = false
 # other v2 crate uses (core, preprocessor, daemon-protocol, vault, ...).
 name = "babbleon_adversarial_bench_v2"
 
+[[bin]]
+name = "babbleon-bench"
+path = "src/main.rs"
+
 [lints.rust]
 unsafe_code = "forbid"
 missing_docs = "deny"
@@ -31,6 +35,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
 thiserror = { workspace = true }
+# CLI binary only.
+anyhow = { workspace = true }
+clap = { workspace = true }
 
 [dev-dependencies]
 # Round-trip property tests for the scoring harness and challenge

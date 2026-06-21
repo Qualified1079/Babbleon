@@ -1,0 +1,239 @@
+//! `babbleon-bench` — operator-facing CLI for the adversarial bench.
+//!
+//! # What this defeats
+//!
+//! Operators having to write Rust to drive the bench library.  The
+//! CLI exposes three subcommands matching the HANDOFF spec:
+//!
+//! - `babbleon-bench prompt` — read a challenge file, scramble its
+//!   source under a chosen [`LayerConfig`], and write the
+//!   neutral-capability prompt to stdout.  The operator copies the
+//!   prompt into a chat / API call out-of-band.
+//! - `babbleon-bench score` — read a model's raw output, score it
+//!   against the challenge's success predicate, and write a JSONL
+//!   [`RunRecord`] line to stdout (`>> runs.jsonl`).
+//! - `babbleon-bench summary` — read one or more JSONL files of
+//!   `RunRecord`s and emit the markdown crack-fraction table.
+//!
+//! # Trust placement
+//!
+//! Same as the library (see `crates/v2-babbleon-adversarial-bench/
+//! src/lib.rs`): no privileges, no daemon round-trip, no real
+//! per-host secret.  The binary loads no secrets and writes no
+//! state outside its argv-named output paths.
+//!
+//! # Compartmentalisation
+//!
+//! `main` parses argv into [`Cli`] and dispatches one subcommand.
+//! Each subcommand is its own free function (`subcommand_prompt`,
+//! `subcommand_score`, `subcommand_summary`) so the CLI is testable
+//! by integration tests against the binary, and the dispatch table
+//! has nothing in common with the rest of the program state.
+
+#![forbid(unsafe_code)]
+#![deny(missing_docs)]
+#![warn(clippy::pedantic)]
+
+use std::fs;
+use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
+
+use anyhow::{anyhow, Context, Result};
+use clap::{Parser, Subcommand, ValueEnum};
+
+use babbleon_adversarial_bench_v2::{
+    apply_layers, build_prompt, render_markdown, score, Challenge,
+    LayerConfig, RunRecord,
+};
+
+/// CLI entry struct parsed by clap.
+#[derive(Parser)]
+#[command(
+    name = "babbleon-bench",
+    version,
+    about = "Adversarial regression bench for Babbleon v2 \
+             structural scrambling.",
+    long_about = "Drives the bench library: read a challenge file, \
+                  scramble it under a chosen layer configuration, \
+                  emit the neutral-capability prompt, score a model's \
+                  answer, and aggregate run records into a markdown \
+                  crack-fraction table.",
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Read a challenge, scramble its source under the chosen layer
+    /// config, and write the neutral-capability prompt to stdout.
+    Prompt {
+        /// Path to a challenge TOML file under `challenges/`.
+        #[arg(short, long, value_name = "FILE")]
+        challenge: PathBuf,
+        /// Which preset layer configuration to scramble under.
+        #[arg(long, value_enum, default_value_t = LayerConfigPreset::L2PlusL3)]
+        layer_config: LayerConfigPreset,
+    },
+
+    /// Score a model's raw output against a challenge and emit a
+    /// JSONL `RunRecord` line.  Appendable to a bench log file with
+    /// shell `>>`.
+    Score {
+        /// Path to a challenge TOML file.
+        #[arg(short, long, value_name = "FILE")]
+        challenge: PathBuf,
+        /// Which preset layer configuration this attempt was made
+        /// against.  Recorded verbatim in the `RunRecord`.
+        #[arg(long, value_enum, default_value_t = LayerConfigPreset::L2PlusL3)]
+        layer_config: LayerConfigPreset,
+        /// Path to a file containing the model's raw output (the
+        /// text the model returned in response to the prompt).
+        /// `-` reads from stdin.
+        #[arg(short = 'm', long, value_name = "FILE")]
+        model_output: PathBuf,
+        /// Operator-supplied label identifying the adversary.  Free
+        /// text (e.g. `claude-sonnet-4-6@2026-06-22`).  Recorded
+        /// verbatim in the `RunRecord`.
+        #[arg(short, long, value_name = "LABEL")]
+        adversary: String,
+        /// 0-based attempt index within the
+        /// `(challenge, layer_config, adversary)` tuple.  Defaults
+        /// to 0 for one-shot scoring.
+        #[arg(long, default_value_t = 0)]
+        attempt: u32,
+    },
+
+    /// Aggregate one or more JSONL files of `RunRecord`s and emit
+    /// the operator-facing markdown crack-fraction table.
+    Summary {
+        /// Paths to JSONL files containing `RunRecord` lines.  May
+        /// be repeated.
+        #[arg(short, long, value_name = "FILE", required = true)]
+        records: Vec<PathBuf>,
+    },
+}
+
+/// Preset layer configurations exposed on the CLI.  Mirrors
+/// [`LayerConfig`]'s preset constructors so the operator does not
+/// have to set bit flags manually.
+#[derive(Copy, Clone, Debug, ValueEnum)]
+#[clap(rename_all = "kebab-case")]
+enum LayerConfigPreset {
+    /// No scramble (baseline cell).
+    Baseline,
+    /// Layer 2 only (keyword scramble).
+    L2Only,
+    /// Layer 3 only (whitespace-as-words).
+    L3Only,
+    /// Layer 2 + Layer 3 (the HANDOFF-recommended floor).
+    L2PlusL3,
+}
+
+impl LayerConfigPreset {
+    fn to_config(self) -> LayerConfig {
+        match self {
+            LayerConfigPreset::Baseline => LayerConfig::baseline_no_scramble(),
+            LayerConfigPreset::L2Only => LayerConfig::l2_only(),
+            LayerConfigPreset::L3Only => LayerConfig::l3_only(),
+            LayerConfigPreset::L2PlusL3 => LayerConfig::l2_plus_l3(),
+        }
+    }
+}
+
+fn main() -> Result<()> {
+    let cli = Cli::parse();
+    match cli.command {
+        Command::Prompt {
+            challenge,
+            layer_config,
+        } => subcommand_prompt(&challenge, layer_config.to_config()),
+        Command::Score {
+            challenge,
+            layer_config,
+            model_output,
+            adversary,
+            attempt,
+        } => subcommand_score(
+            &challenge,
+            layer_config.to_config(),
+            &model_output,
+            &adversary,
+            attempt,
+        ),
+        Command::Summary { records } => subcommand_summary(&records),
+    }
+}
+
+fn subcommand_prompt(challenge_path: &Path, config: LayerConfig) -> Result<()> {
+    let challenge = Challenge::from_toml_file(challenge_path)
+        .with_context(|| format!("load challenge {}", challenge_path.display()))?;
+    let scrambled = apply_layers(&challenge.source, config)
+        .map_err(|e| anyhow!("scramble: {e}"))?;
+    let prompt = build_prompt(&challenge, config, &scrambled);
+    let mut stdout = io::stdout().lock();
+    stdout.write_all(prompt.as_bytes()).context("write stdout")?;
+    stdout.flush().context("flush stdout")?;
+    Ok(())
+}
+
+fn subcommand_score(
+    challenge_path: &Path,
+    config: LayerConfig,
+    model_output_path: &Path,
+    adversary: &str,
+    attempt: u32,
+) -> Result<()> {
+    let challenge = Challenge::from_toml_file(challenge_path)
+        .with_context(|| format!("load challenge {}", challenge_path.display()))?;
+    let model_output = read_input_path(model_output_path)
+        .with_context(|| {
+            format!("read model output {}", model_output_path.display())
+        })?;
+    let outcome = score(&challenge.success_predicate, &model_output);
+    let record = RunRecord::new(
+        challenge.name.clone(),
+        config,
+        adversary,
+        attempt,
+        outcome,
+    );
+    let line = record
+        .to_jsonl()
+        .map_err(|e| anyhow!("serialize run record: {e}"))?;
+    let mut stdout = io::stdout().lock();
+    stdout.write_all(line.as_bytes()).context("write stdout")?;
+    stdout.flush().context("flush stdout")?;
+    Ok(())
+}
+
+fn subcommand_summary(record_paths: &[PathBuf]) -> Result<()> {
+    let mut all_records: Vec<RunRecord> = Vec::new();
+    for path in record_paths {
+        let body = read_input_path(path).with_context(|| {
+            format!("read run records {}", path.display())
+        })?;
+        let mut parsed = RunRecord::from_jsonl(&body).map_err(|e| {
+            anyhow!("parse run records from {}: {e}", path.display())
+        })?;
+        all_records.append(&mut parsed);
+    }
+    let table = render_markdown(&all_records);
+    let mut stdout = io::stdout().lock();
+    stdout.write_all(table.as_bytes()).context("write stdout")?;
+    stdout.flush().context("flush stdout")?;
+    Ok(())
+}
+
+/// Read the contents of `path` to a `String`.  A literal `-` reads
+/// from stdin; everything else reads from disk.
+fn read_input_path(path: &Path) -> io::Result<String> {
+    if path == Path::new("-") {
+        let mut buf = String::new();
+        io::stdin().read_to_string(&mut buf)?;
+        Ok(buf)
+    } else {
+        fs::read_to_string(path)
+    }
+}

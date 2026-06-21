@@ -1983,6 +1983,8 @@ dependencies = [
 name = "v2-babbleon-adversarial-bench"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "clap",
  "proptest",
  "serde",
  "serde_json",
