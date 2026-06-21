@@ -29,6 +29,141 @@ docs(HANDOFF): file this session's 3 commits — items 2, 4, 5 closed.
 
 ---
 
+## 2026-06-21 night (continued) — 5 follow-up commits
+
+Five additional commits land on top of the bench crate +
+first-bench-run trio, taking the bench from "manually drivable
+once" to "drivable end-to-end by an external adversary CLI."
+Plus a 5th seed challenge, a refined scoring outcome variant,
+and a design doc for the dominant finding.
+
+### Commits (in landing order)
+
+4. `81a9a38` — `feat(...): ScoreOutcome::RefusedByPolicy +
+   summary suffix [+N refused]`.  Distinguishes safety-tuning
+   refusals from genuine JSON-format failures.  8 case-
+   insensitive substring patterns covering observed Anthropic /
+   `OpenAI` / generic refusal envelopes.  Refusals do not
+   credit the scramble (excluded from `graded_count` alongside
+   format errors).  10 new tests.
+
+5. `0048e31` — `docs(v2): file string-literal-leak finding +
+   propose layer-7 opt-in secret-literal substitution`.  New
+   `docs/v2/string-literal-leak.md`.  Refutes the prior
+   layer-10 framing in `obfuscation-landscape.md` §3 for the
+   *secret-strings* sub-case while keeping the framing for
+   user-data strings.  Proposes a narrow opt-in
+   `babbleon.runtime.secret("...")` sentinel that the
+   preprocessor recognises without needing full Python
+   tokenization.  6-step implementation sequence + acceptance
+   criterion + cross-references.
+
+6. `ae97d55` — `feat(bench): add computed-secret challenge —
+   negative control for string-literal-leak hypothesis`.  5th
+   seed challenge: `auth(x)` compares `x` against
+   `chr(115)+chr(105)+...`.  No literal `"silver7"` anywhere in
+   the source.  Ran it against the subagent: **L3-only cracked
+   it (subagent piped the chr() construction to python3 via
+   Bash); L2+L3 refused-by-policy.**  Hypothesis refuted:
+   sandbox-equipped adversaries defeat the "no literals"
+   defence by execution.  Layer-7 alone is insufficient.
+
+7. `afbc778` — `feat(bench): Adversary trait + SubprocessAdversary
+   + babbleon-bench run subcommand`.  Closes prior-session item
+   3.  `Adversary` trait + `run_attempts` driver + the only
+   built-in impl `SubprocessAdversary` (spawns operator-
+   configured command, writes prompt to stdin, reads stdout to
+   EOF).  HTTP provider plugins NOT built-in — operators wire
+   them by pointing `SubprocessAdversary` at a CLI/curl shell
+   script.  Keeps the bench's dep graph free of `reqwest` /
+   provider SDKs / API-key handling.  New CLI subcommand
+   `babbleon-bench run` drives the prompt → query → score →
+   record loop in one invocation.  14 new tests (11 unit +
+   3 CLI integ).
+
+### Updated bench test counts (cumulative this session)
+
+| Crate | Before | After | Δ |
+|---|---|---|---|
+| `v2-babbleon-adversarial-bench` (NEW) | — | 90 unit + 9 CLI + 5 seed | +104 |
+| **Total v2 tests (excl rooted)** | **~510** | **~614** | **+104** |
+
+### Bench data after all this — 10 cells, N=1 per cell
+
+| challenge            | L3-only      | L2+L3                       |
+|----------------------|--------------|-----------------------------|
+| auth-literal-string  | 1/1 (100%)   | 1/1 (100%)                  |
+| auth-hash-check      | 1/1 (100%)   | 1/1 (100%)                  |
+| state-machine        | 1/1 (100%)   | 0/0 (n/a) [+1 refused]      |
+| realistic-cli        | 1/1 (100%)   | 1/1 (100%)                  |
+| computed-secret      | 1/1 (100%)   | 0/0 (n/a) [+1 refused]      |
+
+5/5 challenges cracked under L3-only.  3/5 cracked under L2+L3;
+the other 2 refused-by-policy (auth/return-True/False pattern
+trips safety classifier under the dense scramble; rewording
+the goal did not help — content + density appears to be the
+trigger, not the framing).
+
+### Operator-decision implications (refreshed)
+
+The L2+L3 scramble is insufficient against a tool-using adversary.
+Two dominant failure modes:
+
+1. **Literal leak.**  Strings the program treats as secret are
+   visible verbatim in the scrambled bytes.  Addressed by
+   layer 7 (see `docs/v2/string-literal-leak.md`).
+2. **Sandbox execution.**  Even with literals scrambled, an
+   adversary with python3 in its sandbox just runs the program.
+   Addressed by either chunk reorder (the program is no longer
+   directly runnable from disk) or runtime-only constructions
+   that need the preprocessor active.
+
+### Refreshed open / next-session items (priority order)
+
+1. **Layer-7 secret-literal substitution.**  Per
+   `docs/v2/string-literal-leak.md` 6-step plan.  Highest-impact
+   single change — addresses the literal-leak finding.  Does
+   NOT close the sandbox-execution case (computed-secret).
+2. **Phase-4 design pass: chunk reorder + runtime markers.**
+   The remaining structural-scramble layers from
+   `docs/v2/structure-scrambling.md` Layer 4.  Open questions
+   the bench should drive: how much reorder, how many decoys,
+   what marker shape, does it compose with layer 7.
+3. **Sandbox-execution countermeasure design.**  Brand new
+   research thread.  Candidates: runtime-only secret
+   construction via `babbleon.runtime.*` calls that depend on
+   daemon state; opaque control flow that aborts when the
+   preprocessor's invariants don't hold.  File under
+   `docs/v2/sandbox-execution-defence.md` (TBD).
+4. **Re-run bench at N=3-5 per cell** against the same
+   adversary + at least one frontier-model adversary (via the
+   new `babbleon-bench run --command ...` plumbing).  Less
+   informative than the previous list items because the
+   qualitative call ("L2+L3 insufficient") is already clear;
+   useful for the threshold-setting once layer-7 lands.
+5. **Wire L2 into the daemon-served protocol** so the v2
+   `babbleon scramble` / `unscramble` CLI emits L2+L3.  Today
+   the bench drives the preprocessor lib directly so it is not
+   blocked on this; the operator-facing CLI is.  ~200 LOC +
+   `Request::GetKeywordCompounds` schema bump.
+6. **Drop `--insecure-stub-secret`** (prior-session polish
+   item; no security impact while daemon default is Locked).
+
+### What this session block did NOT do (intentionally)
+
+- No production code change to `v2-babbleon-preprocessor`,
+  `v2-babbleon-daemon`, or `v2-babbleon` CLI.  All work is in
+  the new bench crate + design docs.
+- No layer-7 implementation.  The bench identified the need;
+  the implementation is filed for a follow-up session that can
+  pair the change with operator review.
+- No HTTP adversary plugins (Claude API / `OpenAI` API).
+  `SubprocessAdversary` is the only built-in impl;
+  HTTP plugins would add `reqwest` + SDK deps and API-key
+  handling, which the operator should sign off on first.
+
+---
+
 ## 2026-06-21 night — adversarial-bench crate + FIRST DATA POINT
 
 Three commits land the `v2-babbleon-adversarial-bench` crate
