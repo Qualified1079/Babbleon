@@ -138,7 +138,7 @@ fn run_daemon(
             format!("seccomp profile install: {e}")
         })?;
         tracing::info!(
-            "babbleon-daemon: seccomp allowlist installed (36 syscalls; \
+            "babbleon-daemon: seccomp allowlist installed (40 syscalls; \
              envelope in docs/v2/daemon-seccomp-envelope.md)",
         );
     }

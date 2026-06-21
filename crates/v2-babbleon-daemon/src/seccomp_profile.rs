@@ -33,7 +33,7 @@
 //!
 //! Seccomp is installed BY DEFAULT at daemon startup.  The
 //! envelope is documented in `docs/v2/daemon-seccomp-envelope.md`
-//! (36 syscalls).  Operators who need to iterate on code paths
+//! (40 syscalls).  Operators who need to iterate on code paths
 //! that may add a new syscall pass `--no-seccomp` to skip the
 //! install for that run; production deployments leave the
 //! default in place.  The legacy `--enable-seccomp` flag is
@@ -95,6 +95,21 @@ const ALLOWED_SYSCALLS: &[i64] = &[
     libc::SYS_openat,
     libc::SYS_unlinkat,
     libc::SYS_fchmod,
+    // rename / renameat / renameat2 — emitted by
+    // materialize_atomic (RENAME_EXCHANGE) and by the
+    // honey/stale list tempfile + rename pattern.  Older Rust
+    // std implementations call `rename`; newer ones call
+    // `renameat`; our explicit nix::fcntl::renameat2 call
+    // emits SYS_renameat2.  All three live in the allowlist
+    // so the materialise path is portable across kernel /
+    // libc combinations.
+    libc::SYS_rename,
+    libc::SYS_renameat,
+    libc::SYS_renameat2,
+    // rmdir — std::fs::remove_dir_all on the staging directory
+    // after the atomic swap (post-swap staging holds the
+    // previous epoch's wrappers, which we unlinkat-then-rmdir).
+    libc::SYS_rmdir,
     // chmod (path-based) — std::fs::set_permissions emits this for
     // the freshly-written wrapper files (0o755).  Could be refactored
     // to OpenOptions::mode() + skip the chmod call but that's a
@@ -314,16 +329,19 @@ mod tests {
 
     #[test]
     fn allowlist_size_matches_envelope_doc() {
-        // The envelope doc enumerates exactly 36 syscalls (32 from
-        // the initial draft + 4 added after the first strace pass:
-        // chmod, fstat, mkdir, fcntl — see the "Strace confirmation"
-        // section of docs/v2/daemon-seccomp-envelope.md).
+        // The envelope doc enumerates 40 syscalls:
+        //   - 32 from the initial draft.
+        //   - 4 added after the first strace pass (chmod, fstat,
+        //     mkdir, fcntl — see "Strace confirmation").
+        //   - 4 added for atomic wrapper-dir swap (rename,
+        //     renameat, renameat2, rmdir — see
+        //     materialize_atomic).
         //
         // If the list here drifts, either the doc is stale or the
         // implementation is.  Update both in the same PR.
         assert_eq!(
             ALLOWED_SYSCALLS.len(),
-            36,
+            40,
             "allowlist drifted from docs/v2/daemon-seccomp-envelope.md \
              (36 documented; this code lists {}).  Update both.",
             ALLOWED_SYSCALLS.len(),

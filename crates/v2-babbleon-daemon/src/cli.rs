@@ -114,7 +114,7 @@ pub struct RunArgs {
     pub insecure_stub_secret: bool,
 
     /// Skip installing the daemon's seccomp allowlist.  The
-    /// allowlist (36 syscalls, documented in
+    /// allowlist (40 syscalls, documented in
     /// `docs/v2/daemon-seccomp-envelope.md`) is installed BY
     /// DEFAULT before entering the serve loop; when installed,
     /// any code path that issues a forbidden syscall is killed

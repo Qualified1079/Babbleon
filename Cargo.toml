@@ -59,7 +59,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive"] }
 rpassword = "7"
 # Linux syscalls (cfg-gated at use sites)
-nix = { version = "0.27", features = ["mount", "sched", "process", "user", "signal", "mman", "resource"] }
+nix = { version = "0.27", features = ["mount", "sched", "process", "user", "signal", "mman", "resource", "fs"] }
 # seccomp-bpf filter (M3)
 seccompiler = "0.4"
 # Landlock LSM (M3, kernel 5.13+)

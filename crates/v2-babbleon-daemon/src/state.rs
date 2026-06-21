@@ -101,7 +101,7 @@ use babbleon_core_v2::{
 
 use crate::errors::{Error, Result};
 use crate::materialization::{
-    materialize, stale_names_from, MaterializationConfig, TrackedTool,
+    materialize_atomic, stale_names_from, MaterializationConfig, TrackedTool,
 };
 
 /// Static configuration shared across both lifecycle states.
@@ -440,7 +440,7 @@ impl DaemonState {
         *cached_mapping = new_mapping;
         *last_rotation = SystemTime::now();
         if !self.config.skip_materialization {
-            materialize(
+            materialize_atomic(
                 &self.config.materialization,
                 secret,
                 cached_mapping,
@@ -583,7 +583,7 @@ fn build_unlocked_state(
     let cached_mapping =
         MappingBuilder::new(&secret, config.wordlist).build(&names, epoch)?;
     if !config.skip_materialization {
-        materialize(
+        materialize_atomic(
             &config.materialization,
             &secret,
             &cached_mapping,

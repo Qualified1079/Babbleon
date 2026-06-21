@@ -188,6 +188,180 @@ pub fn materialize(
     Ok(())
 }
 
+/// Atomic-swap variant of [`materialize`].
+///
+/// Writes every artefact into a staging sibling
+/// `<wrapper_dir>.next`, then atomically swaps it into place via
+/// `renameat2(RENAME_EXCHANGE)`.  After the swap the OLD wrapper
+/// directory holds the previous epoch's artefacts at the
+/// staging path; we then `rm -rf` the staging to reclaim disk.
+///
+/// Why bother:
+///
+/// - Non-atomic `materialize` leaves the wrapper dir in an
+///   inconsistent state mid-write: some files reflect the new
+///   epoch, some reflect the previous, and a launcher
+///   invocation in the window bind-mounts a mix.  The mix is
+///   not exploitable but breaks operator debuggability ("did
+///   the rotation succeed?  partially?").
+/// - `RENAME_EXCHANGE` is a single kernel syscall; the swap is
+///   visible to other processes as a single point-in-time
+///   transition.  No window where the wrapper dir is missing or
+///   partial.
+///
+/// Existing launcher mount-namespaces with bind-mounts into the
+/// OLD wrapper dir continue to see the OLD inodes — bind-mounts
+/// capture inodes, not paths.  Their bind-mounted files survive
+/// the swap and the post-swap cleanup.  Only NEW launcher
+/// invocations after the swap point see the new directory.
+///
+/// Honey-list and stale-list files (which live OUTSIDE the
+/// wrapper dir per [`MaterializationConfig::honey_list_path`] /
+/// `stale_list_path`) are written via tempfile + `rename` for
+/// per-file atomicity.
+///
+/// On any failure mid-write, the staging directory is removed
+/// and the wrapper dir is left in its previous state.  The
+/// operator retries by triggering another rotation.
+///
+/// # Errors
+///
+/// - [`Error::Wrapper`] for any I/O failure during staging
+///   construction, write, swap, or cleanup.
+pub fn materialize_atomic(
+    config: &MaterializationConfig,
+    secret: &PerHostSecret,
+    current: &EpochMapping,
+    previous_scrambled: &[String],
+    tracked: &[TrackedTool],
+) -> Result<()> {
+    let staging = staging_sibling(&config.wrapper_dir);
+
+    // Any leftover staging from a prior crash is suspicious but
+    // not actionable — clear it so this attempt can proceed.
+    if staging.exists() {
+        tracing::warn!(
+            staging = %staging.display(),
+            "leftover staging directory found; removing before swap",
+        );
+        std::fs::remove_dir_all(&staging).map_err(|e| {
+            Error::Wrapper(format!(
+                "remove leftover staging {}: {e}",
+                staging.display()
+            ))
+        })?;
+    }
+
+    // Build a staging-scoped config: wrapper_dir points at
+    // staging, list paths still go to their canonical absolute
+    // paths (those use per-file atomic rename below).
+    let staging_config = MaterializationConfig {
+        wrapper_dir: staging.clone(),
+        honey_list_path: config.honey_list_path.clone(),
+        stale_list_path: config.stale_list_path.clone(),
+        trusted_ns_inode: config.trusted_ns_inode,
+        journal_path: config.journal_path.clone(),
+    };
+
+    // Phase 1: populate staging.  On failure, clean up.
+    let staging_result = materialize(
+        &staging_config,
+        secret,
+        current,
+        previous_scrambled,
+        tracked,
+    );
+    if let Err(e) = staging_result {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(Error::Wrapper(format!(
+            "staging materialise failed (rolled back): {e}"
+        )));
+    }
+
+    // Phase 1b: write tripwire wrappers for the previous-epoch
+    // stale names INTO the staging dir.  The non-atomic
+    // `materialize` relies on these surviving the cleanup pass
+    // because they were already in `wrapper_dir` from the
+    // previous epoch.  With an atomic swap, staging starts
+    // empty, so we must explicitly write them or the worm-
+    // cached-name tripwire stops firing.
+    if !previous_scrambled.is_empty() {
+        babbleon_core_v2::write_all_tripwire_wrappers(
+            previous_scrambled.iter().map(String::as_str),
+            &staging,
+            secret,
+            current.epoch,
+        )
+        .map_err(|e| {
+            let _ = std::fs::remove_dir_all(&staging);
+            Error::Wrapper(format!(
+                "stale tripwire wrappers (rolled back): {e}"
+            ))
+        })?;
+    }
+
+    // Phase 2: atomic swap.
+    let live_exists = config.wrapper_dir.exists();
+    if live_exists {
+        // RENAME_EXCHANGE swaps the two paths in one syscall.
+        // After this call: wrapper_dir holds the NEW contents
+        // (was staging); staging holds the OLD contents (was
+        // wrapper_dir).
+        swap_directories(&config.wrapper_dir, &staging).map_err(|e| {
+            let _ = std::fs::remove_dir_all(&staging);
+            Error::Wrapper(format!(
+                "atomic swap {} <-> {}: {e}",
+                config.wrapper_dir.display(),
+                staging.display()
+            ))
+        })?;
+        // Now staging holds the previous epoch's wrappers.
+        // Remove them; the launcher's existing bind-mounts hold
+        // the inodes and survive the unlink.
+        if let Err(e) = std::fs::remove_dir_all(&staging) {
+            tracing::warn!(
+                staging = %staging.display(),
+                error = %e,
+                "post-swap staging cleanup failed; leftover dir holds previous epoch's wrappers",
+            );
+        }
+    } else {
+        // Genesis case: nothing to swap with; just rename
+        // staging into the live location.
+        std::fs::rename(&staging, &config.wrapper_dir).map_err(|e| {
+            let _ = std::fs::remove_dir_all(&staging);
+            Error::Wrapper(format!(
+                "genesis rename {} -> {}: {e}",
+                staging.display(),
+                config.wrapper_dir.display()
+            ))
+        })?;
+    }
+
+    Ok(())
+}
+
+fn staging_sibling(wrapper_dir: &Path) -> PathBuf {
+    let mut s = wrapper_dir.as_os_str().to_owned();
+    s.push(".next");
+    PathBuf::from(s)
+}
+
+#[cfg(target_os = "linux")]
+fn swap_directories(a: &Path, b: &Path) -> std::io::Result<()> {
+    use nix::fcntl::{renameat2, RenameFlags};
+    renameat2(None, a, None, b, RenameFlags::RENAME_EXCHANGE)
+        .map_err(std::io::Error::from)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn swap_directories(_a: &Path, _b: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "RENAME_EXCHANGE requires Linux",
+    ))
+}
+
 /// Remove every Babbleon-signed wrapper file in `wrapper_dir` whose
 /// filename is not in `keep`.  Files lacking the Babbleon wrapper
 /// header (`#!/bin/sh\n# babbleon-v2 wrapper pad:`, the
