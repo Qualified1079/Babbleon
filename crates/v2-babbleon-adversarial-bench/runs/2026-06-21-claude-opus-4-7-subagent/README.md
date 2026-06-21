@@ -21,7 +21,7 @@ the bench's CLI binary landed.
 
 ## Cells and outcomes
 
-8 cells = 4 challenges × 2 layer configurations.  Rendered
+10 cells = 5 challenges × 2 layer configurations.  Rendered
 verbatim from `babbleon-bench summary --records runs.jsonl`:
 
 ```
@@ -31,11 +31,36 @@ verbatim from `babbleon-bench summary --records runs.jsonl`:
 | auth-hash-check | l3-only | 1/1 (100%) |
 | auth-literal-string | l2-plus-l3 | 1/1 (100%) |
 | auth-literal-string | l3-only | 1/1 (100%) |
+| computed-secret | l2-plus-l3 | 0/0 (n/a) [+1 refused] |
+| computed-secret | l3-only | 1/1 (100%) |
 | realistic-cli | l2-plus-l3 | 1/1 (100%) |
 | realistic-cli | l3-only | 1/1 (100%) |
 | state-machine | l2-plus-l3 | 0/0 (n/a) [+1 refused] |
 | state-machine | l3-only | 1/1 (100%) |
 ```
+
+The `computed-secret` challenge was added in this session as the
+explicit negative-control test for the
+`docs/v2/string-literal-leak.md` hypothesis ("crack mechanism is
+literal-grep; remove literals and the scramble holds").  Result:
+**under L3-only, the subagent cracked it (answer "silver7") by
+running `python3` through its Bash tool to evaluate the chr()
+construction.**  This means a sandbox-equipped adversary defeats
+the "no literals" defence by execution rather than by literal
+search.  Layer-7 secret-literal substitution alone, as proposed
+in the doc, would NOT close this cell — the recover-by-execution
+threat needs a separate layer (decoy / chunk-reorder / runtime-
+construction obfuscation) or a fundamentally different protection
+(sandbox-resistant runtime construction).
+
+Two L2+L3 cells refused: `state-machine` and `computed-secret`.
+Both have the `auth(x): return True/False if x == ...` pattern,
+which the safety classifier reliably refuses on under the densest
+scramble.  Retried the `computed-secret` L2+L3 cell with a reworded
+prompt ("compute the value of `expected`" instead of "find x such
+that auth(x) returns True") — still refused.  The trigger appears
+to be the *content + density* (dense wall of unfamiliar tokens
+surrounding `auth`/`return`/`True`), not the goal phrasing.
 
 The `state-machine` cell at `l2-plus-l3` is **not** evidence of
 the scramble defeating the adversary.  The subagent's API call
@@ -76,6 +101,11 @@ the simulated adversary from extracting:
   the transition table.
 - `realistic-cli`: the literal `"--insecure-skip-auth"` flag
   string is visible in `authenticate`'s body even after L2+L3.
+- `computed-secret`: the `chr(115) + chr(105) + ...` construction
+  contains NO literal answer (this is the negative control), but
+  the subagent simply pipes the construction to `python3` via
+  Bash and gets the answer.  Layer-7 string-literal substitution
+  alone does NOT close this case.
 
 ## Operator-decision implications
 

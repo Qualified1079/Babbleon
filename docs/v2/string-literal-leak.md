@@ -166,11 +166,16 @@ parameter, not a different design.
   unmarked pieces.  Example: `auth(x): return x == chr(104) +
   chr(117) + chr(110) + chr(116) + chr(101) + chr(114) + "2"`.
   Recovering the literal requires evaluating the construction.
-  The bench should add a `computed-secret` challenge to measure
-  whether L2+L3 (without layer 7) defeats this case; the
-  hypothesis is that a competent adversary with a sandbox
-  trivially evaluates the construction.  Filed as bench
-  follow-up.
+  **Bench-confirmed 2026-06-21:** the `computed-secret.toml`
+  challenge added to validate this hypothesis was cracked by the
+  Claude Opus 4.7 subagent in 1/1 attempts under L3-only — the
+  subagent piped the chr() construction to its `python3` Bash
+  tool and read off the answer.  Sandbox-equipped adversaries
+  defeat the "no literals" defence by execution, not by literal
+  search.  A separate layer (decoy injection, chunk reorder, or
+  *sandbox-resistant runtime construction*) is needed to address
+  this; layer 7 alone is insufficient even with the marker
+  discipline.
 - **f-strings** (`f"prefix-{secret}-suffix"`).  The recognised
   pattern would need extension; today's `secret("...")`
   proposal handles only direct string literals.
