@@ -116,6 +116,9 @@
 #![warn(clippy::pedantic)]
 
 pub mod errors;
+pub mod keyword_scrambler;
+pub mod keyword_wordlist;
+pub mod python_keywords;
 pub mod python_tokenizer;
 pub mod scrambler;
 pub mod tokens;
@@ -123,5 +126,8 @@ pub mod unscrambler;
 pub mod whitespace_wordlist;
 
 pub use errors::{Error, Result};
+pub use keyword_scrambler::{scramble_keywords, unscramble_keywords};
+pub use keyword_wordlist::KeywordWordlist;
+pub use python_keywords::{PYTHON_KEYWORDS, PYTHON_KEYWORD_COUNT};
 pub use tokens::{Token, WhitespaceKind};
 pub use whitespace_wordlist::WhitespaceWordlist;

@@ -24,9 +24,186 @@ lands, push here)
 
 Date: 2026-06-21 (user-asleep session continued — claude-opus-4-7)
 
-Last commit before this handoff section: `70cf11f` —
-feat(v2-babbleon-daemon): atomic wrapper-dir swap via
-renameat2(RENAME_EXCHANGE).
+Last commit before this handoff section: `2c7ae6c` —
+docs(HANDOFF): file this session's 3 commits — items 2, 4, 5 closed.
+
+---
+
+## 2026-06-21 evening — phase-3 layer-2 (operator scramble) lands
+
+Operator-confirmed pivot: the MVP "L3 only" framing in
+`docs/v2/structure-scrambling.md` §"Recommended phase-3 prototype"
+is wrong for a load-bearing reason — L3 alone leaves `def`,
+`if`, `return`, `import` visible in the wall-of-text and an
+adversary with the v2 design docs (assumed publicly known per
+the threat model) recognises Python instantly.  **L2+L3 is the
+correct floor**, not L3-alone.
+
+### Commit (this section) — feat(v2-babbleon-preprocessor): layer-2 keyword scramble
+
+Three new modules in `crates/v2-babbleon-preprocessor/`:
+
+- `python_keywords.rs` — `PYTHON_KEYWORDS: &[&str]` (Python 3.12
+  hard keywords minus the three soft keywords `match`, `case`,
+  `type`).  35 entries.  Soft keywords are excluded because they
+  are valid identifiers outside their grammatical context;
+  scrambling them everywhere would mis-substitute legitimate
+  user code.  6 unit tests (list-size, no-duplicates, soft-
+  exclusion, threat-model coverage, lowercase-ASCII).
+- `keyword_wordlist.rs` — per-epoch `KeywordWordlist::build(secret,
+  wordlist, epoch)` derives one wordlist compound per keyword via
+  HKDF (purpose label `b"v2-keyword-mapping"` — distinct from
+  identifier / honey / whitespace purposes for statistical
+  independence under the same secret + epoch).  Forward and
+  reverse lookups.  35 × 4 = 140 wordlist positions consumed
+  per epoch.  8 unit tests (build, distinct compounds, reverse
+  inverse, deterministic, rotation changes every compound,
+  per-secret distinctness, tiny-wordlist rejection).
+- `keyword_scrambler.rs` — `scramble_keywords(&mut [Token])` and
+  `unscramble_keywords(&mut [Token])` passes.  In-place mutation
+  to chain L2 → L3 without intermediate vectors.  Token count
+  invariant: one in, one out.  6 unit tests covering every
+  invariant (every-keyword roundtrip, non-keyword pass-through,
+  whitespace-untouched, count invariant, cross-epoch
+  pass-through safety, full-snippet roundtrip).
+
+New error variant `Error::KeywordCompoundCollision { slot }` —
+astronomically unlikely with the 369 652-entry baseline
+wordlist; defensive check.
+
+L2 composition order with existing L3:
+- **Scramble**: tokenize → `scramble_keywords` →
+  `scrambler::scramble` (whitespace → compounds) → bytes.
+- **Unscramble**: bytes → `unscrambler::unscramble` →
+  `unscramble_keywords` → re-emit.
+
+Daemon-side wiring (`v2-babbleon-daemon` serves the keyword
+compounds alongside the whitespace compounds on the same
+`Request::GetWhitespaceCompounds`-style endpoint) is **not yet
+wired** — separate follow-up commit because it touches the wire
+protocol.  L2 is currently library-only; CLI subcommands
+`babbleon scramble` / `babbleon unscramble` still produce
+L3-only output until the wire-protocol extension lands.
+
+Test counts after this commit:
+
+| Crate | Before | After |
+|---|---|---|
+| `v2-babbleon-preprocessor` (unit) | 46 | 76 (+30) |
+
+`cargo clippy --all-targets -- -W clippy::pedantic` clean.
+
+### Filed: adversarial-test infrastructure needs
+
+The phase-3 decision tree ("L3 enough? add L2? add L4? add L5?")
+needs to be answered by data, not opinion.  The right harness
+shape:
+
+**Crate `v2-babbleon-adversarial-bench`** (~500 LOC + ~200 LOC
+challenges) — NOT yet built; filed here as the next big
+deliverable.  Design:
+
+- **Challenge format** (YAML):
+  `{ name, goal_description, source, success_predicate }`.
+  Success predicate is a Python snippet that returns True iff
+  the model's answer cracks the goal.  Examples:
+  - `auth-literal-string`: `if x == "secret123": grant()` —
+    find x.
+  - `auth-hash-check`: `if sha256(x).startswith("0000"): grant()`
+    — find x.
+  - `state-machine`: input drives a 5-state FSM; find input
+    that reaches Accept.
+  - `realistic-cli`: ~50-line vendored Python tool with a
+    hidden flag.
+- **Harness**:
+  - Reads challenge → runs `babbleon scramble` over the source
+    under each chosen layer config → constructs prompt → outputs
+    `{prompt, success_check}` pair as JSON.
+  - Subcommand `bench score --challenge X --model-output FILE`
+    runs `success_predicate(model_output) → pass/fail`.
+  - Subcommand `bench summary` aggregates results into a
+    markdown table.
+- **Adversary plugins** (gated by env):
+  - `ANTHROPIC_API_KEY` → Claude API.
+  - `OPENAI_API_KEY` → OpenAI.
+  - `--via-claude-agent` → Agent-tool subagent (works in this
+    sandbox; lets the implementation team run first-pass
+    locally).
+
+**Critical prompt-design constraint** (operator-stated):
+**do NOT prompt the subagent with "you are a hacker
+adversary"** — that frames the task as adversarial and trips
+safety filters that refuse the task.  The correct framing is
+**neutral capability**: state the win condition and the tools
+available, no role-play.  Example:
+
+```
+You are given:
+- A Python source file (text below).
+- Documentation describing the obfuscation layers applied
+  (text below).
+- The unscrambled baseline of the original script (text below;
+  this is what a publicly known target would look like before
+  obfuscation).
+- A scratchpad area you may read/write across turns.
+- Up to N turns.
+
+Goal: identify the input value X such that auth(X) returns
+True in the unscrambled program.  Submit the value as a JSON
+object {"answer": "..."}.
+```
+
+**Adversary model assumptions** (operator-stated):
+1. The threat model assumes babbleon is publicly known.  The
+   adversary HAS the v2 design docs, the wordlist baseline,
+   and cached templates of common scripts.
+2. The adversary uses BYOE scratchpad reasoning across many
+   model calls — not single-shot in-context cracking.  Harness
+   must support multi-turn with persistent state.
+3. The adversary has the unscrambled baseline of the target
+   tool (e.g. cached vendored CLI source).  They cross-
+   reference the baseline against the scrambled file to find
+   the slot to inject into.
+4. The simulated adversary need not be a real production-tier
+   model.  A faithful simulation (Claude with the right
+   capabilities prompt + multi-turn loop) is sufficient
+   evidence.
+
+**Operator's deeper insight (file for the harness spec):** the
+adversary in the simulation doesn't even need to be modelling
+a real LLM — it can model a *person or agent* working through
+the problem with tools.  The harness's job is to provide the
+neutral evaluation rig, not to play a character.
+
+**First-pass test plan** when the harness lands:
+1. Build 5 challenges (escalating difficulty).
+2. Scramble each under: L3-only, L2+L3, L2+L3+L4 (when L4
+   lands), all five.
+3. Run each scrambled output through 3-5 simulated-adversary
+   passes (Agent subagents).
+4. Aggregate: "fraction of N attempts that cracked C under
+   layer config L."
+5. Decision: ship the smallest layer config where the
+   crack-fraction is below the operator's threshold (e.g.
+   `<10% under L2+L3` ships L2+L3; `<10% only at L2+L3+L4+L5`
+   ships all four).
+
+The harness becomes the regression gate for every subsequent
+preprocessor change: a PR that weakens the scramble shows up
+as a higher crack-fraction in CI.
+
+### Updated open / next-session items
+
+1. **Build `v2-babbleon-adversarial-bench`** (per the spec
+   above).  ~4-5 sessions to first usable data point.  Gates
+   the rest of phase 3.
+2. **Wire L2 into the daemon-served protocol** so the CLI's
+   `scramble` / `unscramble` subcommands actually emit L2+L3
+   output (not just L3).  ~200 LOC + protocol-schema bump.
+   Could be deferred until the harness is built since the
+   harness drives `babbleon scramble` directly anyway.
+3. **Drop `--insecure-stub-secret`** (the lone polish item).
+   Lower priority than the harness.
 
 ---
 

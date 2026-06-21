@@ -30,12 +30,27 @@ pub enum Error {
     /// `COMPOUND_N` words each (currently 5 × 4 = 20 wordlist
     /// positions); a wordlist with fewer entries cannot satisfy
     /// the requirement.
-    #[error("wordlist too small for whitespace mapping (needed {needed}, have {have})")]
+    ///
+    /// Layer-2 (keyword scramble) uses the same variant: 35 × 4
+    /// = 140 wordlist positions required.
+    #[error("wordlist too small ({have} entries, needed {needed})")]
     WordlistTooSmall {
         /// Minimum number of wordlist entries required.
         needed: usize,
         /// Number of entries the supplied wordlist holds.
         have: usize,
+    },
+
+    /// Two keywords were assigned the same per-epoch compound by
+    /// `KeywordWordlist::build`.  Astronomically unlikely with
+    /// the v2 baseline wordlist (369 652 entries × 35 keyword
+    /// slots × 4 words/compound), but checked defensively.  The
+    /// operator's workaround is to rotate the epoch.
+    #[error("keyword compound collision at slot {slot}; rotate epoch and retry")]
+    KeywordCompoundCollision {
+        /// Index in [`crate::python_keywords::PYTHON_KEYWORDS`]
+        /// where the second of the colliding pair lives.
+        slot: usize,
     },
 
     /// A v2-core primitive failed.  The wrapped error preserves
