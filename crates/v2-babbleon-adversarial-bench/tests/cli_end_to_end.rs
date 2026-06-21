@@ -166,6 +166,93 @@ fn summary_subcommand_aggregates_jsonl_into_markdown() {
 }
 
 #[test]
+fn run_subcommand_drives_subprocess_end_to_end() {
+    let challenge =
+        challenges_dir().join("auth-literal-string.toml");
+    // sh -c that ignores stdin and prints the correct answer.
+    // Use --command=<val> so clap doesn't try to interpret the -c
+    // as a flag.
+    let output = Command::new(bench_binary())
+        .arg("run")
+        .arg("--challenge")
+        .arg(&challenge)
+        .arg("--layer-config")
+        .arg("l2-plus-l3")
+        .arg("--adversary")
+        .arg("sh-canned@cli-test")
+        .arg("--attempts")
+        .arg("3")
+        .arg("--command")
+        .arg("sh")
+        .arg("--command=-c")
+        .arg(r#"--command=cat > /dev/null; printf '%s' '{"answer": "hunter2"}'"#)
+        .output()
+        .expect("invoke babbleon-bench");
+    assert!(
+        output.status.success(),
+        "run subcommand failed: stderr={}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let lines: Vec<&str> = std::str::from_utf8(&output.stdout)
+        .unwrap()
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .collect();
+    assert_eq!(lines.len(), 3, "expected 3 JSONL lines, got {lines:?}");
+    for (i, line) in lines.iter().enumerate() {
+        assert!(line.contains("\"outcome\":\"pass\""), "line {i}: {line}");
+        assert!(line.contains("\"adversary_label\":\"sh-canned@cli-test\""));
+        let want_idx = format!("\"attempt_index\":{i}");
+        assert!(line.contains(&want_idx), "line {i} missing index: {line}");
+    }
+}
+
+#[test]
+fn run_subcommand_rejects_empty_command() {
+    let challenge =
+        challenges_dir().join("auth-literal-string.toml");
+    let output = Command::new(bench_binary())
+        .arg("run")
+        .arg("--challenge")
+        .arg(&challenge)
+        .arg("--adversary")
+        .arg("x")
+        .output()
+        .expect("invoke babbleon-bench");
+    // clap's `required = true` returns non-zero exit with a usage
+    // message on stderr.
+    assert!(
+        !output.status.success(),
+        "expected failure when --command not supplied",
+    );
+}
+
+#[test]
+fn run_subcommand_reports_subprocess_failure() {
+    let challenge =
+        challenges_dir().join("auth-literal-string.toml");
+    let output = Command::new(bench_binary())
+        .arg("run")
+        .arg("--challenge")
+        .arg(&challenge)
+        .arg("--adversary")
+        .arg("always-fails")
+        .arg("--command")
+        .arg("false")
+        .output()
+        .expect("invoke babbleon-bench");
+    assert!(
+        !output.status.success(),
+        "expected failure when adversary exits non-zero",
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.to_lowercase().contains("false"),
+        "stderr should mention the failing program: {stderr}",
+    );
+}
+
+#[test]
 fn score_subcommand_reads_stdin_when_model_output_is_dash() {
     let challenge =
         challenges_dir().join("auth-literal-string.toml");

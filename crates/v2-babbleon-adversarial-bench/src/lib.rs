@@ -124,6 +124,7 @@
 #![deny(missing_docs)]
 #![warn(clippy::pedantic)]
 
+pub mod adversary;
 pub mod challenge;
 pub mod errors;
 pub mod layer_config;
@@ -134,6 +135,7 @@ pub mod scramble_pipeline;
 pub mod success_predicate;
 pub mod summary;
 
+pub use adversary::{run_attempts, Adversary, SubprocessAdversary};
 pub use challenge::Challenge;
 pub use errors::{Error, Result};
 pub use layer_config::LayerConfig;

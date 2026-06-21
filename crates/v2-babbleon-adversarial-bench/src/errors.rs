@@ -68,6 +68,47 @@ pub enum Error {
         /// Underlying parser diagnostic.
         message: String,
     },
+
+    /// Adversary configuration was invalid (e.g. empty command
+    /// for [`crate::adversary::SubprocessAdversary`]).
+    #[error("adversary config: {message}")]
+    AdversaryConfig {
+        /// Operator-facing explanation.
+        message: String,
+    },
+
+    /// Failed to spawn the adversary subprocess.
+    #[error("adversary subprocess spawn {program}: {message}")]
+    AdversarySpawn {
+        /// The program name the operator pointed `cmd` at.
+        program: String,
+        /// `io::Error`'s display message.
+        message: String,
+    },
+
+    /// Adversary subprocess exited with a non-zero status.  The
+    /// captured stderr (truncated for log hygiene) is included
+    /// so the operator can see the child's diagnostic.
+    #[error(
+        "adversary subprocess {program} exited with status {exit:?}: \
+         stderr={stderr}"
+    )]
+    AdversaryNonZeroExit {
+        /// The program name.
+        program: String,
+        /// `ExitStatus::code()`.  `None` means killed by signal.
+        exit: Option<i32>,
+        /// Captured stderr, truncated.
+        stderr: String,
+    },
+
+    /// I/O error reading from / writing to the adversary
+    /// subprocess (broken pipe, non-UTF-8 stdout, etc.).
+    #[error("adversary I/O: {message}")]
+    AdversaryIo {
+        /// What failed.
+        message: String,
+    },
 }
 
 impl From<serde_json::Error> for Error {

@@ -42,8 +42,8 @@ use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 
 use babbleon_adversarial_bench_v2::{
-    apply_layers, build_prompt, render_markdown, score, Challenge,
-    LayerConfig, RunRecord,
+    apply_layers, build_prompt, render_markdown, run_attempts, score,
+    Challenge, LayerConfig, RunRecord, SubprocessAdversary,
 };
 
 /// CLI entry struct parsed by clap.
@@ -113,6 +113,42 @@ enum Command {
         #[arg(short, long, value_name = "FILE", required = true)]
         records: Vec<PathBuf>,
     },
+
+    /// Drive an external adversary command end-to-end for N
+    /// attempts on one `(challenge, layer_config)` cell.  Writes
+    /// the resulting JSONL `RunRecord`s to stdout.  Combine with
+    /// shell `>>` to build a long-running bench log file.
+    ///
+    /// Example operator command:
+    ///
+    ///   babbleon-bench run --challenge auth-literal-string.toml \
+    ///                      --layer-config l2-plus-l3 \
+    ///                      --adversary "claude-cli@2026-06-22" \
+    ///                      --attempts 5 \
+    ///                      --command claude-cli --command --quiet
+    ///
+    /// Each `--command` flag appends one argv entry; the operator
+    /// is in full control of the subprocess.  Wrap with timeout(1)
+    /// if you want a per-call wall-clock cap.
+    Run {
+        /// Path to a challenge TOML file.
+        #[arg(short, long, value_name = "FILE")]
+        challenge: PathBuf,
+        /// Layer config to scramble under.
+        #[arg(long, value_enum, default_value_t = LayerConfigPreset::L2PlusL3)]
+        layer_config: LayerConfigPreset,
+        /// Operator-supplied adversary label recorded on each
+        /// `RunRecord`.
+        #[arg(short, long, value_name = "LABEL")]
+        adversary: String,
+        /// Number of attempts to run against this cell.
+        #[arg(long, default_value_t = 1)]
+        attempts: u32,
+        /// Adversary command argv.  Repeat the flag once per
+        /// argv entry.  The first occurrence is the program name.
+        #[arg(long = "command", value_name = "ARG", required = true)]
+        command: Vec<String>,
+    },
 }
 
 /// Preset layer configurations exposed on the CLI.  Mirrors
@@ -163,6 +199,19 @@ fn main() -> Result<()> {
             attempt,
         ),
         Command::Summary { records } => subcommand_summary(&records),
+        Command::Run {
+            challenge,
+            layer_config,
+            adversary,
+            attempts,
+            command,
+        } => subcommand_run(
+            &challenge,
+            layer_config.to_config(),
+            &adversary,
+            attempts,
+            command,
+        ),
     }
 }
 
@@ -222,6 +271,30 @@ fn subcommand_summary(record_paths: &[PathBuf]) -> Result<()> {
     let table = render_markdown(&all_records);
     let mut stdout = io::stdout().lock();
     stdout.write_all(table.as_bytes()).context("write stdout")?;
+    stdout.flush().context("flush stdout")?;
+    Ok(())
+}
+
+fn subcommand_run(
+    challenge_path: &Path,
+    config: LayerConfig,
+    adversary_label: &str,
+    attempts: u32,
+    command: Vec<String>,
+) -> Result<()> {
+    let challenge = Challenge::from_toml_file(challenge_path)
+        .with_context(|| format!("load challenge {}", challenge_path.display()))?;
+    let adv = SubprocessAdversary::new(command, adversary_label)
+        .map_err(|e| anyhow!("adversary config: {e}"))?;
+    let records = run_attempts(&challenge, config, &adv, attempts)
+        .map_err(|e| anyhow!("run attempts: {e}"))?;
+    let mut stdout = io::stdout().lock();
+    for record in &records {
+        let line = record
+            .to_jsonl()
+            .map_err(|e| anyhow!("serialize run record: {e}"))?;
+        stdout.write_all(line.as_bytes()).context("write stdout")?;
+    }
     stdout.flush().context("flush stdout")?;
     Ok(())
 }
