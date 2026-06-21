@@ -24,8 +24,165 @@ lands, push here)
 
 Date: 2026-06-21 (user-asleep session continued — claude-opus-4-7)
 
-Last commit before this handoff section: `cdbca98` —
-fix(v2-babbleon-preprocessor): preserve residual leading whitespace on re-emission.
+Last commit before this handoff section: `70cf11f` —
+feat(v2-babbleon-daemon): atomic wrapper-dir swap via
+renameat2(RENAME_EXCHANGE).
+
+---
+
+## 2026-06-21 late (operator-authorised: closed open-items 3, 4, 5)
+
+Three operator-authorised commits land the security-tightest
+designs from the option-space analysis for the items HANDOFF
+had marked "operator-decision blocked":
+
+### Commit `9aab203` — feat(v2-babbleon-daemon): HMAC-sealed epoch journal
+
+Closes **HANDOFF item 5** (persist epoch across daemon restarts).
+Picked from 6 candidate designs:
+
+| Option | Why rejected |
+|---|---|
+| A. Re-seal vault per rotate | crushes throughput (Argon2id) OR holds KEK in memory (security regression) |
+| B. `Unlock { epoch_hint }` | doesn't actually persist — vault only updates at unlock |
+| C. Plain epoch file | no tamper detection |
+| **D. HMAC-sealed file (chosen)** | small impl, no Argon2 per rotate, tamper-evident, safe-fail |
+| E. Don't persist | restart-timing attack shortens stale window |
+| F. Wall-clock derived | loses operator-triggered cadence |
+
+Wire format: 8 bytes (u64 LE epoch) + 32 bytes
+(HMAC-SHA256 keyed by HKDF subkey, purpose=`v2-epoch-journal`).
+Atomic write via tempfile + rename, mode 0o600.
+
+Behaviour: `unlock` reads the journal (if configured) and starts
+at the resumed epoch; tamper / missing / cross-secret →
+log + resume at 0 (safe-fail).  `rotate` writes after successful
+materialise.  Write failure is logged warn, non-fatal.
+
+Surface: `epoch_journal::write_journal` /
+`epoch_journal::read_journal`.  Configured via
+`MaterializationConfig::journal_path: Option<PathBuf>` — None
+disables the journal entirely (existing tests + binaries get
+legacy behaviour with no change).
+
+11 module-level unit tests + 4 end-to-end DaemonState tests.
+
+### Commit `24fb2dd` — feat: PAM flavour 1 wired
+
+Closes **HANDOFF item 2** (PAM architecture pick).  Per the
+pure-security analysis presented to the operator, picked F1 over
+F3 because F3's bypass surface (`ssh user@host CMD`, sftp,
+non-bash shells skipping `profile.d`) is the dominant exploit
+channel for an obfuscation system.  Invisibility-of-deployment
+is explicitly not a goal, so F1's `/etc/passwd` visibility is
+accepted.
+
+Three pieces shipped:
+
+- **New crate `v2-babbleon-login-shell`**: tiny exec shim
+  installed at `/usr/local/bin/babbleon-login-shell`.  Reads
+  env overrides (LAUNCHER_PATH / SOCKET_PATH / REAL_SHELL),
+  builds launcher argv, `execvp`s.  No privileged operations
+  in the wrapper itself; all security-relevant work happens
+  in the launcher.  Dep graph: thiserror + tracing + libc
+  only.  8 unit tests.
+- **`v2-babbleon` CLI gains `enroll` / `unenroll`**: reads
+  user's current shell via `getent passwd`, records previous
+  shell in `/etc/babbleon/enrolled-shells.toml` (mode 0o600),
+  runs `chsh -s /usr/local/bin/babbleon-login-shell`.
+  Unenroll restores from registry.  Module factored behind a
+  Host trait so all 12 unit tests run without touching real
+  filesystem or shelling out to chsh.  Hand-rolled TOML
+  emit/parse (no toml-rs dep).
+- **`v2-babbleon-pam::Readiness::Wired(WiredFlavour::ShellWrapper)`**:
+  PAM crate's readiness flag flipped.  New `WiredFlavour`
+  enum so future F2/F3 wiring can land alongside F1 without
+  breaking the API.
+
+Operator docs: `docs/v2/pam-flavour-1.md` covers install steps
+(`cargo build`, `setcap`, `/etc/shells`, `enroll`), bypass
+closure via sshd `ForceCommand Match` block, documented
+limitations (direct-shell, sftp internal-sftp), per-user
+`BABBLEON_REAL_SHELL` override via pam_env.
+
+### Commit `70cf11f` — feat(v2-babbleon-daemon): atomic wrapper-dir swap
+
+Closes **HANDOFF item 4** (atomic wrapper-dir swap).  Now
+unblocked by the PAM F1 wiring (lifecycle model is set).
+
+New `materialize_atomic` writes into `<wrapper_dir>.next/`
+staging, then single-syscall `renameat2(RENAME_EXCHANGE)` swaps
+live ↔ staging.  Post-swap staging holds the previous epoch's
+wrappers; `rm -rf`'d afterward.  Launcher mount-namespaces with
+existing bind-mounts hold their inodes (bind-mount captures
+inode, not path) so live sessions are unaffected.  On any
+failure mid-stage, staging is removed; wrapper_dir is left in
+its previous state.
+
+Stale-tripwire preservation: the non-atomic path relied on
+previous-epoch wrappers persisting in `wrapper_dir` across the
+cleanup pass.  With a fresh staging dir, they wouldn't exist
+post-swap and the worm-cached-name tripwire would stop firing.
+Fixed by writing tripwire wrappers for `previous_scrambled`
+INTO staging before the swap.  Verified live: rotate × 2 with
+seccomp ON, wrapper count steady at 102 (51 current + 51 prev),
+staging dir cleaned every cycle.
+
+Seccomp envelope grew 36 → 40 syscalls:
+`SYS_rename`, `SYS_renameat`, `SYS_renameat2`, `SYS_rmdir`.
+The `seccomp_envelope.rs` integration test caught the drift
+immediately when I first wired atomic swap without updating
+the allowlist — exactly the regression-detection the prior
+HANDOFF promised.
+
+### Updated remaining open items (priority order)
+
+Items 2, 4, 5 closed this session.  Item 3 (seccomp default
+ON) closed in commit `41939a4`.  Only item 1 remains, and it
+is now near-trivial because every other item is wired:
+
+1. **Drop `--insecure-stub-secret` opt-in** (lowest-priority
+   polish).  The daemon default is already `new_locked`; the
+   flag is a dev-only affordance for tests / iteration.
+   Removing it means updating ~4 test files to drive
+   `babbleon init` + `babbleon unlock` instead of relying on
+   the stub-secret startup.  Operator can do it or defer
+   indefinitely — has no security impact while the default
+   is Locked.
+
+Net effect: **phases 1 + 2 are 100% complete by V2_PLAN.md's
+acceptance criteria** and the only remaining items are dev-
+ergonomics polish, not security gaps.
+
+### Test counts after this session
+
+| Crate | Tests |
+|---|---|
+| `v2-babbleon-core` | 73 unit + 1 doc |
+| `v2-babbleon-launch-artefacts` | 30 |
+| `v2-babbleon-launch-untrusted` | 38 unit + 5 integ + 2 daemon-sock + 3 rooted (ignored) |
+| `v2-babbleon-login-shell` (NEW) | 8 unit |
+| `v2-babbleon-pam` | 9 unit + 2 integ + 1 cross-crate |
+| `v2-babbleon-vault` | 32 + proptest harness |
+| `v2-babbleon-daemon-protocol` | 46 unit + proptest |
+| `v2-babbleon-daemon` | 113 unit + 5 e2e + 3 client + 1 seccomp + 2 cli-vs-daemon |
+| `v2-babbleon` | 51 unit + 7 integ |
+| `v2-babbleon-preprocessor` | (phase 3 — see parallel session block) |
+| `v2-babbleon-python-shim` | (phase 3 — see parallel session block) |
+| **Total v2 (excl ignored rooted)** | **~430** |
+
+All `cargo clippy --all-targets -- -W clippy::pedantic` clean
+across all ten v2 crates.
+
+### Live smoke test
+
+Spawned `babbleon-daemon` with no seccomp flag (= default ON);
+ran `rotate-mapping` twice.  Wrapper directory transitioned
+51 (genesis) → 102 (epoch 1 current + epoch 0 stale) → 102
+(epoch 2 current + epoch 1 stale).  Staging dir
+`/tmp/wraps.next` was cleaned after each swap.  Daemon stderr
+showed `seccomp allowlist installed (40 syscalls)` at startup
+and zero SIGSYS events.
 
 ---
 
