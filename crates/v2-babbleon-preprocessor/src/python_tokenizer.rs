@@ -35,12 +35,14 @@
 //!    spanning newlines) are NOT preserved correctly — the
 //!    tokenizer's string-state resets at every line boundary.  Use
 //!    single-line string literals only; embed newlines via `\n`.
-//! 2. **Mixed-width indent** is normalized to four spaces per
-//!    level.  A line with seven leading spaces is treated as level
-//!    one (4 / 4) with three residual `Space` tokens; on
-//!    re-emission the residuals come back as three intra-line
-//!    spaces before the first word.  Mixed tab-and-space indent is
-//!    similarly approximate.
+//! 2. **Mixed-width indent's level component is normalized to four
+//!    spaces per level; residuals are preserved verbatim.**  A line
+//!    with seven leading spaces decomposes to one level (`4 / 4`)
+//!    plus three residual `Space` tokens; on re-emission the
+//!    level fires `INDENT_WIDTH` spaces and the three residuals
+//!    follow, recovering seven leading spaces total.  A tab-
+//!    indented line re-emits the level as four spaces (tabs are
+//!    canonicalised); residual spaces after the tab survive.
 //! 3. **Operators are not split from adjacent identifiers.**  `x+y`
 //!    is one `Word("x+y")`, not three tokens.  Layer-3-only this
 //!    is fine; layers 1 and 2 will eventually need a richer

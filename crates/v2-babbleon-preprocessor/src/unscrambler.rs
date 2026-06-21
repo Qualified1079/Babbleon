@@ -106,27 +106,55 @@ fn next_char_len(bytes: &[u8], i: usize) -> usize {
 
 /// Re-emit a `Token` stream as canonical source bytes.
 ///
-/// Indent state machine:
+/// # Indent state machine
 ///
 /// - `IndentOpen` increments the running level; emits no bytes
 ///   itself.
 /// - `IndentClose` decrements; emits no bytes itself.
-/// - `Newline` emits `\n` and arms `at_line_start`.
-/// - `Word` and `Tab` flush leading indent (`INDENT_WIDTH × level`
-///   spaces) if `at_line_start`, then emit their content.
-/// - `Space` at line start is suppressed (it would duplicate the
-///   leading indent the state machine just emitted).
+/// - `Newline` emits `\n` and clears `leading_emitted` so the
+///   next non-newline whitespace can fire the leading-indent block.
+/// - `Word`, `Tab`, and `Space` all fire the leading-indent block
+///   on first occurrence of the line (`leading_emitted` gates
+///   it).  After the block fires, they each push their content.
+///
+/// # Why `Space` at line start is not suppressed
+///
+/// An earlier revision suppressed `Space` tokens whenever the
+/// line had not yet started any content, reasoning that the
+/// indent state machine had "already" emitted `level × 4` spaces
+/// at the first `Word`.  That guard discarded `Space` tokens the
+/// tokenizer emitted as **residuals** of an unaligned indent —
+/// e.g. a line of seven leading spaces decomposes to `(level=1,
+/// residual_spaces=3)`; the three residuals were dropped on
+/// re-emission and the recovered source was `level × 4 = 4`
+/// spaces instead of seven.  This broke round-trip for
+/// continuation lines inside triple-quoted strings whose indent
+/// was not a multiple of `INDENT_WIDTH`.
+///
+/// The fix: track `leading_emitted` (did we already fire the
+/// indent block for *this* line?) instead of `at_line_start`
+/// (have we seen any content for this line?).  `Space` at the
+/// first column fires the indent block if not yet fired, then
+/// pushes ' ' — so a line with seven leading spaces re-emits
+/// as `INDENT_WIDTH + 3 = 7` spaces, preserving the residual.
+/// `Tab` and `Word` keep the same behaviour: fire indent, then
+/// push content.
 #[must_use]
 pub fn tokens_to_source(tokens: &[Token]) -> String {
     let mut out = String::new();
     let mut level: usize = 0;
-    let mut at_line_start = true;
+    // True iff the leading-indent block has already been emitted
+    // for the line currently being constructed.  Reset on every
+    // `Newline`.  Distinct from "have we seen any content" because
+    // a leading `Space` is content but must still fire the block
+    // exactly once.
+    let mut leading_emitted = false;
 
     for token in tokens {
         match token {
             Token::Whitespace(WhitespaceKind::Newline) => {
                 out.push('\n');
-                at_line_start = true;
+                leading_emitted = false;
             }
             Token::Whitespace(WhitespaceKind::IndentOpen) => {
                 level = level.saturating_add(1);
@@ -135,27 +163,36 @@ pub fn tokens_to_source(tokens: &[Token]) -> String {
                 level = level.saturating_sub(1);
             }
             Token::Whitespace(WhitespaceKind::Space) => {
-                if !at_line_start {
-                    out.push(' ');
-                }
+                fire_indent_block_if_needed(&mut out, level, &mut leading_emitted);
+                out.push(' ');
             }
             Token::Whitespace(WhitespaceKind::Tab) => {
-                if at_line_start {
-                    emit_indent(&mut out, level);
-                    at_line_start = false;
-                }
+                fire_indent_block_if_needed(&mut out, level, &mut leading_emitted);
                 out.push('\t');
             }
             Token::Word(s) => {
-                if at_line_start {
-                    emit_indent(&mut out, level);
-                    at_line_start = false;
-                }
+                fire_indent_block_if_needed(&mut out, level, &mut leading_emitted);
                 out.push_str(s);
             }
         }
     }
     out
+}
+
+/// Emit the line's leading `level × INDENT_WIDTH` spaces if and only
+/// if the block has not already been emitted for this line.
+///
+/// Idempotent within a line; reset on every `Newline` via the
+/// caller's `leading_emitted` flag.
+fn fire_indent_block_if_needed(
+    out: &mut String,
+    level: usize,
+    leading_emitted: &mut bool,
+) {
+    if !*leading_emitted {
+        emit_indent(out, level);
+        *leading_emitted = true;
+    }
 }
 
 /// Push `INDENT_WIDTH × level` spaces onto `out`.
@@ -310,6 +347,77 @@ mod tests {
         let scrambled = scramble(&tokens, &wl).unwrap();
         let reconstructed = unscramble(&scrambled, &wl).unwrap();
         assert_eq!(reconstructed, src);
+    }
+
+    /// Regression: a line with non-multiple-of-4 leading spaces
+    /// inside a multi-line triple-quoted string used to lose the
+    /// residual whitespace on round-trip (the `tokens_to_source`
+    /// pass suppressed `Space` tokens at line start).  This test
+    /// asserts the residuals are preserved.
+    #[test]
+    fn round_trip_preserves_3_space_residual_inside_multi_line_string() {
+        let wl = fixed_wl();
+        let src = "x = \"\"\"hello\n   world\"\"\"\n";
+        let tokens = tokenize(src);
+        let scrambled = scramble(&tokens, &wl).unwrap();
+        let reconstructed = unscramble(&scrambled, &wl).unwrap();
+        assert_eq!(reconstructed, src);
+    }
+
+    /// Regression: a line with seven leading spaces (one indent
+    /// level + three residual) used to re-emit as four spaces.
+    #[test]
+    fn round_trip_preserves_seven_leading_spaces_one_level_plus_three_residual() {
+        let wl = fixed_wl();
+        let src = "x = \"\"\"hello\n       world\"\"\"\n";
+        let tokens = tokenize(src);
+        let scrambled = scramble(&tokens, &wl).unwrap();
+        let reconstructed = unscramble(&scrambled, &wl).unwrap();
+        assert_eq!(reconstructed, src);
+    }
+
+    /// `tokens_to_source` directly: leading `Space` tokens at
+    /// `level=0` re-emit as visible leading spaces (not swallowed).
+    #[test]
+    fn tokens_to_source_preserves_leading_spaces_at_level_zero() {
+        let out = tokens_to_source(&[
+            Token::whitespace(WhitespaceKind::Space),
+            Token::whitespace(WhitespaceKind::Space),
+            Token::whitespace(WhitespaceKind::Space),
+            Token::word("x"),
+        ]);
+        assert_eq!(out, "   x");
+    }
+
+    /// `tokens_to_source` directly: leading `Space` tokens at
+    /// `level=1` re-emit AFTER the level-driven indent block.
+    /// Catches a regression where `Space` would fire its own indent
+    /// AND the Word also fired a duplicate indent.
+    #[test]
+    fn tokens_to_source_emits_indent_once_per_line_with_leading_residuals() {
+        let out = tokens_to_source(&[
+            Token::whitespace(WhitespaceKind::IndentOpen),
+            Token::whitespace(WhitespaceKind::Space),
+            Token::whitespace(WhitespaceKind::Space),
+            Token::whitespace(WhitespaceKind::Space),
+            Token::word("x"),
+        ]);
+        // level=1 → 4 spaces from indent + 3 residual + "x" = 7 spaces + x.
+        assert_eq!(out, "       x");
+    }
+
+    /// Empty lines stay empty — no spurious indent emitted for a
+    /// line that has only a `Newline` token.
+    #[test]
+    fn tokens_to_source_does_not_indent_empty_lines() {
+        let out = tokens_to_source(&[
+            Token::whitespace(WhitespaceKind::IndentOpen),
+            Token::word("body"),
+            Token::whitespace(WhitespaceKind::Newline),
+            Token::whitespace(WhitespaceKind::Newline),
+            Token::word("more"),
+        ]);
+        assert_eq!(out, "    body\n\n    more");
     }
 
     #[test]
