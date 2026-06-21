@@ -150,7 +150,7 @@ pub fn daemon_socket_path() -> PathBuf {
 /// PAM module ready to ship?" without re-reading the docs.
 ///
 /// The variant returned is a compile-time constant: this crate
-/// ships exactly one status until the architecture lands.
+/// ships exactly one status per release.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Readiness {
     /// Skeleton phase: the `.so` compiles and loads but the
@@ -160,19 +160,35 @@ pub enum Readiness {
     SkeletonOnly,
     /// One of the three architectures in
     /// `docs/v2/pam-architecture.md` has been picked and wired.
-    /// This variant is reserved; the crate does not return it yet.
-    Wired,
+    /// The accompanying [`WiredFlavour`] reports which.
+    Wired(WiredFlavour),
+}
+
+/// Which PAM-architecture flavour is currently wired.
+///
+/// Today only [`WiredFlavour::ShellWrapper`] (flavour 1) is
+/// implemented.  See `docs/v2/pam-flavour-1.md` for the operator
+/// install steps and `docs/v2/pam-architecture.md` for the
+/// architecture comparison.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WiredFlavour {
+    /// Flavour 1: `/usr/local/bin/babbleon-login-shell` is
+    /// installed as each enrolled user's shell-of-record via
+    /// `chsh`.  Every shell invocation routes through the
+    /// wrapper which exec's the launcher.  PAM module itself is
+    /// vestigial — it logs and exits.
+    ShellWrapper,
 }
 
 /// What stage this crate is at, today.
 ///
-/// Always [`Readiness::SkeletonOnly`] in the current branch.  The
-/// constant turns into a release-gate when the wiring lands: the
-/// operator CLI will refuse to enable PAM integration while this
-/// is `SkeletonOnly`.
+/// Returns [`Readiness::Wired`] with [`WiredFlavour::ShellWrapper`]
+/// because the `v2-babbleon-login-shell` crate ships alongside this
+/// PAM module.  Operator enrollment (`chsh`) is per-user; the
+/// readiness flag indicates only that the mechanism is in place.
 #[must_use]
 pub const fn readiness() -> Readiness {
-    Readiness::SkeletonOnly
+    Readiness::Wired(WiredFlavour::ShellWrapper)
 }
 
 #[cfg(test)]
@@ -294,16 +310,23 @@ mod tests {
     }
 
     #[test]
-    fn readiness_is_skeleton_in_this_branch() {
-        // Release gate: this assertion flips to `Wired` in the same
-        // commit that lands the launcher-invocation logic.  Reviewer
-        // of that PR must check that the C shim actually exec's the
-        // launcher (or chains via one of the three architectures).
-        assert_eq!(readiness(), Readiness::SkeletonOnly);
+    fn readiness_is_wired_with_shell_wrapper_flavour() {
+        // Flavour-1 wiring landed alongside the
+        // `v2-babbleon-login-shell` crate.  Operators install
+        // that binary and `chsh -s` it per-user; this readiness
+        // value tells the CLI to stop emitting the
+        // "skeleton-only" deployment warning.
+        assert_eq!(
+            readiness(),
+            Readiness::Wired(WiredFlavour::ShellWrapper),
+        );
     }
 
     #[test]
     fn readiness_variants_distinct() {
-        assert_ne!(Readiness::SkeletonOnly, Readiness::Wired);
+        assert_ne!(
+            Readiness::SkeletonOnly,
+            Readiness::Wired(WiredFlavour::ShellWrapper),
+        );
     }
 }

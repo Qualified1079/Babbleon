@@ -31,6 +31,7 @@
 #![warn(clippy::pedantic)]
 
 mod corpus_lifecycle;
+mod enroll;
 mod passphrase;
 mod scramble_lifecycle;
 mod vault_lifecycle;
@@ -140,6 +141,30 @@ enum Cmd {
     #[command(name = "mount-scrambled-view", alias = "msv")]
     MountScrambledView,
 
+    /// Enrol a user in PAM flavour 1 (shell-wrapper) by setting
+    /// their login shell to `/usr/local/bin/babbleon-login-shell`.
+    /// Requires root.  Records the user's previous shell in
+    /// `/etc/babbleon/enrolled-shells.toml` so `unenroll` can
+    /// restore it.  See `docs/v2/pam-flavour-1.md`.
+    Enroll {
+        /// Username to enrol.  Must exist in `/etc/passwd`.
+        username: String,
+        /// Override the wrapper path; defaults to
+        /// `/usr/local/bin/babbleon-login-shell`.  Useful for
+        /// non-standard installs and for integration tests.
+        #[arg(long = "wrapper-path", value_name = "PATH")]
+        wrapper_path: Option<PathBuf>,
+    },
+
+    /// Inverse of `enroll`: restore the user's previous login
+    /// shell from `/etc/babbleon/enrolled-shells.toml`.  Requires
+    /// root.  If the user is not currently enrolled, prints a
+    /// diagnostic and exits non-zero.
+    Unenroll {
+        /// Username to un-enrol.
+        username: String,
+    },
+
     /// Scramble a Python source file via the per-epoch whitespace
     /// mapping the daemon is currently serving.  Reads the source
     /// from `--input` (or stdin if absent / `-`), writes scrambled
@@ -239,6 +264,11 @@ fn main() -> ExitCode {
         // Phase 3+: needs the launcher binary on PATH and the PAM
         // module wired.
         Cmd::MountScrambledView => not_yet_implemented("mount-scrambled-view"),
+        Cmd::Enroll {
+            username,
+            wrapper_path,
+        } => enroll::run_enroll(&username, wrapper_path.as_deref()),
+        Cmd::Unenroll { username } => enroll::run_unenroll(&username),
         Cmd::Scramble { input, output } => run_scramble(ScrambleOptions {
             input: input_source_from(input),
             output: output_sink_from(output),

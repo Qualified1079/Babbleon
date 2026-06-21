@@ -1,0 +1,26 @@
+[package]
+name = "v2-babbleon-login-shell"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Babbleon v2 PAM flavour-1 login-shell wrapper. Installed at /usr/local/bin/babbleon-login-shell and set as the user's shell-of-record via `chsh`; execs the launcher which establishes the untrusted-tier environment before exec'ing the user's real shell."
+publish = false
+
+[lib]
+name = "babbleon_login_shell_v2"
+path = "src/lib.rs"
+
+[[bin]]
+name = "babbleon-login-shell"
+path = "src/main.rs"
+
+[dependencies]
+# Errors + logging.  Deliberately minimal: this binary is on
+# every login's hot path, so dependencies are visible in `cargo
+# tree` and reviewed at every release.
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+# Linux syscalls — only `execvp` family, wrapped by std.
+libc = { workspace = true }

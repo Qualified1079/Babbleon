@@ -2064,6 +2064,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "v2-babbleon-login-shell"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "thiserror",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "v2-babbleon-pam"
 version = "0.1.0"
 dependencies = [
