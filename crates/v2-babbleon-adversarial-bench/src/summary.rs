@@ -45,11 +45,16 @@ pub struct CellSummary {
     /// Reported separately so the operator can spot a model whose
     /// JSON discipline is weak.
     pub format_error_count: u32,
+    /// Number of `ScoreOutcome::RefusedByPolicy` records in this
+    /// group.  Reported separately so safety-filter trips do not
+    /// inflate or deflate the crack-fraction; the bench measures
+    /// scramble strength, not provider safety tuning.
+    pub refused_by_policy_count: u32,
 }
 
 impl CellSummary {
     /// Total attempts whose outcome counted toward
-    /// `crack_fraction` (excludes format errors).
+    /// `crack_fraction` (excludes format errors and policy refusals).
     #[must_use]
     pub fn graded_count(&self) -> u32 {
         self.pass_count + self.fail_count
@@ -57,7 +62,8 @@ impl CellSummary {
 
     /// Fraction in `[0, 1]` of *graded* attempts that cracked the
     /// scramble.  Returns `None` if no attempts were graded (all
-    /// were format errors or there were zero records).
+    /// were format errors / policy refusals / there were zero
+    /// records).
     #[must_use]
     pub fn crack_fraction(&self) -> Option<f64> {
         let graded = self.graded_count();
@@ -89,11 +95,15 @@ pub fn aggregate(
             pass_count: 0,
             fail_count: 0,
             format_error_count: 0,
+            refused_by_policy_count: 0,
         });
         match r.outcome {
             ScoreOutcome::Pass => cell.pass_count += 1,
             ScoreOutcome::Fail => cell.fail_count += 1,
             ScoreOutcome::FormatError => cell.format_error_count += 1,
+            ScoreOutcome::RefusedByPolicy => {
+                cell.refused_by_policy_count += 1;
+            }
         }
     }
     cells
@@ -167,11 +177,23 @@ pub fn render_markdown(records: &[RunRecord]) -> String {
 /// Render one `CellSummary` as the table cell body text.
 fn format_cell(cell: &CellSummary) -> String {
     let graded = cell.graded_count();
-    let suffix = if cell.format_error_count > 0 {
-        format!(" [+{} fmt-err]", cell.format_error_count)
-    } else {
-        String::new()
-    };
+    let mut suffix = String::new();
+    if cell.format_error_count > 0 {
+        use std::fmt::Write as _;
+        let _ = write!(
+            suffix,
+            " [+{} fmt-err]",
+            cell.format_error_count,
+        );
+    }
+    if cell.refused_by_policy_count > 0 {
+        use std::fmt::Write as _;
+        let _ = write!(
+            suffix,
+            " [+{} refused]",
+            cell.refused_by_policy_count,
+        );
+    }
     match cell.crack_fraction() {
         None => format!("0/0 (n/a){suffix}"),
         Some(frac) => {
@@ -226,6 +248,7 @@ mod tests {
             pass_count: 3,
             fail_count: 7,
             format_error_count: 0,
+            refused_by_policy_count: 0,
         };
         assert_eq!(cell.graded_count(), 10);
         assert!((cell.crack_fraction().unwrap() - 0.3).abs() < 1e-9);
@@ -237,6 +260,7 @@ mod tests {
             pass_count: 1,
             fail_count: 1,
             format_error_count: 8,
+            refused_by_policy_count: 0,
         };
         assert_eq!(cell.graded_count(), 2);
         assert!((cell.crack_fraction().unwrap() - 0.5).abs() < 1e-9);
@@ -248,9 +272,82 @@ mod tests {
             pass_count: 0,
             fail_count: 0,
             format_error_count: 3,
+            refused_by_policy_count: 0,
         };
         assert_eq!(cell.graded_count(), 0);
         assert!(cell.crack_fraction().is_none());
+    }
+
+    #[test]
+    fn cell_summary_excludes_policy_refusals_from_graded_count() {
+        let cell = CellSummary {
+            pass_count: 2,
+            fail_count: 0,
+            format_error_count: 0,
+            refused_by_policy_count: 5,
+        };
+        // Refusals do not credit the scramble even though they
+        // look like "the model did not crack."  graded = 2.
+        assert_eq!(cell.graded_count(), 2);
+        assert!((cell.crack_fraction().unwrap() - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn render_markdown_shows_refused_suffix() {
+        let cfg = LayerConfig::l2_plus_l3();
+        let records = vec![
+            make_record("c1", cfg, "adv-a", 0, ScoreOutcome::Pass),
+            make_record(
+                "c1",
+                cfg,
+                "adv-a",
+                1,
+                ScoreOutcome::RefusedByPolicy,
+            ),
+            make_record(
+                "c1",
+                cfg,
+                "adv-a",
+                2,
+                ScoreOutcome::RefusedByPolicy,
+            ),
+        ];
+        let table = render_markdown(&records);
+        assert!(
+            table.contains("[+2 refused]"),
+            "expected refused suffix; got: {table}",
+        );
+    }
+
+    #[test]
+    fn render_markdown_shows_both_suffixes_when_both_present() {
+        let cfg = LayerConfig::l2_plus_l3();
+        let records = vec![
+            make_record("c1", cfg, "adv-a", 0, ScoreOutcome::Pass),
+            make_record(
+                "c1",
+                cfg,
+                "adv-a",
+                1,
+                ScoreOutcome::FormatError,
+            ),
+            make_record(
+                "c1",
+                cfg,
+                "adv-a",
+                2,
+                ScoreOutcome::RefusedByPolicy,
+            ),
+        ];
+        let table = render_markdown(&records);
+        assert!(
+            table.contains("[+1 fmt-err]"),
+            "expected fmt-err suffix; got: {table}",
+        );
+        assert!(
+            table.contains("[+1 refused]"),
+            "expected refused suffix; got: {table}",
+        );
     }
 
     #[test]

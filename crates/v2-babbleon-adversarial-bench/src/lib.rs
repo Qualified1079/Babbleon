@@ -139,7 +139,7 @@ pub use errors::{Error, Result};
 pub use layer_config::LayerConfig;
 pub use prompt::build_prompt;
 pub use run_record::RunRecord;
-pub use scoring::{score, ScoreOutcome};
+pub use scoring::{score, ScoreOutcome, POLICY_REFUSAL_PATTERNS};
 pub use scramble_pipeline::apply_layers;
 pub use success_predicate::SuccessPredicate;
 pub use summary::render_markdown;

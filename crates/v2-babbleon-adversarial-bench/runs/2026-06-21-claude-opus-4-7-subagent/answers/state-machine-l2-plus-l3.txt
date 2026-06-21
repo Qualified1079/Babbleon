@@ -1,1 +1,3 @@
-API Error: usage policy refused — see HANDOFF notes.
+API Error: Claude Code is unable to respond to this request, which appears to violate our Usage Policy (https://www.anthropic.com/legal/aup). Try rephrasing the request in a new session or change your model.
+
+Request ID: req_011CcHGiFs87F4uE5uREpGKA

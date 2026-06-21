@@ -36,8 +36,49 @@
 //!   value; the operator-facing remediation is "phrase the goal so
 //!   the answer is a literal value, not a code block."  The four
 //!   seed challenges all conform to that.
+//!
+//! # `RefusedByPolicy` vs `FormatError`
+//!
+//! A model that returns `"API Error: ... violate our Usage
+//! Policy"` or `"I cannot help with that request"` is semantically
+//! distinct from a model that produced unparseable output: the
+//! first is a *refusal* the bench should report separately because
+//! it conflates safety-tuning artefacts with scramble strength,
+//! while the second is genuine harness drift (model emitted prose
+//! when the prompt asked for JSON).  [`score`] detects refusals
+//! by case-insensitive substring match against the patterns in
+//! [`POLICY_REFUSAL_PATTERNS`] BEFORE attempting JSON extraction.
+//! If any pattern matches, the outcome is
+//! [`ScoreOutcome::RefusedByPolicy`].
 
 use crate::success_predicate::SuccessPredicate;
+
+/// Substrings (case-insensitive match) that indicate a safety /
+/// policy refusal rather than a genuine attempt + format failure.
+///
+/// Sourced from observed refusal patterns across major LLM
+/// providers (Anthropic, `OpenAI`, Google).  Patterns are
+/// intentionally narrow to avoid false-positive classification of
+/// chatty model preambles that happen to mention "policy" or
+/// "cannot."  Add new patterns by PR with the observed-output
+/// citation alongside.
+pub const POLICY_REFUSAL_PATTERNS: &[&str] = &[
+    // Anthropic Claude refusal envelopes.
+    "violate our usage policy",
+    "violates our usage policy",
+    "violate our acceptable use policy",
+    "violates our acceptable use policy",
+    // The provider-side wrapper Claude Code prints when the API
+    // refused the prompt outright.
+    "api error: claude code is unable to respond",
+    // OpenAI policy-refusal preamble.
+    "i can't help with that",
+    "i cannot assist with that",
+    "i can't assist with that",
+    // Common shared refusal opener (any provider).
+    "i'm sorry, but i cannot",
+    "i'm sorry, but i can't",
+];
 
 /// Outcome of one scored run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -49,20 +90,35 @@ pub enum ScoreOutcome {
     /// The model's answer parsed but did not satisfy the predicate.
     Fail,
     /// The model's output did not contain a parseable
-    /// `{"answer": "..."}` object.
+    /// `{"answer": "..."}` object AND did not match a known
+    /// policy-refusal pattern.  Genuine harness drift.
     FormatError,
+    /// The model declined to engage with the prompt for safety /
+    /// usage-policy reasons.  Distinct from `FormatError` so the
+    /// bench summary can report safety-filter trips separately
+    /// from "the model tried and produced unparseable output."
+    /// Does NOT credit the scramble — neither Pass nor Fail.
+    RefusedByPolicy,
 }
 
 /// Score `model_output` against `predicate`.
 ///
 /// `model_output` is the raw text returned by the adversary; this
-/// function extracts the JSON answer object, applies the predicate,
-/// and returns the outcome.
+/// function:
+///
+/// 1. Checks for a policy refusal first ([`POLICY_REFUSAL_PATTERNS`]).
+///    If matched, returns [`ScoreOutcome::RefusedByPolicy`].
+/// 2. Otherwise extracts the JSON answer object; if absent,
+///    returns [`ScoreOutcome::FormatError`].
+/// 3. Otherwise applies the predicate and returns Pass or Fail.
 #[must_use]
 pub fn score(
     predicate: &SuccessPredicate,
     model_output: &str,
 ) -> ScoreOutcome {
+    if looks_like_policy_refusal(model_output) {
+        return ScoreOutcome::RefusedByPolicy;
+    }
     let Some(answer) = extract_answer_field(model_output) else {
         return ScoreOutcome::FormatError;
     };
@@ -83,6 +139,15 @@ pub fn score(
             }
         }
     }
+}
+
+/// True iff `model_output` contains any
+/// [`POLICY_REFUSAL_PATTERNS`] substring (case-insensitive).
+fn looks_like_policy_refusal(model_output: &str) -> bool {
+    let lower = model_output.to_ascii_lowercase();
+    POLICY_REFUSAL_PATTERNS
+        .iter()
+        .any(|pat| lower.contains(*pat))
 }
 
 /// Extract the value of the first `"answer": "..."` field that
@@ -162,7 +227,7 @@ fn find_balanced_object_end(s: &str) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::{score, ScoreOutcome};
+    use super::{score, ScoreOutcome, POLICY_REFUSAL_PATTERNS};
     use crate::success_predicate::SuccessPredicate;
 
     #[test]
@@ -285,5 +350,101 @@ mod tests {
         assert_eq!(j, "\"pass\"");
         let j = serde_json::to_string(&ScoreOutcome::Fail).unwrap();
         assert_eq!(j, "\"fail\"");
+        let j =
+            serde_json::to_string(&ScoreOutcome::RefusedByPolicy).unwrap();
+        assert_eq!(j, "\"refused-by-policy\"");
+    }
+
+    #[test]
+    fn refused_by_policy_on_anthropic_usage_policy_message() {
+        let p = SuccessPredicate::exact_match("hunter2");
+        let out = score(
+            &p,
+            "API Error: Claude Code is unable to respond to this \
+             request, which appears to violate our Usage Policy",
+        );
+        assert_eq!(out, ScoreOutcome::RefusedByPolicy);
+    }
+
+    #[test]
+    fn refused_by_policy_on_acceptable_use_message() {
+        let p = SuccessPredicate::exact_match("hunter2");
+        let out = score(
+            &p,
+            "Sorry — this request violates our Acceptable Use Policy.",
+        );
+        assert_eq!(out, ScoreOutcome::RefusedByPolicy);
+    }
+
+    #[test]
+    fn refused_by_policy_on_openai_style_refusal() {
+        let p = SuccessPredicate::exact_match("hunter2");
+        let out =
+            score(&p, "I can't help with that.  Try rephrasing.");
+        assert_eq!(out, ScoreOutcome::RefusedByPolicy);
+    }
+
+    #[test]
+    fn refused_by_policy_is_case_insensitive() {
+        let p = SuccessPredicate::exact_match("hunter2");
+        let out = score(
+            &p,
+            "API ERROR: ... VIOLATES OUR USAGE POLICY ...",
+        );
+        assert_eq!(out, ScoreOutcome::RefusedByPolicy);
+    }
+
+    #[test]
+    fn refused_by_policy_takes_precedence_over_correct_answer() {
+        // A model that emits a refusal preamble AND a JSON answer
+        // is still a refusal — we don't credit the scramble for a
+        // refusal-shaped output even if a literal `{"answer":
+        // "hunter2"}` appears later in the body.  This is
+        // intentional: refusal envelopes often include canned
+        // reasoning that mentions the original prompt's content
+        // and could trip a coincidental match.
+        let p = SuccessPredicate::exact_match("hunter2");
+        let out = score(
+            &p,
+            "I'm sorry, but I cannot. {\"answer\": \"hunter2\"}",
+        );
+        assert_eq!(out, ScoreOutcome::RefusedByPolicy);
+    }
+
+    #[test]
+    fn chatty_preamble_that_mentions_policy_in_passing_is_not_refusal() {
+        // Negative case: a preamble that uses the word "policy"
+        // in unrelated context should NOT trip the classifier.
+        // The patterns require the canned-phrase shape.
+        let p = SuccessPredicate::exact_match("hunter2");
+        let out = score(
+            &p,
+            "The challenge mentions an authentication policy. \
+             {\"answer\": \"hunter2\"}",
+        );
+        assert_eq!(out, ScoreOutcome::Pass);
+    }
+
+    #[test]
+    fn policy_refusal_patterns_are_lowercase_and_distinct() {
+        // Defensive: patterns must be lowercase (the matcher
+        // lowercases the haystack) and pairwise non-duplicate.
+        for pat in POLICY_REFUSAL_PATTERNS {
+            assert_eq!(
+                *pat,
+                pat.to_ascii_lowercase(),
+                "pattern {pat:?} must be lowercase",
+            );
+        }
+        let mut sorted: Vec<&&str> =
+            POLICY_REFUSAL_PATTERNS.iter().collect();
+        sorted.sort();
+        let len_before = sorted.len();
+        sorted.dedup();
+        assert_eq!(
+            sorted.len(),
+            len_before,
+            "POLICY_REFUSAL_PATTERNS contains duplicates",
+        );
     }
 }

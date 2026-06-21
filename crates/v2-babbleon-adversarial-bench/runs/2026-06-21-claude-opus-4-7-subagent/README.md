@@ -33,7 +33,7 @@ verbatim from `babbleon-bench summary --records runs.jsonl`:
 | auth-literal-string | l3-only | 1/1 (100%) |
 | realistic-cli | l2-plus-l3 | 1/1 (100%) |
 | realistic-cli | l3-only | 1/1 (100%) |
-| state-machine | l2-plus-l3 | 0/0 (n/a) [+1 fmt-err] |
+| state-machine | l2-plus-l3 | 0/0 (n/a) [+1 refused] |
 | state-machine | l3-only | 1/1 (100%) |
 ```
 
@@ -41,23 +41,20 @@ The `state-machine` cell at `l2-plus-l3` is **not** evidence of
 the scramble defeating the adversary.  The subagent's API call
 came back with `"API Error: ... violate our Usage Policy"`; the
 prompt body (FSM + "find the input that makes `auth(seq)` return
-True") tripped a model-provider safety filter.  The bench
-correctly classifies this as `format-error`, distinct from
-`fail`, so the cell does not credit the scramble.  This is
-exactly the failure mode the operator's HANDOFF rule about
-prompt-framing was guarding against — but the framing here was
-already neutral; the trigger appears to be the content
-("authenticate" + "return True"-on-input-X), not the harness's
-wrapping.  Filing follow-up to:
+True") tripped a model-provider safety filter.  The bench's
+[`ScoreOutcome::RefusedByPolicy`] variant (added in the same
+session block as this run; see `crates/v2-babbleon-adversarial-
+bench/src/scoring.rs`) classifies this distinctly from
+`format-error` and `fail`, so the cell does not credit the
+scramble.  Filed for follow-up:
 
 1. Re-run the state-machine challenge with rewording that keeps
    the goal mechanical but does not pattern-match the safety
    classifier ("find an accepting input sequence" instead of
    "find the string that makes auth return True").
-2. Add a `score-outcome::refused-by-policy` variant so the
-   bench can distinguish "the model refused to engage" from
-   "the model produced unparseable output."  Today both reduce
-   to `format-error`; semantically they are different signals.
+2. ✅ `ScoreOutcome::RefusedByPolicy` variant — closed in the
+   same session block; see scoring.rs's
+   `POLICY_REFUSAL_PATTERNS` list.
 
 ## Headline
 
