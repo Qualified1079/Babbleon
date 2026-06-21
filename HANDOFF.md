@@ -22,14 +22,165 @@ Branch (push target): `claude/magical-turing-mele8c` (operator
 intends to rename to `v1-maintenance` out-of-band; until that
 lands, push here)
 
-Date: 2026-06-20 (user-asleep session continued — claude-opus-4-7)
+Date: 2026-06-21 (user-asleep session continued — claude-opus-4-7)
 
-Last commit before this handoff section: `b33479b` —
-feat(v2-babbleon): wire scramble-dir / unscramble-dir batch subcommands
+Last commit before this handoff section: `cdbca98` —
+fix(v2-babbleon-preprocessor): preserve residual leading whitespace on re-emission.
 
 ---
 
-## 2026-06-20 night (sleeping-operator continuation — claude-opus-4-7)
+## 2026-06-21 night (sleeping-operator continuation — claude-opus-4-7)
+
+Two compartmentalised commits land **prior-session open-items
+item 10 (SIGINT/SIGTERM/SIGHUP/SIGQUIT forwarding in the python-
+shim)** and **a real fidelity fix in the layer-3 unscrambler**
+that was misfiled in `python_tokenizer::MVP_LIMITATIONS` §2 as
+intentional canonicalisation but was actually a re-emission bug.
+
+### Commits this session block (in landing order)
+
+1. `826c3ff` — `feat(v2-babbleon-python-shim): forward SIGINT/SIGTERM/SIGHUP/SIGQUIT to child python`
+   - New module `signal_forwarding.rs` (~280 lines incl docs +
+     tests).  Block forwarded signals on shim main thread via
+     `pthread_sigmask`; dedicated forwarder thread inherits the
+     block and calls `sigwait` in a loop; on receipt, re-deliver
+     to the child PID via `nix::sys::signal::kill`.
+   - Spawn-first / block-second ordering is load-bearing under
+     `#![forbid(unsafe_code)]`: the child has already inherited
+     the parent's pre-block mask through fork+exec, so python
+     starts with default disposition.  Without `unsafe` we
+     cannot use `Command::pre_exec` to clear the mask between
+     fork and exec.  The race window between spawn-return and
+     install — tens of microseconds — is documented at the
+     module's docstring.
+   - No new workspace dependency.  `nix` (already a workspace
+     dep with the `signal` feature) provides the safe
+     `SigSet::thread_block` / `SigSet::wait` wrappers.  We pay
+     the ~80 lines of sigwait-on-dedicated-thread idiom to keep
+     `signal-hook` out of the shim's supply-chain audit
+     surface — the shim is one of the most security-sensitive
+     v2 binaries (it momentarily holds the unscrambled source).
+   - RAII guard (`ForwardingGuard`) clears a process-global
+     atomic child-PID slot on `Drop` so a late signal does not
+     reach a reused PID.
+   - Forwarded set: `SIGINT` `SIGTERM` `SIGHUP` `SIGQUIT`.
+     Excluded: `SIGKILL` / `SIGSTOP` (uncatchable), `SIGCHLD`
+     (owned by wait), `SIGPIPE` (redundant with shim's own exit).
+   - Interactive Ctrl-C is *not* the scenario this fixes — the
+     kernel already delivers SIGINT to every process in the
+     foreground process group; shim and python share a process
+     group by default.  The forwarder catches the supervisor /
+     non-terminal-pid scenarios (`systemctl stop`, `kill -TERM
+     <shim_pid>`).
+   - 6 new unit tests (signal-set composition, atomic-slot
+     round-trip, thread name); 1 new e2e test
+     (`shim_forwards_sigterm_to_child_python`) that scrambles a
+     python script trapping SIGTERM, sends SIGTERM to the shim's
+     pid, and asserts the shim exits with the python-chosen
+     code 42 (impossible without the forwarder — the shim would
+     exit 143 = 128 + 15).
+
+2. `cdbca98` — `fix(v2-babbleon-preprocessor): preserve residual leading whitespace on re-emission`
+   - `tokens_to_source` used to discard leading `Token::
+     Whitespace(Space)` tokens at line start, reasoning that the
+     indent state machine had "already" emitted `level ×
+     INDENT_WIDTH` spaces at the first `Word`.  That suppression
+     dropped the **residuals** the tokenizer emits for indents
+     that are not an exact multiple of `INDENT_WIDTH`:
+       * A 7-space indent decomposed to `(level=1, residual=3)`
+         re-emitted as 4 spaces, not 7.
+       * A 3-space continuation line inside a multi-line triple-
+         quoted string re-emitted as 0 spaces, not 3.
+   - Replace the `at_line_start` boolean with
+     `leading_emitted`.  All three of `Space`, `Tab`, `Word` now
+     fire `fire_indent_block_if_needed` on first occurrence per
+     line; `Space` then pushes ' ' rather than being swallowed.
+     The fire helper is idempotent within a line; reset on
+     every `Newline`.
+   - The proptest harness (`source_level_round_trip`, 1024
+     cases × 5 properties) stays green.  The bug surfaced only
+     on inputs the proptest did not generate — its
+     `arb_word_body` strategy did not produce contiguous Space-
+     then-Word sequences without intervening newline structure.
+   - `MVP_LIMITATIONS` §2 updated.  Previously claimed "Mixed-
+     width indent is normalized to four spaces per level"; the
+     accurate post-fix statement is "the level component is
+     normalised; residuals are preserved verbatim."  Tabs still
+     canonicalise to 4 spaces per level (documented limit, not
+     a bug).
+   - 5 new regression tests covering the two original
+     misbehaviours plus three direct `tokens_to_source` checks
+     (leading spaces at level 0, leading residuals after
+     `IndentOpen`, empty lines emit no indent).
+
+### Test deltas across the session block
+
+| Crate / target | Before | After | Δ |
+|---|---|---|---|
+| `v2-babbleon-preprocessor` (lib) | 50 | 55 | +5 |
+| `v2-babbleon-python-shim` (lib) | 10 | 16 | +6 |
+| `v2-babbleon-python-shim` (e2e) | 4 | 5 | +1 |
+| **Total v2 tests (excl rooted)** | **421** | **433** | **+12** |
+
+`cargo clippy -p v2-babbleon-preprocessor --all-targets -- -D
+warnings -W clippy::pedantic` clean.  Same for `-p v2-babbleon-
+python-shim`.  Downstream `v2-babbleon` CLI suite (11 tests)
+green against the changed unscramble path.
+
+### Open / next-session items (priority order — refreshed 2026-06-21 post-session-block)
+
+The prior session block's items 1-3 (operator decisions, atomic
+wrapper-dir swap, persist epoch) are unchanged.  Item 10 (SIGINT
+forwarding) closed this session.  Remaining work:
+
+1. **Pick the PAM architecture** (operator decision).  Default
+   recommendation: flavour 3 (authorized-session + shell rc).
+   PAM crate ships `Readiness::SkeletonOnly` until this lands.
+
+2. **Atomic wrapper-dir swap.**  Defer until item 1 lands.
+
+3. **Persist epoch across daemon restarts.**  Phase 4+ item.
+
+4-5, 8 — closed in prior session block.
+
+6. **Run the operator's adversarial-LLM test** against the
+   layer-3 output of the example puzzles.  Operator-side.
+
+7. **Real Python tokenizer.**  Swap to `rustpython-parser` or
+   `tree-sitter-python`.  Significant undertaking; the layer-3
+   round-trip is now robust enough (incl. residual whitespace
+   preservation, see commit `cdbca98`) that the MVP tokenizer
+   is no longer the bottleneck.  Defer until phase-3 layer-2
+   work pulls it in.
+
+9. **Trust-tier inode gate** for the python-shim.  As filed in
+   the prior session block, but blocked on a v2 protocol-
+   surface decision: where does the shim find the trusted-tier
+   inode?  Two candidates:
+     a. Daemon writes its own `/proc/self/ns/mnt` inode to a
+        file at known location (analogous to v1's
+        `/run/babbleon/trusted-ns-inode`).  Shim reads + stats.
+     b. New `Request::GetTrustedNsInode` on the daemon-protocol
+        crate.  Shim round-trips before fetching compounds.
+   Both are protocol-surface decisions.  Operator-confirm
+   before implementation.
+
+10. ✅ **SIGINT forwarding in python-shim** — closed by
+    `826c3ff`.  See commit message for the mechanism summary.
+
+### What this session did NOT do (intentionally)
+
+- No protocol-surface changes (daemon-protocol crate's
+  `Request` / `Response` wire shape is unchanged).
+- No new workspace dependency.  Forwarder uses `nix`'s safe
+  sigwait wrapper; preprocessor fix is pure-Rust state machine.
+- No change to v1 (`crates/babbleon*` without `v2-` prefix);
+  CLAUDE.md's read-only rule honoured throughout.
+- No touch on the operator-decision-blocked items (PAM
+  architecture, daemon-default flips, wrapper-dir atomic swap,
+  epoch persistence, trust-tier inode gate's protocol design).
+
+---
 
 Continuing the tokens-while-asleep session.  Five
 compartmentalised commits land the operator-facing layer-3
