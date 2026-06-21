@@ -264,6 +264,135 @@ fn shim_surfaces_daemon_locked_error() {
     );
 }
 
+/// End-to-end signal forwarding: `kill -TERM <shim_pid>` should reach
+/// the child python.  Discriminator: a script that traps SIGTERM and
+/// exits with a known code (42).  Without forwarding, SIGTERM kills
+/// the shim via its default disposition (exit code 143 = 128 + 15)
+/// and the python child is orphaned to init.  With forwarding, the
+/// shim blocks SIGTERM, the forwarder thread sigwaits it and re-
+/// delivers to the child PID, python's handler fires, python exits
+/// 42, the shim's `wait()` returns that status, and the shim's own
+/// exit code is 42.
+#[test]
+fn shim_forwards_sigterm_to_child_python() {
+    let Some(python) = find_python() else {
+        eprintln!("skipping: no python3 binary on conventional paths");
+        return;
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("daemon.sock");
+    let wrapper_dir = dir.path().join("wrappers");
+    std::fs::create_dir_all(&wrapper_dir).unwrap();
+    let curl = fake_real_binary(dir.path(), "curl");
+    let daemon = spawn_daemon(&sock, &wrapper_dir, ("curl", &curl));
+
+    let src_path = dir.path().join("trap.py");
+    let scr_path = dir.path().join("trap.scr");
+    // Trap SIGTERM, exit 42 on receipt.  Print a "ready" marker
+    // (flushed) before sleeping so the test thread can wait for the
+    // child to be in its handler-installed loop before firing.
+    let original = "\
+import sys, signal, time
+def handler(signum, frame):
+    sys.exit(42)
+signal.signal(signal.SIGTERM, handler)
+print('ready', flush=True)
+time.sleep(30)
+sys.exit(99)
+";
+    std::fs::write(&src_path, original).unwrap();
+    scramble_with_daemon_cli(&sock, &src_path, &scr_path);
+
+    let shim = sibling_binary("babbleon-python");
+    let mut child = Command::new(&shim)
+        .arg("--socket")
+        .arg(&sock)
+        .arg("--python")
+        .arg(&python)
+        .arg(&scr_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn babbleon-python");
+
+    // Wait for python's "ready" line, which tells us the trap
+    // handler is installed and the script is in the sleep loop.
+    let stdout = child.stdout.take().expect("piped stdout");
+    let mut reader = BufReader::new(stdout);
+    let mut line = String::new();
+    let read_deadline = Instant::now() + Duration::from_secs(10);
+    while line.trim() != "ready" {
+        line.clear();
+        let read = reader
+            .read_line(&mut line)
+            .expect("read shim stdout");
+        if read == 0 {
+            // EOF before ready: shim or child died early.
+            let mut stderr = String::new();
+            if let Some(mut s) = child.stderr.take() {
+                use std::io::Read;
+                let _ = s.read_to_string(&mut stderr);
+            }
+            shutdown(daemon);
+            panic!(
+                "shim never printed 'ready' (child died early?). stderr: {stderr}",
+            );
+        }
+        if Instant::now() > read_deadline {
+            let _ = child.kill();
+            shutdown(daemon);
+            panic!("timed out waiting for python ready line");
+        }
+    }
+
+    // Python is in `time.sleep(30)` with the SIGTERM trap armed.
+    // Send SIGTERM to the SHIM.  If forwarding is correctly wired,
+    // the shim's main thread blocks it, the forwarder thread
+    // sigwaits + re-delivers to python's pid, python's handler
+    // fires, python exits 42, shim's wait returns 42, shim exits
+    // with code 42.
+    let shim_pid = i32::try_from(child.id()).unwrap();
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(shim_pid),
+        nix::sys::signal::Signal::SIGTERM,
+    )
+    .expect("deliver SIGTERM to shim");
+
+    let status = wait_with_timeout(&mut child, Duration::from_secs(10))
+        .expect("shim hung after SIGTERM forward");
+    shutdown(daemon);
+
+    assert_eq!(
+        status.code(),
+        Some(42),
+        "shim exit code mismatch — forwarder did not reach child python.  \
+         status: {status:?}",
+    );
+}
+
+/// Wait on `child` with a wall-clock timeout.
+///
+/// Polls `try_wait` every 25 ms up to `dur`.  Returns the child's
+/// status on exit, or `None` on timeout (caller responsible for
+/// killing the child in that case).
+fn wait_with_timeout(
+    child: &mut Child,
+    dur: Duration,
+) -> Option<std::process::ExitStatus> {
+    let deadline = Instant::now() + dur;
+    while Instant::now() < deadline {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(status),
+            Ok(None) => std::thread::sleep(Duration::from_millis(25)),
+            Err(_) => return None,
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    None
+}
+
 #[test]
 fn shim_fails_cleanly_on_missing_script() {
     let dir = tempfile::tempdir().unwrap();

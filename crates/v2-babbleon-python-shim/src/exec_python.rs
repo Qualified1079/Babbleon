@@ -25,12 +25,23 @@
 //! `Command` clears the close-on-exec flag for the piped stdin fd
 //! by default; the unscrambled source never escapes the parent
 //! process via an unrelated child's fd table.
+//!
+//! # Signal routing
+//!
+//! After spawn, `signal_forwarding::install_after_spawn` blocks
+//! `SIGINT` / `SIGTERM` / `SIGHUP` / `SIGQUIT` on the shim's main
+//! thread and re-delivers them to the child via a dedicated
+//! `sigwait`-based forwarder thread.  See `signal_forwarding`'s
+//! module docs for the spawn-first / block-second ordering and
+//! why it is load-bearing under `#![forbid(unsafe_code)]`.
 
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
 
 use anyhow::{anyhow, Context, Result};
+
+use crate::signal_forwarding;
 
 /// Spawn `python_bin -`, feed `source` to its stdin, wait, return
 /// the child's exit status.
@@ -63,6 +74,15 @@ pub fn run(
         format!("spawn {}", python_bin.display())
     })?;
 
+    // Spawn-first / block-second: the child has already inherited
+    // the main thread's pre-block signal mask through fork+exec, so
+    // python starts with default disposition.  See
+    // `signal_forwarding`'s module docs §1.
+    let child_pid = i32::try_from(child.id())
+        .context("child pid out of i32 range")?;
+    let _forwarder_guard = signal_forwarding::install_after_spawn(child_pid)
+        .context("install signal forwarder for python child")?;
+
     {
         // Scoped take: `stdin` is dropped at the end of this block,
         // sending EOF to the child.  The wait below blocks until
@@ -77,6 +97,8 @@ pub fn run(
     }
 
     let status = child.wait().context("wait on python child")?;
+    // `_forwarder_guard` drops here, clearing the atomic child-PID
+    // slot so a late signal does not reach an unrelated PID.
     Ok(status)
 }
 

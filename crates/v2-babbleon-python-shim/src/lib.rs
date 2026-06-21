@@ -83,10 +83,13 @@
 //!   `readlink(/proc/self/ns/mnt)` matches an
 //!   untrusted-tier-inode list) is filed for the same gate the
 //!   launcher exposes.
-//! - **Signal-handling discipline**: SIGINT propagation, child
-//!   process reaping on early exit.  MVP relies on the kernel's
-//!   default SIGCHLD + the parent's `wait()`; production needs
-//!   SIGINT forwarded to the child.
+//! - **Child-process reaping on early exit** of the shim.  Today
+//!   `child.wait()` is the only collection site; if the shim is
+//!   itself signal-killed before reaching wait, the child becomes
+//!   an orphan reparented to init.  Filed for a future commit
+//!   alongside a teardown helper that `kill`s the child on shim
+//!   panic.  SIGINT/SIGTERM/SIGHUP/SIGQUIT forwarding to the
+//!   child is wired — see `signal_forwarding`.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -95,3 +98,4 @@
 pub mod exec_python;
 pub mod pipeline;
 pub mod process_hardening;
+pub mod signal_forwarding;
