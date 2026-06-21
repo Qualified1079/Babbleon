@@ -73,7 +73,8 @@ fn run_daemon(
         honey_list_path: None,
         stale_list_path: None,
         trusted_ns_inode: None,
-    };
+            journal_path: None,
+        };
     // Default: start Locked and wait for the operator's `babbleon
     // unlock`.  Opt-in path: `--insecure-stub-secret` starts
     // Unlocked with the development-only sentinel secret (the

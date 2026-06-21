@@ -49,6 +49,12 @@ serde_json = { workspace = true }
 # Used by `seccomp_profile.rs` to install the daemon's allowlist;
 # documented envelope lives at `docs/v2/daemon-seccomp-envelope.md`.
 seccompiler = { workspace = true }
+# HMAC-SHA256 for the epoch journal's tamper-evidence header.
+# Keyed by an HKDF subkey of the per-host secret; see
+# `epoch_journal.rs` and HANDOFF "Epoch HMAC journal".
+hmac = { workspace = true }
+sha2 = { workspace = true }
+subtle = { workspace = true }
 # Async runtime — to be decided.  Phase 2 ships a single-threaded
 # blocking loop; phase 4+ may move to tokio if the wrapper-build
 # pipeline benefits from parallelism.  Not yet pulled in.

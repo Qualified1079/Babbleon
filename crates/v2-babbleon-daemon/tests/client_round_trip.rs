@@ -40,6 +40,7 @@ fn make_state() -> DaemonState {
             honey_list_path: None,
             stale_list_path: None,
             trusted_ns_inode: None,
+            journal_path: None,
         },
     )
     .unwrap()

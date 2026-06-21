@@ -65,6 +65,7 @@
 #![warn(clippy::pedantic)]
 
 pub mod cli;
+pub mod epoch_journal;
 pub mod errors;
 pub mod handlers;
 pub mod hardening;

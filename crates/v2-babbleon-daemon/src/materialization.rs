@@ -79,6 +79,18 @@ pub struct MaterializationConfig {
     /// `Some(inode)` so the wrapper exits 127 when invoked outside
     /// the trusted NS.
     pub trusted_ns_inode: Option<u64>,
+    /// Path to the HMAC-sealed epoch journal.  When set, the daemon
+    /// reads the journal at unlock time to resume at the
+    /// last-recorded epoch (rather than restarting at 0), and
+    /// rewrites the journal after every successful rotate.  When
+    /// `None`, the daemon does not persist epoch state across
+    /// restarts (legacy behaviour; tests use this).  Production
+    /// callers should set this to a daemon-owned path under
+    /// `/var/lib/babbleon/`.  Tamper detection: HMAC over the
+    /// epoch bytes keyed by an HKDF subkey of the per-host secret;
+    /// a tampered or missing journal is treated as "no journal" and
+    /// the daemon resumes at epoch 0 with a tracing warn.
+    pub journal_path: Option<PathBuf>,
 }
 
 /// One tracked tool: the canonical name (used for scrambling) plus
@@ -276,6 +288,7 @@ mod tests {
             honey_list_path: Some(dir.join("honey.list")),
             stale_list_path: Some(dir.join("stale.list")),
             trusted_ns_inode: None,
+            journal_path: None,
         }
     }
 

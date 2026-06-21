@@ -250,9 +250,76 @@ impl DaemonState {
                     .into(),
             ));
         }
-        let unlocked = build_unlocked_state(&self.config, secret, 0)?;
+        // Resume from the HMAC-sealed epoch journal if one is
+        // configured.  A valid journal supplies the last-rotated
+        // epoch; a missing journal resumes at 0 (genesis); a
+        // tampered journal logs a warn and resumes at 0 — never
+        // crash the unlock path because the journal can always
+        // be reconstructed by one rotate after start.
+        let starting_epoch = self.resume_epoch_from_journal(&secret);
+        let unlocked = build_unlocked_state(&self.config, secret, starting_epoch)?;
         self.secret_state = unlocked;
+        // After mapping is built and materialised, persist the
+        // resumed epoch so a subsequent restart-without-rotate
+        // doesn't lose its place.  Failure to write is non-fatal
+        // (logged warn); the daemon is still functional.
+        self.persist_epoch_to_journal_if_configured(starting_epoch);
         Ok(self.epoch().unwrap_or(0))
+    }
+
+    /// Read the journal, returning the resumed epoch or 0 on any
+    /// missing-or-bad-journal condition.  Tamper detection logs a
+    /// `warn` so operator-side audit can spot the event.
+    fn resume_epoch_from_journal(&self, secret: &PerHostSecret) -> u64 {
+        let Some(path) = self.config.materialization.journal_path.as_deref() else {
+            return 0;
+        };
+        match crate::epoch_journal::read_journal(secret, path) {
+            Ok(Some(epoch)) => {
+                tracing::info!(
+                    journal_path = %path.display(),
+                    resumed_epoch = epoch,
+                    "epoch journal verified; resuming",
+                );
+                epoch
+            }
+            Ok(None) => {
+                tracing::info!(
+                    journal_path = %path.display(),
+                    "epoch journal absent; starting at 0 (genesis)",
+                );
+                0
+            }
+            Err(e) => {
+                tracing::warn!(
+                    journal_path = %path.display(),
+                    error = %e,
+                    "epoch journal failed validation; resuming at 0",
+                );
+                0
+            }
+        }
+    }
+
+    /// Write `epoch` to the journal if one is configured.  Errors
+    /// are logged at `warn` and otherwise swallowed — a failed
+    /// write does not abort the operation that triggered it
+    /// (unlock or rotate).  Operator can re-trigger a rotate to
+    /// retry the write.
+    fn persist_epoch_to_journal_if_configured(&self, epoch: u64) {
+        let Some(path) = self.config.materialization.journal_path.as_deref() else {
+            return;
+        };
+        let SecretState::Unlocked { secret, .. } = &self.secret_state else {
+            return;
+        };
+        if let Err(e) = crate::epoch_journal::write_journal(epoch, secret, path) {
+            tracing::warn!(
+                journal_path = %path.display(),
+                error = %e,
+                "epoch journal write failed; subsequent restart will lose this rotation's place",
+            );
+        }
     }
 
     /// Current epoch number, or `None` when the vault is locked.
@@ -381,6 +448,10 @@ impl DaemonState {
                 &self.config.tracked_tools,
             )?;
         }
+        // Persist the new epoch to the journal so a restart
+        // resumes here rather than rewinding to 0.  Logged-warn
+        // on failure but not fatal — see persist helper.
+        self.persist_epoch_to_journal_if_configured(new_epoch);
         Ok(new_epoch)
     }
 
@@ -559,6 +630,7 @@ mod tests {
             honey_list_path: None,
             stale_list_path: None,
             trusted_ns_inode: None,
+            journal_path: None,
         }
     }
 
@@ -932,6 +1004,7 @@ mod tests {
             honey_list_path: Some(dir.join("honey.list")),
             stale_list_path: Some(dir.join("stale.list")),
             trusted_ns_inode: None,
+            journal_path: None,
         }
     }
 
@@ -1110,6 +1183,136 @@ mod tests {
             assert_eq!(matched, kind);
             assert_eq!(len, compounds[kind.slot()].len());
         }
+    }
+
+    // -----------------------------------------------------------
+    // Epoch-journal end-to-end behaviour
+    // -----------------------------------------------------------
+
+    fn cfg_with_journal(dir: &Path) -> MaterializationConfig {
+        let mut cfg = cfg_in_tmp(dir);
+        cfg.journal_path = Some(dir.join("epoch.bin"));
+        cfg
+    }
+
+    #[test]
+    fn unlock_then_rotate_then_restart_resumes_at_rotated_epoch() {
+        // Lifecycle: unlock at 0 → rotate (→1) → rotate (→2) →
+        // simulate restart (new DaemonState with same journal path)
+        // → unlock → epoch must be 2.
+        let tmp = tempfile::tempdir().unwrap();
+        let tools = tracked_in(tmp.path(), &["curl"]);
+        let cfg = cfg_with_journal(tmp.path());
+
+        let mut state_1 = DaemonState::new_locked(
+            Wordlist::english_baseline(),
+            tools.clone(),
+            cfg.clone(),
+        )
+        .unwrap();
+        state_1.unlock(fixed_secret()).unwrap();
+        state_1.rotate().unwrap();
+        state_1.rotate().unwrap();
+        assert_eq!(state_1.epoch(), Some(2));
+        drop(state_1);
+
+        // "Restart" — fresh DaemonState backed by the same journal.
+        let mut state_2 = DaemonState::new_locked(
+            Wordlist::english_baseline(),
+            tools,
+            cfg,
+        )
+        .unwrap();
+        state_2.unlock(fixed_secret()).unwrap();
+        assert_eq!(state_2.epoch(), Some(2), "journal must restore epoch");
+    }
+
+    #[test]
+    fn restart_with_no_journal_starts_at_zero() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tools = tracked_in(tmp.path(), &["curl"]);
+        let cfg = cfg_in_tmp(tmp.path()); // no journal_path
+        let mut state = DaemonState::new_locked(
+            Wordlist::english_baseline(),
+            tools,
+            cfg,
+        )
+        .unwrap();
+        state.unlock(fixed_secret()).unwrap();
+        assert_eq!(state.epoch(), Some(0));
+    }
+
+    #[test]
+    fn restart_with_tampered_journal_resumes_at_zero_and_does_not_crash() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tools = tracked_in(tmp.path(), &["curl"]);
+        let cfg = cfg_with_journal(tmp.path());
+        let journal_path = cfg.journal_path.clone().unwrap();
+
+        let mut state = DaemonState::new_locked(
+            Wordlist::english_baseline(),
+            tools.clone(),
+            cfg.clone(),
+        )
+        .unwrap();
+        state.unlock(fixed_secret()).unwrap();
+        state.rotate().unwrap();
+        state.rotate().unwrap();
+        state.rotate().unwrap();
+        assert_eq!(state.epoch(), Some(3));
+        drop(state);
+
+        // Tamper.
+        let mut bytes = std::fs::read(&journal_path).unwrap();
+        bytes[0] ^= 1;
+        std::fs::write(&journal_path, &bytes).unwrap();
+
+        // Restart should not crash and should resume at 0.
+        let mut state_2 = DaemonState::new_locked(
+            Wordlist::english_baseline(),
+            tools,
+            cfg,
+        )
+        .unwrap();
+        state_2.unlock(fixed_secret()).unwrap();
+        assert_eq!(
+            state_2.epoch(),
+            Some(0),
+            "tampered journal must safe-fail to epoch 0",
+        );
+    }
+
+    #[test]
+    fn restart_with_journal_from_different_secret_resumes_at_zero() {
+        // A journal sealed under secret_a must NOT be honoured when
+        // the daemon unlocks under secret_b.  HMAC verification
+        // rejects; daemon resumes at 0.  This is the cross-host
+        // safety net.
+        let tmp = tempfile::tempdir().unwrap();
+        let tools = tracked_in(tmp.path(), &["curl"]);
+        let cfg = cfg_with_journal(tmp.path());
+
+        let other_secret = PerHostSecret::from_bytes(&[123u8; 32]).unwrap();
+
+        let mut state = DaemonState::new_locked(
+            Wordlist::english_baseline(),
+            tools.clone(),
+            cfg.clone(),
+        )
+        .unwrap();
+        state.unlock(fixed_secret()).unwrap();
+        state.rotate().unwrap();
+        assert_eq!(state.epoch(), Some(1));
+        drop(state);
+
+        let mut state_2 = DaemonState::new_locked(
+            Wordlist::english_baseline(),
+            tools,
+            cfg,
+        )
+        .unwrap();
+        state_2.unlock(other_secret).unwrap();
+        assert_eq!(state_2.epoch(), Some(0));
     }
 }
 

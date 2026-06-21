@@ -162,7 +162,8 @@ mod tests {
                 honey_list_path: None,
                 stale_list_path: None,
                 trusted_ns_inode: None,
-            },
+            journal_path: None,
+        },
         )
         .unwrap()
     }
@@ -312,7 +313,8 @@ mod tests {
                 honey_list_path: None,
                 stale_list_path: None,
                 trusted_ns_inode: None,
-            },
+            journal_path: None,
+        },
         )
         .unwrap()
     }
@@ -395,7 +397,8 @@ mod tests {
                 honey_list_path: Some(tmp.path().join("honey.list")),
                 stale_list_path: Some(tmp.path().join("stale.list")),
                 trusted_ns_inode: None,
-            },
+            journal_path: None,
+        },
         )
         .unwrap();
         match dispatch(&mut s, Request::Unlock(secret)) {
@@ -472,7 +475,8 @@ mod tests {
                 honey_list_path: Some(tmp.path().join("honey.list")),
                 stale_list_path: Some(tmp.path().join("stale.list")),
                 trusted_ns_inode: None,
-            },
+            journal_path: None,
+        },
         )
         .unwrap();
         // First unlock succeeds.
