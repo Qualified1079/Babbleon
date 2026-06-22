@@ -30,6 +30,112 @@ evaluator-sandboxing gap.
 
 ---
 
+## 2026-06-22 (evening) — L2b lands + first rerun against corrected floor
+
+Picks up where the morning blockers section left off (which
+remains canonical for the followup work).  This pass closed
+Blocker 3 in code, partially closed Blockers 1+2, and produced
+the first rerun against the corrected floor.
+
+**Commits landed:**
+
+- `5122c07` — feat(v2-babbleon-preprocessor): layer-2b operator
+  scramble.  37 Python operators, longest-first match; HKDF
+  purpose label `b"v2-operator-mapping"`; forward/reverse maps;
+  `scramble_operators` / `unscramble_operators` Token-stream
+  ops; round-trip preserved via SplitState string-awareness.
+- `3d90058` — test(v2-babbleon-preprocessor): full L2+L2b+L3
+  round-trip executes under python3.  New
+  `tests/full_round_trip.rs` runs five real Python snippets
+  (simple def, branching, list comp, class, structural)
+  scramble → unscramble → python3 -c, asserts byte-identical
+  stdout for original vs unscrambled.  Required two fixes:
+  (a) operator_scrambler string-state-aware splitter (don't
+  split operators inside string literals inside Word bodies,
+  esp. f-strings); (b) test re_emit indents after every
+  Newline, not just after IndentOpen.
+- `8754240` — feat(bench): wire L2b operator scramble +
+  baseline-source field + sandbox-cwd builder on
+  SubprocessEvaluator.  Adds `layer2b_operator_scramble` bool
+  + `l2_plus_l2b_plus_l3()` preset + `L2PlusL2bPlusL3` CLI
+  variant; adds `Challenge.baseline_source: Option<String>`
+  surfaced in prompts under a `## BASELINE (unscrambled
+  reference)` section; adds
+  `SubprocessEvaluator::with_working_directory(PathBuf)`.
+
+**Round-trip is verified.**  L2 + L2b + L3 reverse cleanly on
+real Python code (5/5 tests; python3 outputs match the
+unscrambled originals byte-for-byte).  The operator's pre-
+rerun gate ("does it actually unscramble?") is closed.
+
+**Rerun results (see `crates/v2-babbleon-resilience-bench/runs/
+2026-06-22-operator-scramble-rerun/README.md`):**
+
+| challenge | layer | N | cracked | refused | format-err |
+|---|---|---|---|---|---|
+| state-machine | l2-plus-l3 | 2 | 2 | 0 | 0 |
+| state-machine | l2-plus-l2b-plus-l3 | 2 | 0 | 2 | 0 |
+| auth-literal | l2-plus-l2b-plus-l3 | 2 | 0 | 2 | 0 |
+
+The state-machine cells under L2+L3 were trivially cracked via
+the surviving `"s0" "a" "s1" ... "accept"` string literals (the
+DEPRECATED literal-leak result — not a defensive claim either
+way).  Every L2+L2b+L3 cell triggered Anthropic's usage-policy
+classifier on the wall-of-text — every subagent returned
+`Claude Code is unable to respond to this request, which
+appears to violate our Usage Policy`, never attempting the
+task.  The L2+L3 → L2+L2b+L3 transition pushed the prompt from
+~4.7 kB to ~7.7 kB with a higher density of unfamiliar tokens,
+which is plausibly what tripped the classifier.
+
+**This is NOT a defensive datapoint.**  Refusal-by-safety-
+classifier is not "the scramble defeated the model" — an
+adversary running the same scrambled bytes through a model
+without Anthropic-style classifier guardrails will get an
+attempted answer.  Counting refusals as cracks would
+systematically overstate the defence.
+
+### Filed follow-ups (in addition to the morning blockers' 4-7)
+
+- **Non-Claude evaluator coverage.**  Reproduce on Llama-3 70B
+  / Qwen-72B / GPT-4o.  If those attempt and crack, the
+  L2+L2b+L3 100% refusal rate is a Claude-pipeline artefact,
+  not a Babbleon property.
+- **Tool-fetched scrambled source in the prompt.**  Move the
+  wall of bytes behind a tool call instead of inlining it.  The
+  evaluator only pulls bytes into context when it actively
+  chooses to.  Removes the density-based refusal floor and
+  matches the operator-stated "tools available" framing more
+  faithfully.
+- **`ScoreOutcome::PolicyRefused` variant.**  The bench's
+  scoring enum currently lumps refusals into `FormatError`.
+  The current rerun's JSONL records use that lumped variant;
+  a future commit splits them out so the summary table can
+  distinguish refusal-rate from format-error-rate.
+- **CLI plumbing for `with_working_directory`.**  The bench
+  library exposes the sandbox knob; `babbleon-bench run` and
+  `run-matrix` do not yet surface a `--cell-tempdir-template`
+  flag that builds a fresh dir per cell.  Operators driving
+  via Rust pass the path manually for now.
+- **Populate `baseline_source` on the seed challenges.**  This
+  rerun did not exercise the new field.  Next rerun should
+  populate it (sibling-fork pattern: same shape, different
+  secret) so the prompt matches the v2 threat model.
+
+### State of the three morning blockers after this session
+
+- **Blocker 1 (sandbox eval cwd):** PARTIAL.  Library knob
+  added; CLI flag and the subagent-wrapper prompt jail are
+  still owed.
+- **Blocker 2 (baseline-source in prompt):** PARTIAL.  Field
+  and prompt section added; seed challenges still need it
+  populated.
+- **Blocker 3 (operator scramble L2b):** DONE.  Layer landed
+  in preprocessor; bench config + pipeline + prompt summary
+  updated; round-trip verified.
+
+---
+
 ## 2026-06-22 — operator-stated phase-3 blockers BEFORE more bench runs
 
 **Three load-bearing items the operator has flagged.  No bench
