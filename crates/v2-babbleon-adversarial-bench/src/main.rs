@@ -165,6 +165,10 @@ enum LayerConfigPreset {
     L3Only,
     /// Layer 2 + Layer 3 (the HANDOFF-recommended floor).
     L2PlusL3,
+    /// Layer 2 + Layer 3 + experimental Layer 7 (secret-literal
+    /// substitution; bench-only prototype per
+    /// `docs/v2/string-literal-leak.md`).
+    L2PlusL3PlusL7,
 }
 
 impl LayerConfigPreset {
@@ -174,6 +178,9 @@ impl LayerConfigPreset {
             LayerConfigPreset::L2Only => LayerConfig::l2_only(),
             LayerConfigPreset::L3Only => LayerConfig::l3_only(),
             LayerConfigPreset::L2PlusL3 => LayerConfig::l2_plus_l3(),
+            LayerConfigPreset::L2PlusL3PlusL7 => {
+                LayerConfig::l2_plus_l3_plus_l7()
+            }
         }
     }
 }

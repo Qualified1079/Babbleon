@@ -48,6 +48,14 @@ pub struct LayerConfig {
     pub layer2_keyword_scramble: bool,
     /// Apply layer-3 (whitespace-as-words).
     pub layer3_whitespace_as_words: bool,
+    /// Apply experimental layer-7 secret-literal substitution
+    /// (bench-only prototype; see
+    /// `crates/v2-babbleon-adversarial-bench/src/secret_literal_layer.rs`).
+    /// Defaults to `false` because the production preprocessor
+    /// does not yet implement it; bench cells that set this to
+    /// `true` measure crack-fraction of the proposed mechanism.
+    #[serde(default)]
+    pub layer7_secret_literal: bool,
     /// Fill byte for the synthetic per-host secret `[u8; 32]`.
     /// Reproducibility seed; carries zero security weight.
     pub seed_byte: u8,
@@ -70,6 +78,7 @@ impl LayerConfig {
         Self {
             layer2_keyword_scramble,
             layer3_whitespace_as_words,
+            layer7_secret_literal: false,
             seed_byte,
             epoch,
         }
@@ -106,18 +115,37 @@ impl LayerConfig {
         Self::new(false, false, 0xAB, 0)
     }
 
+    /// L2 + L3 + L7 (experimental).  L2+L3 floor PLUS bench-only
+    /// secret-literal substitution.  Measures whether operator-
+    /// marked secret literals defeat the literal-leak finding.
+    #[must_use]
+    pub fn l2_plus_l3_plus_l7() -> Self {
+        Self {
+            layer2_keyword_scramble: true,
+            layer3_whitespace_as_words: true,
+            layer7_secret_literal: true,
+            seed_byte: 0xAB,
+            epoch: 0,
+        }
+    }
+
     /// Short kebab-case label, used as the column header in the
     /// summary table.
     #[must_use]
     pub fn label(&self) -> String {
-        match (
+        let base = match (
             self.layer2_keyword_scramble,
             self.layer3_whitespace_as_words,
         ) {
-            (false, false) => "baseline".into(),
-            (true, false) => "l2-only".into(),
-            (false, true) => "l3-only".into(),
-            (true, true) => "l2-plus-l3".into(),
+            (false, false) => "baseline",
+            (true, false) => "l2-only",
+            (false, true) => "l3-only",
+            (true, true) => "l2-plus-l3",
+        };
+        if self.layer7_secret_literal {
+            format!("{base}-plus-l7")
+        } else {
+            base.to_string()
         }
     }
 }
@@ -141,17 +169,25 @@ mod tests {
     }
 
     #[test]
-    fn four_preset_labels_are_distinct() {
+    fn five_preset_labels_are_distinct() {
         let labels = [
             LayerConfig::baseline_no_scramble().label(),
             LayerConfig::l2_only().label(),
             LayerConfig::l3_only().label(),
             LayerConfig::l2_plus_l3().label(),
+            LayerConfig::l2_plus_l3_plus_l7().label(),
         ];
         let mut set: Vec<_> = labels.to_vec();
         set.sort();
         set.dedup();
-        assert_eq!(set.len(), 4, "labels must be pairwise distinct");
+        assert_eq!(set.len(), 5, "labels must be pairwise distinct");
+    }
+
+    #[test]
+    fn layer7_appends_plus_l7_to_label() {
+        let c = LayerConfig::l2_plus_l3_plus_l7();
+        assert_eq!(c.label(), "l2-plus-l3-plus-l7");
+        assert!(c.layer7_secret_literal);
     }
 
     #[test]

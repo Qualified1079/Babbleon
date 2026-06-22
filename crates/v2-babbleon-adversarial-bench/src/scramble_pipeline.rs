@@ -53,6 +53,7 @@ use babbleon_preprocessor_v2::whitespace_wordlist::WhitespaceWordlist;
 
 use crate::errors::{Error, Result};
 use crate::layer_config::LayerConfig;
+use crate::secret_literal_layer::scramble_secret_literals;
 
 /// Scramble `source` under `config` and return the resulting bytes.
 ///
@@ -70,7 +71,20 @@ pub fn apply_layers(source: &str, config: LayerConfig) -> Result<String> {
         })?;
     let wordlist = Wordlist::english_baseline();
 
-    let mut tokens: Vec<Token> = tokenize(source);
+    // Layer 7 is the OUTERMOST pass — it operates on source text
+    // before tokenization so L2 and L3 downstream do not need to
+    // know about secret literals.  The mapping is discarded; the
+    // bench does not round-trip and the model never gets the
+    // mapping.
+    let source_after_l7: String = if config.layer7_secret_literal {
+        let (s, _mapping) =
+            scramble_secret_literals(source, &synthetic_secret, config.epoch)?;
+        s
+    } else {
+        source.to_string()
+    };
+
+    let mut tokens: Vec<Token> = tokenize(&source_after_l7);
 
     if config.layer2_keyword_scramble {
         let kwl = KeywordWordlist::build(

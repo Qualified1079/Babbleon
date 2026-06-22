@@ -1,0 +1,2 @@
+{"challenge_name":"secret-wrapped","layer_config":{"layer2_keyword_scramble":true,"layer3_whitespace_as_words":true,"layer7_secret_literal":false,"seed_byte":171,"epoch":0},"adversary_label":"claude-opus-4-7-subagent@2026-06-22","attempt_index":0,"outcome":"pass"}
+{"challenge_name":"secret-wrapped","layer_config":{"layer2_keyword_scramble":true,"layer3_whitespace_as_words":true,"layer7_secret_literal":true,"seed_byte":171,"epoch":0},"adversary_label":"claude-opus-4-7-subagent@2026-06-22","attempt_index":0,"outcome":"fail"}

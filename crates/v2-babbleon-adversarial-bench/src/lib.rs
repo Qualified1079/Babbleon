@@ -132,6 +132,7 @@ pub mod prompt;
 pub mod run_record;
 pub mod scoring;
 pub mod scramble_pipeline;
+pub mod secret_literal_layer;
 pub mod success_predicate;
 pub mod summary;
 

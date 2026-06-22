@@ -109,30 +109,36 @@ pub fn build_prompt(
 
 /// One-sentence description of which layers `config` activates.
 fn layer_summary_sentence(config: LayerConfig) -> String {
-    match (
+    let core = match (
         config.layer2_keyword_scramble,
         config.layer3_whitespace_as_words,
     ) {
         (false, false) => {
             "none (baseline — source shown verbatim modulo tokenizer \
              re-emission)"
-                .into()
         }
         (true, false) => {
             "layer 2 only (Python keywords substituted with per-epoch \
              wordlist compounds; whitespace left intact)"
-                .into()
         }
         (false, true) => {
             "layer 3 only (whitespace runs substituted with per-epoch \
              wordlist compounds; Python keywords left intact)"
-                .into()
         }
         (true, true) => {
             "layer 2 + layer 3 (Python keywords AND whitespace runs both \
              substituted with per-epoch wordlist compounds)"
-                .into()
         }
+    };
+    if config.layer7_secret_literal {
+        format!(
+            "{core} PLUS experimental layer 7 (operator-marked secret \
+             literals wrapped in `secret(\"...\")` have their bodies \
+             substituted with per-epoch wordlist compounds; see \
+             `docs/v2/string-literal-leak.md`)",
+        )
+    } else {
+        core.to_string()
     }
 }
 
