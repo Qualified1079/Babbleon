@@ -1,6 +1,6 @@
 # Bench run — 2026-06-21, Claude Opus 4.7 subagent
 
-The first concrete data point from the `v2-babbleon-adversarial-bench`
+The first concrete data point from the `v2-babbleon-resilience-bench`
 harness.  Run during a sleeping-operator session immediately after
 the bench's CLI binary landed.
 

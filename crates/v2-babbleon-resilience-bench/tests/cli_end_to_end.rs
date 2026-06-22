@@ -72,7 +72,7 @@ fn score_subcommand_marks_correct_answer_as_pass() {
         .arg("l2-plus-l3")
         .arg("--model-output")
         .arg(&model)
-        .arg("--adversary")
+        .arg("--evaluator")
         .arg("test-adv")
         .arg("--attempt")
         .arg("0")
@@ -86,7 +86,7 @@ fn score_subcommand_marks_correct_answer_as_pass() {
     let line = String::from_utf8(output.stdout).expect("UTF-8 jsonl");
     assert!(line.contains("\"outcome\":\"pass\""), "expected pass: {line}");
     assert!(line.contains("\"challenge_name\":\"auth-literal-string\""));
-    assert!(line.contains("\"adversary_label\":\"test-adv\""));
+    assert!(line.contains("\"evaluator_label\":\"test-adv\""));
 }
 
 #[test]
@@ -103,7 +103,7 @@ fn score_subcommand_marks_wrong_answer_as_fail() {
         .arg(&challenge)
         .arg("--model-output")
         .arg(&model)
-        .arg("--adversary")
+        .arg("--evaluator")
         .arg("test-adv")
         .output()
         .expect("invoke babbleon-bench");
@@ -126,7 +126,7 @@ fn score_subcommand_marks_unparseable_answer_as_format_error() {
         .arg(&challenge)
         .arg("--model-output")
         .arg(&model)
-        .arg("--adversary")
+        .arg("--evaluator")
         .arg("test-adv")
         .output()
         .expect("invoke babbleon-bench");
@@ -139,8 +139,8 @@ fn score_subcommand_marks_unparseable_answer_as_format_error() {
 fn summary_with_threshold_exits_2_on_breach() {
     let tmp = tempfile::tempdir().unwrap();
     let runs = tmp.path().join("runs.jsonl");
-    let body = r#"{"challenge_name":"c","layer_config":{"layer2_keyword_scramble":true,"layer3_whitespace_as_words":true,"layer7_secret_literal":false,"seed_byte":171,"epoch":0},"adversary_label":"adv","attempt_index":0,"outcome":"pass"}
-{"challenge_name":"c","layer_config":{"layer2_keyword_scramble":true,"layer3_whitespace_as_words":true,"layer7_secret_literal":false,"seed_byte":171,"epoch":0},"adversary_label":"adv","attempt_index":1,"outcome":"pass"}
+    let body = r#"{"challenge_name":"c","layer_config":{"layer2_keyword_scramble":true,"layer3_whitespace_as_words":true,"layer7_secret_literal":false,"seed_byte":171,"epoch":0},"evaluator_label":"adv","attempt_index":0,"outcome":"pass"}
+{"challenge_name":"c","layer_config":{"layer2_keyword_scramble":true,"layer3_whitespace_as_words":true,"layer7_secret_literal":false,"seed_byte":171,"epoch":0},"evaluator_label":"adv","attempt_index":1,"outcome":"pass"}
 "#;
     std::fs::write(&runs, body).unwrap();
 
@@ -175,10 +175,10 @@ fn summary_with_threshold_exits_0_when_under_threshold() {
     let tmp = tempfile::tempdir().unwrap();
     let runs = tmp.path().join("runs.jsonl");
     // 1/4 = 25% pass rate.
-    let body = r#"{"challenge_name":"c","layer_config":{"layer2_keyword_scramble":true,"layer3_whitespace_as_words":true,"layer7_secret_literal":false,"seed_byte":171,"epoch":0},"adversary_label":"adv","attempt_index":0,"outcome":"pass"}
-{"challenge_name":"c","layer_config":{"layer2_keyword_scramble":true,"layer3_whitespace_as_words":true,"layer7_secret_literal":false,"seed_byte":171,"epoch":0},"adversary_label":"adv","attempt_index":1,"outcome":"fail"}
-{"challenge_name":"c","layer_config":{"layer2_keyword_scramble":true,"layer3_whitespace_as_words":true,"layer7_secret_literal":false,"seed_byte":171,"epoch":0},"adversary_label":"adv","attempt_index":2,"outcome":"fail"}
-{"challenge_name":"c","layer_config":{"layer2_keyword_scramble":true,"layer3_whitespace_as_words":true,"layer7_secret_literal":false,"seed_byte":171,"epoch":0},"adversary_label":"adv","attempt_index":3,"outcome":"fail"}
+    let body = r#"{"challenge_name":"c","layer_config":{"layer2_keyword_scramble":true,"layer3_whitespace_as_words":true,"layer7_secret_literal":false,"seed_byte":171,"epoch":0},"evaluator_label":"adv","attempt_index":0,"outcome":"pass"}
+{"challenge_name":"c","layer_config":{"layer2_keyword_scramble":true,"layer3_whitespace_as_words":true,"layer7_secret_literal":false,"seed_byte":171,"epoch":0},"evaluator_label":"adv","attempt_index":1,"outcome":"fail"}
+{"challenge_name":"c","layer_config":{"layer2_keyword_scramble":true,"layer3_whitespace_as_words":true,"layer7_secret_literal":false,"seed_byte":171,"epoch":0},"evaluator_label":"adv","attempt_index":2,"outcome":"fail"}
+{"challenge_name":"c","layer_config":{"layer2_keyword_scramble":true,"layer3_whitespace_as_words":true,"layer7_secret_literal":false,"seed_byte":171,"epoch":0},"evaluator_label":"adv","attempt_index":3,"outcome":"fail"}
 "#;
     std::fs::write(&runs, body).unwrap();
 
@@ -203,8 +203,8 @@ fn summary_subcommand_aggregates_jsonl_into_markdown() {
     let tmp = tempfile::tempdir().unwrap();
     let runs = tmp.path().join("runs.jsonl");
     // Synthesize two records — one pass, one fail, same cell.
-    let body = r#"{"challenge_name":"auth-literal-string","layer_config":{"layer2_keyword_scramble":true,"layer3_whitespace_as_words":true,"seed_byte":171,"epoch":0},"adversary_label":"adv-x","attempt_index":0,"outcome":"pass"}
-{"challenge_name":"auth-literal-string","layer_config":{"layer2_keyword_scramble":true,"layer3_whitespace_as_words":true,"seed_byte":171,"epoch":0},"adversary_label":"adv-x","attempt_index":1,"outcome":"fail"}
+    let body = r#"{"challenge_name":"auth-literal-string","layer_config":{"layer2_keyword_scramble":true,"layer3_whitespace_as_words":true,"seed_byte":171,"epoch":0},"evaluator_label":"adv-x","attempt_index":0,"outcome":"pass"}
+{"challenge_name":"auth-literal-string","layer_config":{"layer2_keyword_scramble":true,"layer3_whitespace_as_words":true,"seed_byte":171,"epoch":0},"evaluator_label":"adv-x","attempt_index":1,"outcome":"fail"}
 "#;
     std::fs::write(&runs, body).unwrap();
 
@@ -239,7 +239,7 @@ fn run_matrix_subcommand_drives_full_matrix() {
         .arg("l3-only")
         .arg("--layer-config")
         .arg("l2-plus-l3")
-        .arg("--adversary")
+        .arg("--evaluator")
         .arg("matrix-test")
         .arg("--attempts")
         .arg("2")
@@ -293,7 +293,7 @@ fn run_matrix_requires_at_least_one_layer_config() {
         .arg("run-matrix")
         .arg("--challenges-dir")
         .arg(challenges_dir())
-        .arg("--adversary")
+        .arg("--evaluator")
         .arg("x")
         .arg("--command")
         .arg("sh")
@@ -314,7 +314,7 @@ fn run_matrix_errors_on_empty_challenges_dir() {
         .arg(tmp.path())
         .arg("--layer-config")
         .arg("l2-plus-l3")
-        .arg("--adversary")
+        .arg("--evaluator")
         .arg("x")
         .arg("--command")
         .arg("sh")
@@ -341,7 +341,7 @@ fn run_subcommand_drives_subprocess_end_to_end() {
         .arg(&challenge)
         .arg("--layer-config")
         .arg("l2-plus-l3")
-        .arg("--adversary")
+        .arg("--evaluator")
         .arg("sh-canned@cli-test")
         .arg("--attempts")
         .arg("3")
@@ -364,7 +364,7 @@ fn run_subcommand_drives_subprocess_end_to_end() {
     assert_eq!(lines.len(), 3, "expected 3 JSONL lines, got {lines:?}");
     for (i, line) in lines.iter().enumerate() {
         assert!(line.contains("\"outcome\":\"pass\""), "line {i}: {line}");
-        assert!(line.contains("\"adversary_label\":\"sh-canned@cli-test\""));
+        assert!(line.contains("\"evaluator_label\":\"sh-canned@cli-test\""));
         let want_idx = format!("\"attempt_index\":{i}");
         assert!(line.contains(&want_idx), "line {i} missing index: {line}");
     }
@@ -378,7 +378,7 @@ fn run_subcommand_rejects_empty_command() {
         .arg("run")
         .arg("--challenge")
         .arg(&challenge)
-        .arg("--adversary")
+        .arg("--evaluator")
         .arg("x")
         .output()
         .expect("invoke babbleon-bench");
@@ -398,7 +398,7 @@ fn run_subcommand_reports_subprocess_failure() {
         .arg("run")
         .arg("--challenge")
         .arg(&challenge)
-        .arg("--adversary")
+        .arg("--evaluator")
         .arg("always-fails")
         .arg("--command")
         .arg("false")
@@ -406,7 +406,7 @@ fn run_subcommand_reports_subprocess_failure() {
         .expect("invoke babbleon-bench");
     assert!(
         !output.status.success(),
-        "expected failure when adversary exits non-zero",
+        "expected failure when evaluator exits non-zero",
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -425,7 +425,7 @@ fn score_subcommand_reads_stdin_when_model_output_is_dash() {
         .arg(&challenge)
         .arg("--model-output")
         .arg("-")
-        .arg("--adversary")
+        .arg("--evaluator")
         .arg("test-adv")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

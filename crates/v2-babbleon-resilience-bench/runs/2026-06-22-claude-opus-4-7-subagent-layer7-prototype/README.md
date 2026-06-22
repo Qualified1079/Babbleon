@@ -2,7 +2,7 @@
 
 Second bench run, focused on validating the experimental layer-7
 secret-literal substitution mechanism filed at
-`crates/v2-babbleon-adversarial-bench/src/secret_literal_layer.rs`
+`crates/v2-babbleon-resilience-bench/src/secret_literal_layer.rs`
 and proposed in `docs/v2/string-literal-leak.md`.
 
 ## Adversary

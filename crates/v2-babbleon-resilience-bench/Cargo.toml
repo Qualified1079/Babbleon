@@ -1,5 +1,5 @@
 [package]
-name = "v2-babbleon-adversarial-bench"
+name = "v2-babbleon-resilience-bench"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,7 +11,7 @@ publish = false
 [lib]
 # Crate-import name follows the `babbleon_<thing>_v2` convention every
 # other v2 crate uses (core, preprocessor, daemon-protocol, vault, ...).
-name = "babbleon_adversarial_bench_v2"
+name = "babbleon_resilience_bench_v2"
 
 [[bin]]
 name = "babbleon-bench"

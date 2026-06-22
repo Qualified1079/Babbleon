@@ -69,31 +69,31 @@ pub enum Error {
         message: String,
     },
 
-    /// Adversary configuration was invalid (e.g. empty command
-    /// for [`crate::adversary::SubprocessAdversary`]).
-    #[error("adversary config: {message}")]
-    AdversaryConfig {
+    /// Evaluator configuration was invalid (e.g. empty command
+    /// for [`crate::evaluator::SubprocessEvaluator`]).
+    #[error("evaluator config: {message}")]
+    EvaluatorConfig {
         /// Operator-facing explanation.
         message: String,
     },
 
-    /// Failed to spawn the adversary subprocess.
-    #[error("adversary subprocess spawn {program}: {message}")]
-    AdversarySpawn {
+    /// Failed to spawn the evaluator subprocess.
+    #[error("evaluator subprocess spawn {program}: {message}")]
+    EvaluatorSpawn {
         /// The program name the operator pointed `cmd` at.
         program: String,
         /// `io::Error`'s display message.
         message: String,
     },
 
-    /// Adversary subprocess exited with a non-zero status.  The
+    /// Evaluator subprocess exited with a non-zero status.  The
     /// captured stderr (truncated for log hygiene) is included
     /// so the operator can see the child's diagnostic.
     #[error(
-        "adversary subprocess {program} exited with status {exit:?}: \
+        "evaluator subprocess {program} exited with status {exit:?}: \
          stderr={stderr}"
     )]
-    AdversaryNonZeroExit {
+    EvaluatorNonZeroExit {
         /// The program name.
         program: String,
         /// `ExitStatus::code()`.  `None` means killed by signal.
@@ -102,10 +102,10 @@ pub enum Error {
         stderr: String,
     },
 
-    /// I/O error reading from / writing to the adversary
+    /// I/O error reading from / writing to the evaluator
     /// subprocess (broken pipe, non-UTF-8 stdout, etc.).
-    #[error("adversary I/O: {message}")]
-    AdversaryIo {
+    #[error("evaluator I/O: {message}")]
+    EvaluatorIo {
         /// What failed.
         message: String,
     },

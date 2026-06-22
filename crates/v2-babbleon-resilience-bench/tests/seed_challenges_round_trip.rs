@@ -20,7 +20,7 @@
 
 use std::path::PathBuf;
 
-use babbleon_adversarial_bench_v2::{
+use babbleon_resilience_bench_v2::{
     apply_layers, build_prompt, score, Challenge, LayerConfig, ScoreOutcome,
     SuccessPredicate,
 };

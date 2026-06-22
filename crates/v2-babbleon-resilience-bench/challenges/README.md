@@ -2,7 +2,7 @@
 
 Each `*.toml` file in this directory is a frozen bench input the
 [`Challenge::from_toml_file`] loader can read.  The schema is
-documented in `crates/v2-babbleon-adversarial-bench/src/challenge.rs`.
+documented in `crates/v2-babbleon-resilience-bench/src/challenge.rs`.
 
 The seed challenges are picked for an escalating difficulty curve:
 
@@ -18,7 +18,7 @@ Adding a new challenge:
 1. Pick a kebab-case name.
 2. Write the TOML.  Source is wrapped in a triple-quoted string;
    escape any embedded `"""` if necessary.
-3. Run `cargo test -p v2-babbleon-adversarial-bench`'s
+3. Run `cargo test -p v2-babbleon-resilience-bench`'s
    `tests/seed_challenges_round_trip.rs` to verify the loader
    accepts the new file.
 4. Commit the file alongside its harness consumers.

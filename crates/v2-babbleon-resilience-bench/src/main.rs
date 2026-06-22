@@ -17,7 +17,7 @@
 //!
 //! # Trust placement
 //!
-//! Same as the library (see `crates/v2-babbleon-adversarial-bench/
+//! Same as the library (see `crates/v2-babbleon-resilience-bench/
 //! src/lib.rs`): no privileges, no daemon round-trip, no real
 //! per-host secret.  The binary loads no secrets and writes no
 //! state outside its argv-named output paths.
@@ -41,9 +41,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 
-use babbleon_adversarial_bench_v2::{
+use babbleon_resilience_bench_v2::{
     apply_layers, build_prompt, render_markdown, run_attempts, score,
-    Challenge, LayerConfig, RunRecord, SubprocessAdversary,
+    Challenge, LayerConfig, RunRecord, SubprocessEvaluator,
 };
 
 /// CLI entry struct parsed by clap.
@@ -93,13 +93,13 @@ enum Command {
         /// `-` reads from stdin.
         #[arg(short = 'm', long, value_name = "FILE")]
         model_output: PathBuf,
-        /// Operator-supplied label identifying the adversary.  Free
+        /// Operator-supplied label identifying the evaluator.  Free
         /// text (e.g. `claude-sonnet-4-6@2026-06-22`).  Recorded
         /// verbatim in the `RunRecord`.
         #[arg(short, long, value_name = "LABEL")]
-        adversary: String,
+        evaluator: String,
         /// 0-based attempt index within the
-        /// `(challenge, layer_config, adversary)` tuple.  Defaults
+        /// `(challenge, layer_config, evaluator)` tuple.  Defaults
         /// to 0 for one-shot scoring.
         #[arg(long, default_value_t = 0)]
         attempt: u32,
@@ -113,7 +113,7 @@ enum Command {
         #[arg(short, long, value_name = "FILE", required = true)]
         records: Vec<PathBuf>,
         /// Optional crack-fraction CI gate: if any (challenge,
-        /// `layer_config`, adversary) cell's pass-rate exceeds this
+        /// `layer_config`, evaluator) cell's pass-rate exceeds this
         /// percent (0-100), `summary` exits with status 2 after
         /// printing the table.  The HANDOFF spec calls this the
         /// "regression gate" — a PR that weakens the scramble
@@ -124,12 +124,12 @@ enum Command {
         pass_threshold_pct: Option<u32>,
     },
 
-    /// Drive an external adversary command across the full
+    /// Drive an external evaluator command across the full
     /// product of (challenges × layer configs) for N attempts
     /// per cell.  One invocation produces the entire bench
     /// matrix as JSONL on stdout.
     ///
-    /// Each cell is run sequentially.  An adversary failure on
+    /// Each cell is run sequentially.  An evaluator failure on
     /// any cell aborts the matrix with a non-zero exit; the
     /// JSONL emitted before the failure is on stdout and the
     /// operator can resume from a partial log.
@@ -137,10 +137,10 @@ enum Command {
     /// Example operator command:
     ///
     ///   babbleon-bench run-matrix \
-    ///     --challenges-dir crates/v2-babbleon-adversarial-bench/challenges \
+    ///     --challenges-dir crates/v2-babbleon-resilience-bench/challenges \
     ///     --layer-config baseline --layer-config l3-only \
     ///     --layer-config l2-plus-l3 --layer-config l2-plus-l3-plus-l7 \
-    ///     --adversary "claude-cli@2026-06-22" \
+    ///     --evaluator "claude-cli@2026-06-22" \
     ///     --attempts 5 \
     ///     --command claude-cli --command=--quiet \
     ///     > runs.jsonl
@@ -153,18 +153,18 @@ enum Command {
         /// the flag once per config.
         #[arg(long, value_enum, required = true)]
         layer_config: Vec<LayerConfigPreset>,
-        /// Operator-supplied adversary label.
+        /// Operator-supplied evaluator label.
         #[arg(short, long, value_name = "LABEL")]
-        adversary: String,
+        evaluator: String,
         /// Number of attempts per cell.
         #[arg(long, default_value_t = 1)]
         attempts: u32,
-        /// Adversary command argv.  Same syntax as `run`.
+        /// Evaluator command argv.  Same syntax as `run`.
         #[arg(long = "command", value_name = "ARG", required = true)]
         command: Vec<String>,
     },
 
-    /// Drive an external adversary command end-to-end for N
+    /// Drive an external evaluator command end-to-end for N
     /// attempts on one `(challenge, layer_config)` cell.  Writes
     /// the resulting JSONL `RunRecord`s to stdout.  Combine with
     /// shell `>>` to build a long-running bench log file.
@@ -173,7 +173,7 @@ enum Command {
     ///
     ///   babbleon-bench run --challenge auth-literal-string.toml \
     ///                      --layer-config l2-plus-l3 \
-    ///                      --adversary "claude-cli@2026-06-22" \
+    ///                      --evaluator "claude-cli@2026-06-22" \
     ///                      --attempts 5 \
     ///                      --command claude-cli --command --quiet
     ///
@@ -187,14 +187,14 @@ enum Command {
         /// Layer config to scramble under.
         #[arg(long, value_enum, default_value_t = LayerConfigPreset::L2PlusL3)]
         layer_config: LayerConfigPreset,
-        /// Operator-supplied adversary label recorded on each
+        /// Operator-supplied evaluator label recorded on each
         /// `RunRecord`.
         #[arg(short, long, value_name = "LABEL")]
-        adversary: String,
+        evaluator: String,
         /// Number of attempts to run against this cell.
         #[arg(long, default_value_t = 1)]
         attempts: u32,
-        /// Adversary command argv.  Repeat the flag once per
+        /// Evaluator command argv.  Repeat the flag once per
         /// argv entry.  The first occurrence is the program name.
         #[arg(long = "command", value_name = "ARG", required = true)]
         command: Vec<String>,
@@ -246,13 +246,13 @@ fn main() -> Result<()> {
             challenge,
             layer_config,
             model_output,
-            adversary,
+            evaluator,
             attempt,
         } => subcommand_score(
             &challenge,
             layer_config.to_config(),
             &model_output,
-            &adversary,
+            &evaluator,
             attempt,
         ),
         Command::Summary {
@@ -262,7 +262,7 @@ fn main() -> Result<()> {
         Command::RunMatrix {
             challenges_dir,
             layer_config,
-            adversary,
+            evaluator,
             attempts,
             command,
         } => subcommand_run_matrix(
@@ -271,20 +271,20 @@ fn main() -> Result<()> {
                 .into_iter()
                 .map(LayerConfigPreset::to_config)
                 .collect::<Vec<_>>(),
-            &adversary,
+            &evaluator,
             attempts,
             command,
         ),
         Command::Run {
             challenge,
             layer_config,
-            adversary,
+            evaluator,
             attempts,
             command,
         } => subcommand_run(
             &challenge,
             layer_config.to_config(),
-            &adversary,
+            &evaluator,
             attempts,
             command,
         ),
@@ -307,7 +307,7 @@ fn subcommand_score(
     challenge_path: &Path,
     config: LayerConfig,
     model_output_path: &Path,
-    adversary: &str,
+    evaluator: &str,
     attempt: u32,
 ) -> Result<()> {
     let challenge = Challenge::from_toml_file(challenge_path)
@@ -320,7 +320,7 @@ fn subcommand_score(
     let record = RunRecord::new(
         challenge.name.clone(),
         config,
-        adversary,
+        evaluator,
         attempt,
         outcome,
     );
@@ -374,22 +374,22 @@ fn subcommand_summary(
     Ok(())
 }
 
-/// Identify `(challenge, layer_config, adversary)` cells whose
+/// Identify `(challenge, layer_config, evaluator)` cells whose
 /// crack-fraction exceeds the threshold (as a percent).  Returns
 /// a list of operator-friendly breach descriptions.
 fn cells_above_threshold(
     records: &[RunRecord],
     threshold_pct: u32,
 ) -> Vec<String> {
-    use babbleon_adversarial_bench_v2::summary::aggregate;
+    use babbleon_resilience_bench_v2::summary::aggregate;
     let cells = aggregate(records);
     let threshold_frac = f64::from(threshold_pct) / 100.0;
     let mut breaches = Vec::new();
-    for ((challenge, config_label, adversary), cell) in &cells {
+    for ((challenge, config_label, evaluator), cell) in &cells {
         if let Some(frac) = cell.crack_fraction() {
             if frac > threshold_frac {
                 breaches.push(format!(
-                    "{challenge} / {config_label} / {adversary}: \
+                    "{challenge} / {config_label} / {evaluator}: \
                      {}/{} pass ({:.1}% > {threshold_pct}%)",
                     cell.pass_count,
                     cell.graded_count(),
@@ -405,7 +405,7 @@ fn cells_above_threshold(
 fn subcommand_run_matrix(
     challenges_dir: &Path,
     layer_configs: &[LayerConfig],
-    adversary_label: &str,
+    evaluator_label: &str,
     attempts: u32,
     command: Vec<String>,
 ) -> Result<()> {
@@ -426,8 +426,8 @@ fn subcommand_run_matrix(
         ));
     }
 
-    let adv = SubprocessAdversary::new(command, adversary_label)
-        .map_err(|e| anyhow!("adversary config: {e}"))?;
+    let adv = SubprocessEvaluator::new(command, evaluator_label)
+        .map_err(|e| anyhow!("evaluator config: {e}"))?;
     let mut stdout = io::stdout().lock();
     for path in &challenge_paths {
         let challenge = Challenge::from_toml_file(path)
@@ -458,14 +458,14 @@ fn subcommand_run_matrix(
 fn subcommand_run(
     challenge_path: &Path,
     config: LayerConfig,
-    adversary_label: &str,
+    evaluator_label: &str,
     attempts: u32,
     command: Vec<String>,
 ) -> Result<()> {
     let challenge = Challenge::from_toml_file(challenge_path)
         .with_context(|| format!("load challenge {}", challenge_path.display()))?;
-    let adv = SubprocessAdversary::new(command, adversary_label)
-        .map_err(|e| anyhow!("adversary config: {e}"))?;
+    let adv = SubprocessEvaluator::new(command, evaluator_label)
+        .map_err(|e| anyhow!("evaluator config: {e}"))?;
     let records = run_attempts(&challenge, config, &adv, attempts)
         .map_err(|e| anyhow!("run attempts: {e}"))?;
     let mut stdout = io::stdout().lock();

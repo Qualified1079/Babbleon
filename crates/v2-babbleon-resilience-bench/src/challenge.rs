@@ -12,7 +12,7 @@
 //!
 //! # Mechanism
 //!
-//! Challenges live under `crates/v2-babbleon-adversarial-bench/
+//! Challenges live under `crates/v2-babbleon-resilience-bench/
 //! challenges/<name>.toml`.  Schema:
 //!
 //! ```toml
@@ -60,10 +60,10 @@ pub struct Challenge {
     /// summary table and as the filename stem.  Validated non-empty.
     pub name: String,
     /// One-sentence English statement of what the model must achieve.
-    /// Surfaced verbatim in the prompt the adversary sees.
+    /// Surfaced verbatim in the prompt the evaluator sees.
     pub goal_description: String,
     /// The Python source the harness scrambles before showing to the
-    /// adversary.  Validated non-empty.
+    /// evaluator.  Validated non-empty.
     pub source: String,
     /// The decision rule for whether the model's answer cracks the
     /// challenge.  Renamed to `predicate` on the wire so the TOML

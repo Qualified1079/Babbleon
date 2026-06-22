@@ -6,19 +6,19 @@
 //! Operator hand-aggregation of per-cell crack fractions.  A bench
 //! produces (challenges × `layer_configs` × adversaries × attempts)
 //! rows; the operator's decision wants one number per
-//! `(challenge, layer_config)` pair per adversary.  This module is
+//! `(challenge, layer_config)` pair per evaluator.  This module is
 //! the single audited aggregation point.
 //!
 //! # Mechanism
 //!
-//! 1. Group records by `(challenge_name, layer_config, adversary_label)`.
+//! 1. Group records by `(challenge_name, layer_config, evaluator_label)`.
 //! 2. Per group, compute `crack_fraction = pass_count / total_count`
 //!    where `total_count` excludes `FormatError` outcomes (a model
 //!    that cannot follow the prompt format is not the same as a
 //!    model that tried and failed — calling format errors `Fail`
 //!    would understate model capability).
 //! 3. Emit a markdown table with one row per
-//!    `(challenge, layer_config)` and one column per adversary
+//!    `(challenge, layer_config)` and one column per evaluator
 //!    label, each cell showing `pass / total` plus the percentage.
 //!
 //! # Threat model boundaries
@@ -77,7 +77,7 @@ impl CellSummary {
 
 /// Aggregate a flat list of `RunRecord`s into the table cells.
 /// The returned `BTreeMap` is keyed by `(challenge_name,
-/// layer_config_label, adversary_label)` so the row + column order
+/// layer_config_label, evaluator_label)` so the row + column order
 /// in the rendered table is deterministic.
 #[must_use]
 pub fn aggregate(
@@ -89,7 +89,7 @@ pub fn aggregate(
         let key = (
             r.challenge_name.clone(),
             r.layer_config.label(),
-            r.adversary_label.clone(),
+            r.evaluator_label.clone(),
         );
         let cell = cells.entry(key).or_insert(CellSummary {
             pass_count: 0,
@@ -110,7 +110,7 @@ pub fn aggregate(
 }
 
 /// Render the bench results as a markdown table the operator can
-/// paste into HANDOFF.md.  One header row per adversary label; one
+/// paste into HANDOFF.md.  One header row per evaluator label; one
 /// body row per `(challenge_name, layer_config_label)` pair.
 ///
 /// Cell format: `cracked/graded (XX%) [+E fmt-err]` where `E` is
@@ -125,7 +125,7 @@ pub fn render_markdown(records: &[RunRecord]) -> String {
     }
     let cells = aggregate(records);
 
-    // Collect distinct challenge/config rows and adversary
+    // Collect distinct challenge/config rows and evaluator
     // columns, preserving sorted order from the BTreeMap keys.
     let mut rows: Vec<(String, String)> = cells
         .keys()
@@ -214,7 +214,7 @@ fn format_cell(cell: &CellSummary) -> String {
     }
 }
 
-/// Convenience: render a single-adversary, single-layer-config
+/// Convenience: render a single-evaluator, single-layer-config
 /// fraction as a one-line summary string.  Used by tests and by
 /// callers that want the headline number for one cell without
 /// rebuilding the whole table.
@@ -418,7 +418,7 @@ mod tests {
             make_record("c2", cfg, "adv-b", 0, ScoreOutcome::Pass),
         ];
         let table = render_markdown(&records);
-        // Two adversary columns; each row has one filled and one
+        // Two evaluator columns; each row has one filled and one
         // missing.  Check the missing cell renders as the em dash
         // (without surrounding spaces — the renderer pads with one
         // space on each side of the cell content).

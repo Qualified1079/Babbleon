@@ -1,4 +1,4 @@
-//! Persistable record of one adversary attempt on one
+//! Persistable record of one evaluator attempt on one
 //! `(challenge, layer_config)` cell.
 //!
 //! # What this defeats
@@ -22,13 +22,13 @@
 //!   "layer_config": { "layer2_keyword_scramble": true,
 //!                     "layer3_whitespace_as_words": true,
 //!                     "seed_byte": 171, "epoch": 0 },
-//!   "adversary_label": "claude-sonnet-4-6@2026-06-22",
+//!   "evaluator_label": "claude-sonnet-4-6@2026-06-22",
 //!   "attempt_index": 0,
 //!   "outcome": "pass"
 //! }
 //! ```
 //!
-//! `adversary_label` is operator-supplied (model id + run date), so
+//! `evaluator_label` is operator-supplied (model id + run date), so
 //! the summary table can break results down by model version and the
 //! operator can re-run a previously-cracked cell against a newer
 //! model without overwriting the historical data.
@@ -52,12 +52,12 @@ pub struct RunRecord {
     pub challenge_name: String,
     /// Layer config the source was scrambled under.
     pub layer_config: LayerConfig,
-    /// Operator-supplied label naming the adversary (model id, run
+    /// Operator-supplied label naming the evaluator (model id, run
     /// date, agent harness).  Free-form text; the summary groups
     /// by exact-equality of this field.
-    pub adversary_label: String,
+    pub evaluator_label: String,
     /// 0-based attempt index within the `(challenge, config,
-    /// adversary)` tuple.  Lets multi-attempt sampling reduce to
+    /// evaluator)` tuple.  Lets multi-attempt sampling reduce to
     /// fraction-cracked.
     pub attempt_index: u32,
     /// Pass / Fail / `FormatError` as determined by [`crate::score`].
@@ -72,14 +72,14 @@ impl RunRecord {
     pub fn new(
         challenge_name: impl Into<String>,
         layer_config: LayerConfig,
-        adversary_label: impl Into<String>,
+        evaluator_label: impl Into<String>,
         attempt_index: u32,
         outcome: ScoreOutcome,
     ) -> Self {
         Self {
             challenge_name: challenge_name.into(),
             layer_config,
-            adversary_label: adversary_label.into(),
+            evaluator_label: evaluator_label.into(),
             attempt_index,
             outcome,
         }
@@ -135,7 +135,7 @@ mod tests {
         );
         assert_eq!(r.challenge_name, "auth-literal-string");
         assert_eq!(r.layer_config, LayerConfig::l2_plus_l3());
-        assert_eq!(r.adversary_label, "claude-sonnet-4-6@2026-06-22");
+        assert_eq!(r.evaluator_label, "claude-sonnet-4-6@2026-06-22");
         assert_eq!(r.attempt_index, 7);
         assert_eq!(r.outcome, ScoreOutcome::Fail);
     }

@@ -3,10 +3,10 @@
 //! # What this defeats
 //!
 //! Subjective opinion about whether layer-2, layer-3, or layer-2 + 3
-//! is "enough" to defeat an LLM/agent adversary at a given crack
+//! is "enough" to defeat an LLM/agent evaluator at a given crack
 //! budget.  v2 phase-3 escalation decisions ("ship L2+L3 or escalate
 //! to L4?") are operator-blocked until we have *data* showing the
-//! crack-fraction per layer config against a faithful adversary
+//! crack-fraction per layer config against a faithful evaluator
 //! simulation.  This crate is the harness that produces that data
 //! and the regression gate that keeps a future preprocessor change
 //! from silently weakening the scramble.
@@ -27,12 +27,12 @@
 //!    NO adversarial / role-play framing — the operator's
 //!    HANDOFF-stated constraint that "you are a hacker" framings
 //!    trip safety filters and degrade signal.
-//! 4. Hands the prompt to an adversary (an `Adversary` impl) — Claude
+//! 4. Hands the prompt to an evaluator (an `Evaluator` impl) — Claude
 //!    API, `OpenAI` API, or an in-sandbox Agent subagent — and collects
 //!    its answer.
 //! 5. Scores the answer against the challenge's `success_predicate`
 //!    (`scoring::score`).
-//! 6. Aggregates many `(challenge, layer_config, adversary)` runs
+//! 6. Aggregates many `(challenge, layer_config, evaluator)` runs
 //!    into a markdown table (`summary::render_markdown`) showing the
 //!    crack-fraction at every cell.
 //!
@@ -81,7 +81,7 @@
 //! - **`summary`** — `render_markdown(runs)` aggregates `RunRecord`s
 //!   into the operator-facing crack-fraction table.
 //! - **`run_record`** — the canonical record of one `(challenge,
-//!   layer_config, adversary, attempt)` outcome, JSON-serializable
+//!   layer_config, evaluator, attempt)` outcome, JSON-serializable
 //!   so runs are persistable to disk between subcommand invocations.
 //!
 //! # Security baseline
@@ -116,7 +116,7 @@
 //!   the library API stabilises.
 //! - `PythonScript` success predicate — needs subprocess-to-`python3`
 //!   wiring, same shape as the python-shim crate; commit-deferred.
-//! - Adversary plugins (`Adversary` trait impls for Claude API,
+//! - Evaluator plugins (`Evaluator` trait impls for Claude API,
 //!   `OpenAI` API, in-sandbox Agent subagent) — each is a separate
 //!   commit gated on its own env-var / sandbox capability.
 
@@ -124,7 +124,7 @@
 #![deny(missing_docs)]
 #![warn(clippy::pedantic)]
 
-pub mod adversary;
+pub mod evaluator;
 pub mod challenge;
 pub mod errors;
 pub mod layer_config;
@@ -136,7 +136,7 @@ pub mod secret_literal_layer;
 pub mod success_predicate;
 pub mod summary;
 
-pub use adversary::{run_attempts, Adversary, SubprocessAdversary};
+pub use evaluator::{run_attempts, Evaluator, SubprocessEvaluator};
 pub use challenge::Challenge;
 pub use errors::{Error, Result};
 pub use layer_config::LayerConfig;

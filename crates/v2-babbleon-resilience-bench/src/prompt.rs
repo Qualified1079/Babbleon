@@ -1,4 +1,4 @@
-//! Construct the neutral-capability prompt the adversary sees.
+//! Construct the neutral-capability prompt the evaluator sees.
 //!
 //! # What this defeats
 //!
@@ -6,7 +6,7 @@
 //! operator-stated HANDOFF rule (2026-06-21 evening section):
 //!
 //! > do NOT prompt the subagent with "you are a hacker
-//! > adversary" — that frames the task as adversarial and trips
+//! > evaluator" — that frames the task as adversarial and trips
 //! > safety filters that refuse the task.  The correct framing is
 //! > neutral capability: state the win condition and the tools
 //! > available, no role-play.
@@ -29,7 +29,7 @@
 //! 2. **`OBFUSCATION DOCS`** — a one-paragraph pointer at the
 //!    layer documentation under `docs/v2/structure-scrambling.md`
 //!    plus a verbatim list of which layers were applied.  The
-//!    HANDOFF adversary model says "the adversary HAS the v2
+//!    HANDOFF evaluator model says "the evaluator HAS the v2
 //!    design docs"; the prompt makes that explicit so simulated
 //!    adversaries do not need to roleplay "I have not read the
 //!    docs."
@@ -55,7 +55,7 @@ use crate::layer_config::LayerConfig;
 /// [`crate::scramble_pipeline::apply_layers`] for `challenge.source`
 /// under `config`.  The function takes it as a parameter rather than
 /// computing it internally so callers can cache scrambles across
-/// many adversary attempts at the same cell.
+/// many evaluator attempts at the same cell.
 #[must_use]
 pub fn build_prompt(
     challenge: &Challenge,
@@ -74,18 +74,29 @@ pub fn build_prompt(
         "## TASK\n\
          \n\
          You are given a Python source file that has been processed by an \
-         identifier-renaming and whitespace-substitution scheme.  Below you \
-         have:\n\
+         identifier-renaming and whitespace-substitution scheme.  Inputs:\n\
          \n\
-         - The scrambled bytes of the source.\n\
+         - The scrambled bytes of the source (section below).\n\
          - A pointer at the public documentation of the scheme.\n\
          - A goal statement specifying the answer you must produce.\n\
-         - A scratchpad (this conversation) you may use across turns.\n\
          \n\
-         Submit your final answer as a single JSON object on a line by \
-         itself, of the form `{{\"answer\": \"...\"}}`.  Do not include \
+         Tools the evaluation environment provides:\n\
+         \n\
+         - A `notepad/` directory you may read and write.  Any file you \
+         create there persists across calls within this run.  Use it to \
+         record partial decodings, hypothesised compound→keyword mappings, \
+         candidate answers, intermediate computations — anything you would \
+         otherwise need to keep in working memory.  Writing to the notepad \
+         is the supported way to think across many tool calls without \
+         re-deriving previous work.\n\
+         - (If this challenge enables it) a shell to run small scripts \
+         against the inputs.  The challenge config controls whether shell \
+         is available; not every challenge enables it.\n\
+         \n\
+         When you have an answer, write a single JSON object on a line by \
+         itself of the form `{{\"answer\": \"...\"}}`.  Do not include \
          additional explanation in the JSON line; explanation may go in \
-         turns preceding the final answer.\n\
+         tool calls preceding the final answer.\n\
          \n\
          ## SCRAMBLED SOURCE\n\
          \n\
@@ -187,7 +198,7 @@ mod tests {
         for forbidden in [
             "you are a hacker",
             "you are an attacker",
-            "you are an adversary",
+            "you are an evaluator",
             "pretend you are",
             "act as a hacker",
             "act as an attacker",
@@ -237,7 +248,7 @@ mod tests {
         let c = fixture_challenge();
         let p =
             build_prompt(&c, LayerConfig::l2_plus_l3(), "scrambled");
-        // The HANDOFF adversary model assumes the model has the
+        // The HANDOFF evaluator model assumes the model has the
         // design docs; make sure the pointer is in the prompt so
         // the model doesn't have to roleplay "I have not read."
         assert!(p.contains("docs/v2/structure-scrambling.md"));

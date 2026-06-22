@@ -1,8 +1,8 @@
 # String-literal leak — bench finding 2026-06-21
 
 The first concrete data point from
-`v2-babbleon-adversarial-bench` (archived at
-`crates/v2-babbleon-adversarial-bench/runs/2026-06-21-claude-opus-4-7-subagent/`)
+`v2-babbleon-resilience-bench` (archived at
+`crates/v2-babbleon-resilience-bench/runs/2026-06-21-claude-opus-4-7-subagent/`)
 identifies a load-bearing finding the prior layer planning did
 not weight correctly:
 
@@ -224,7 +224,7 @@ session for the bench re-run.
 
 ## Cross-references
 
-- `crates/v2-babbleon-adversarial-bench/runs/2026-06-21-claude-opus-4-7-subagent/README.md`
+- `crates/v2-babbleon-resilience-bench/runs/2026-06-21-claude-opus-4-7-subagent/README.md`
   — the run that surfaced this finding.
 - `docs/v2/obfuscation-landscape.md` §3 "Data obfuscation"
   — prior framing this doc supersedes (for the secret-strings

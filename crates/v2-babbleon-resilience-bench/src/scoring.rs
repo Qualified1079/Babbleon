@@ -103,7 +103,7 @@ pub enum ScoreOutcome {
 
 /// Score `model_output` against `predicate`.
 ///
-/// `model_output` is the raw text returned by the adversary; this
+/// `model_output` is the raw text returned by the evaluator; this
 /// function:
 ///
 /// 1. Checks for a policy refusal first ([`POLICY_REFUSAL_PATTERNS`]).

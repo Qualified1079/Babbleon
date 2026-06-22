@@ -5,7 +5,7 @@
 //! The dominant finding from the 2026-06-21 bench run: string
 //! literals containing program secrets survive L2 (keyword
 //! scramble) and L3 (whitespace-as-words) verbatim, and the
-//! adversary recovers them by literal search.  See
+//! evaluator recovers them by literal search.  See
 //! `docs/v2/string-literal-leak.md` for the full discussion.
 //!
 //! This module implements a **bench-only prototype** of the
@@ -38,7 +38,7 @@
 //! # Threat model boundaries
 //!
 //! - **Defeats:** literal-search recovery of operator-marked
-//!   secret strings.  An adversary without the per-host secret
+//!   secret strings.  An evaluator without the per-host secret
 //!   cannot derive the compound and therefore cannot reverse the
 //!   substitution.
 //! - **Does NOT defeat:** literal recovery from *unmarked*
@@ -47,7 +47,7 @@
 //!   layer does NOT address: secrets that are reconstructed at
 //!   runtime from per-character `chr()` calls survive layer 7
 //!   because they are not string literals in the first place,
-//!   and an adversary with a python interpreter trivially
+//!   and an evaluator with a python interpreter trivially
 //!   evaluates the reconstruction.  Layer 7 is necessary but not
 //!   sufficient.
 //!

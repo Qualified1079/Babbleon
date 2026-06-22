@@ -1980,22 +1980,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "v2-babbleon-adversarial-bench"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "proptest",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
- "toml 0.8.23",
- "v2-babbleon-core",
- "v2-babbleon-preprocessor",
-]
-
-[[package]]
 name = "v2-babbleon-core"
 version = "0.1.0"
 dependencies = [
@@ -2119,6 +2103,22 @@ dependencies = [
  "tracing-subscriber",
  "v2-babbleon-core",
  "v2-babbleon-daemon-protocol",
+ "v2-babbleon-preprocessor",
+]
+
+[[package]]
+name = "v2-babbleon-resilience-bench"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "proptest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "toml 0.8.23",
+ "v2-babbleon-core",
  "v2-babbleon-preprocessor",
 ]
 

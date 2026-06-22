@@ -50,7 +50,7 @@ pub struct LayerConfig {
     pub layer3_whitespace_as_words: bool,
     /// Apply experimental layer-7 secret-literal substitution
     /// (bench-only prototype; see
-    /// `crates/v2-babbleon-adversarial-bench/src/secret_literal_layer.rs`).
+    /// `crates/v2-babbleon-resilience-bench/src/secret_literal_layer.rs`).
     /// Defaults to `false` because the production preprocessor
     /// does not yet implement it; bench cells that set this to
     /// `true` measure crack-fraction of the proposed mechanism.

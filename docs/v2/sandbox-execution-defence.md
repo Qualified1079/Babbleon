@@ -34,7 +34,7 @@ state.
 ## Bench evidence
 
 The 2026-06-21 `computed-secret` cell, archived at
-`crates/v2-babbleon-adversarial-bench/runs/2026-06-21-claude-opus-4-7-subagent/`:
+`crates/v2-babbleon-resilience-bench/runs/2026-06-21-claude-opus-4-7-subagent/`:
 
 ```python
 def auth(x):
@@ -267,7 +267,7 @@ layer-7 cell already demonstrated.
   design for chunk reorder; C3 here.
 - `docs/v2/obfuscation-landscape.md` §5 / §7 — addresses the
   "why not just X" alternatives.
-- `crates/v2-babbleon-adversarial-bench/runs/2026-06-21-claude-opus-4-7-subagent/`
+- `crates/v2-babbleon-resilience-bench/runs/2026-06-21-claude-opus-4-7-subagent/`
   — the run that surfaced this finding.
 - HANDOFF item 9 (trust-tier inode gate) — the plumbing C2
   composes onto.

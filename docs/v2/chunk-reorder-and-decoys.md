@@ -343,7 +343,7 @@ Smallest reviewable units, in order:
    pools locally, drive the full L1+L2+L3+L4+L5 pipeline.  ~250
    LOC + ~10 tests.
 7. **Bench challenge**: extend
-   `v2-babbleon-adversarial-bench` with a `chunk-reordered`
+   `v2-babbleon-resilience-bench` with a `chunk-reordered`
    challenge to measure the crack-fraction shift L4 produces.
    ~100 LOC.
 
