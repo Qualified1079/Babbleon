@@ -1,5 +1,19 @@
 //! Babbleon v2 — adversarial regression bench.
 //!
+//! # Seed challenge corpus is DEPRECATED
+//!
+//! The six seed challenges under `challenges/*.toml` and the two
+//! committed run directories under `runs/` are invalidated.  See
+//! `CORRECTIONS.md` for why (every recovery target sits as a plain
+//! literal that L2+L3 do not scramble; the 100% crack rate is a
+//! tautology, not a finding) and `BENCHMARK-DESIGN.md` for the
+//! requirements a replacement corpus must satisfy.
+//!
+//! Do NOT cite the numbers in the deprecated runs as evidence of
+//! scramble strength.  The harness plumbing (CLI, prompt builder,
+//! scoring, run-matrix, summary table) is sound and remains; the
+//! challenges and the data they produced do not.
+//!
 //! # What this defeats
 //!
 //! Subjective opinion about whether layer-2, layer-3, or layer-2 + 3

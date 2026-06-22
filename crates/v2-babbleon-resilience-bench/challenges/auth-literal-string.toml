@@ -1,3 +1,13 @@
+# DEPRECATED — see ../CORRECTIONS.md
+#
+# This challenge's recovery target sits in a place L2+L3 do not
+# scramble (string literal, chr() ordinals, or transition-table
+# literals).  Any "crack rate" recorded against this challenge
+# measures the absence of literal-scrambling, not scramble
+# strength.  Do NOT add this challenge to a re-run.  See
+# ../BENCHMARK-DESIGN.md for the literal-free challenge corpus
+# specification.
+
 name = "auth-literal-string"
 goal_description = """
 The Python source defines a function `auth(x)` that returns True for exactly one string value of `x`.  Find that value and submit it as the answer.
