@@ -124,6 +124,8 @@ pub mod python_keywords;
 pub mod python_operators;
 pub mod python_tokenizer;
 pub mod scrambler;
+pub mod secret_literal_scrambler;
+pub mod secret_literal_wordlist;
 pub mod tokens;
 pub mod unscrambler;
 pub mod whitespace_wordlist;
@@ -135,5 +137,9 @@ pub use operator_scrambler::{scramble_operators, unscramble_operators};
 pub use operator_wordlist::OperatorWordlist;
 pub use python_keywords::{PYTHON_KEYWORDS, PYTHON_KEYWORD_COUNT};
 pub use python_operators::{PYTHON_OPERATORS, PYTHON_OPERATOR_COUNT};
+pub use secret_literal_scrambler::{
+    scramble_secret_literals, unscramble_secret_literals,
+};
+pub use secret_literal_wordlist::SecretLiteralWordlist;
 pub use tokens::{Token, WhitespaceKind};
 pub use whitespace_wordlist::WhitespaceWordlist;

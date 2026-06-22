@@ -89,6 +89,18 @@ pub enum Error {
         at: usize,
     },
 
+    /// Layer-7 HKDF derivation or wordlist indexing failed.
+    ///
+    /// Practically impossible with the v2 baseline wordlist; present
+    /// as a defensive check.  Per rule 13, the `message` field
+    /// carries structural context (e.g. "wordlist index out of range")
+    /// but never the compound bytes or the per-host secret.
+    #[error("secret-literal derivation failed: {message}")]
+    SecretLiteralDerivation {
+        /// Structural reason without secret-adjacent bytes.
+        message: String,
+    },
+
     /// The unscrambler ran out of input mid-compound.
     ///
     /// Indicates the supplied scrambled bytes were truncated, or
