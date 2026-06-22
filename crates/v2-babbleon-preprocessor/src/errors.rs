@@ -53,6 +53,16 @@ pub enum Error {
         slot: usize,
     },
 
+    /// Two operators were assigned the same per-epoch compound
+    /// by `OperatorWordlist::build`.  Same defensive shape as
+    /// `KeywordCompoundCollision`.
+    #[error("operator compound collision at slot {slot}; rotate epoch and retry")]
+    OperatorCompoundCollision {
+        /// Index in [`crate::python_operators::PYTHON_OPERATORS`]
+        /// where the second of the colliding pair lives.
+        slot: usize,
+    },
+
     /// A v2-core primitive failed.  The wrapped error preserves
     /// the original cause; this variant exists only to bridge the
     /// two crates' error types without dropping information.
