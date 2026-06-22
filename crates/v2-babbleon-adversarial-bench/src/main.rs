@@ -114,6 +114,46 @@ enum Command {
         records: Vec<PathBuf>,
     },
 
+    /// Drive an external adversary command across the full
+    /// product of (challenges × layer configs) for N attempts
+    /// per cell.  One invocation produces the entire bench
+    /// matrix as JSONL on stdout.
+    ///
+    /// Each cell is run sequentially.  An adversary failure on
+    /// any cell aborts the matrix with a non-zero exit; the
+    /// JSONL emitted before the failure is on stdout and the
+    /// operator can resume from a partial log.
+    ///
+    /// Example operator command:
+    ///
+    ///   babbleon-bench run-matrix \
+    ///     --challenges-dir crates/v2-babbleon-adversarial-bench/challenges \
+    ///     --layer-config baseline --layer-config l3-only \
+    ///     --layer-config l2-plus-l3 --layer-config l2-plus-l3-plus-l7 \
+    ///     --adversary "claude-cli@2026-06-22" \
+    ///     --attempts 5 \
+    ///     --command claude-cli --command=--quiet \
+    ///     > runs.jsonl
+    RunMatrix {
+        /// Directory containing challenge `*.toml` files.  All
+        /// `*.toml` files in this directory are loaded.
+        #[arg(long, value_name = "DIR")]
+        challenges_dir: PathBuf,
+        /// Layer configs to run against each challenge.  Repeat
+        /// the flag once per config.
+        #[arg(long, value_enum, required = true)]
+        layer_config: Vec<LayerConfigPreset>,
+        /// Operator-supplied adversary label.
+        #[arg(short, long, value_name = "LABEL")]
+        adversary: String,
+        /// Number of attempts per cell.
+        #[arg(long, default_value_t = 1)]
+        attempts: u32,
+        /// Adversary command argv.  Same syntax as `run`.
+        #[arg(long = "command", value_name = "ARG", required = true)]
+        command: Vec<String>,
+    },
+
     /// Drive an external adversary command end-to-end for N
     /// attempts on one `(challenge, layer_config)` cell.  Writes
     /// the resulting JSONL `RunRecord`s to stdout.  Combine with
@@ -206,6 +246,22 @@ fn main() -> Result<()> {
             attempt,
         ),
         Command::Summary { records } => subcommand_summary(&records),
+        Command::RunMatrix {
+            challenges_dir,
+            layer_config,
+            adversary,
+            attempts,
+            command,
+        } => subcommand_run_matrix(
+            &challenges_dir,
+            &layer_config
+                .into_iter()
+                .map(LayerConfigPreset::to_config)
+                .collect::<Vec<_>>(),
+            &adversary,
+            attempts,
+            command,
+        ),
         Command::Run {
             challenge,
             layer_config,
@@ -279,6 +335,59 @@ fn subcommand_summary(record_paths: &[PathBuf]) -> Result<()> {
     let mut stdout = io::stdout().lock();
     stdout.write_all(table.as_bytes()).context("write stdout")?;
     stdout.flush().context("flush stdout")?;
+    Ok(())
+}
+
+fn subcommand_run_matrix(
+    challenges_dir: &Path,
+    layer_configs: &[LayerConfig],
+    adversary_label: &str,
+    attempts: u32,
+    command: Vec<String>,
+) -> Result<()> {
+    // Load every challenge file in the directory.
+    let mut challenge_paths: Vec<PathBuf> = fs::read_dir(challenges_dir)
+        .with_context(|| {
+            format!("read challenges dir {}", challenges_dir.display())
+        })?
+        .filter_map(std::result::Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "toml"))
+        .collect();
+    challenge_paths.sort();
+    if challenge_paths.is_empty() {
+        return Err(anyhow!(
+            "no *.toml challenge files in {}",
+            challenges_dir.display(),
+        ));
+    }
+
+    let adv = SubprocessAdversary::new(command, adversary_label)
+        .map_err(|e| anyhow!("adversary config: {e}"))?;
+    let mut stdout = io::stdout().lock();
+    for path in &challenge_paths {
+        let challenge = Challenge::from_toml_file(path)
+            .with_context(|| format!("load challenge {}", path.display()))?;
+        for config in layer_configs {
+            let records = run_attempts(&challenge, *config, &adv, attempts)
+                .map_err(|e| {
+                    anyhow!(
+                        "run cell {}/{}: {e}",
+                        challenge.name,
+                        config.label(),
+                    )
+                })?;
+            for record in &records {
+                let line = record
+                    .to_jsonl()
+                    .map_err(|e| anyhow!("serialize: {e}"))?;
+                stdout.write_all(line.as_bytes()).context("write stdout")?;
+                // Flush after every record so a tail-watching
+                // operator sees progress as the matrix runs.
+                stdout.flush().context("flush stdout")?;
+            }
+        }
+    }
     Ok(())
 }
 

@@ -166,6 +166,106 @@ fn summary_subcommand_aggregates_jsonl_into_markdown() {
 }
 
 #[test]
+fn run_matrix_subcommand_drives_full_matrix() {
+    // 5 challenges × 2 configs × 2 attempts = 20 JSONL records.
+    let output = Command::new(bench_binary())
+        .arg("run-matrix")
+        .arg("--challenges-dir")
+        .arg(challenges_dir())
+        .arg("--layer-config")
+        .arg("l3-only")
+        .arg("--layer-config")
+        .arg("l2-plus-l3")
+        .arg("--adversary")
+        .arg("matrix-test")
+        .arg("--attempts")
+        .arg("2")
+        .arg("--command")
+        .arg("sh")
+        .arg("--command=-c")
+        .arg(r#"--command=cat > /dev/null; printf '%s' '{"answer": "hunter2"}'"#)
+        .output()
+        .expect("invoke babbleon-bench");
+    assert!(
+        output.status.success(),
+        "run-matrix failed: stderr={}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let lines: Vec<&str> = std::str::from_utf8(&output.stdout)
+        .unwrap()
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .collect();
+    // N challenges (the seed set) × 2 configs × 2 attempts.
+    // Read N from the challenges directory so future challenge
+    // additions don't break the test.
+    let n_challenges = std::fs::read_dir(challenges_dir())
+        .unwrap()
+        .filter_map(std::result::Result::ok)
+        .filter(|e| {
+            e.path().extension().is_some_and(|x| x == "toml")
+        })
+        .count();
+    let expected = n_challenges * 2 * 2;
+    assert_eq!(
+        lines.len(),
+        expected,
+        "expected {expected} records for {n_challenges} challenges × 2 configs × 2 attempts, got {}",
+        lines.len(),
+    );
+
+    // Only `auth-literal-string` should pass with this canned
+    // answer; the others fail because hunter2 is not their
+    // expected answer.  2 configs × 2 attempts = 4 pass records.
+    let pass_count = lines
+        .iter()
+        .filter(|l| l.contains("\"outcome\":\"pass\""))
+        .count();
+    assert_eq!(pass_count, 4, "expected 4 pass records, got {pass_count}");
+}
+
+#[test]
+fn run_matrix_requires_at_least_one_layer_config() {
+    let output = Command::new(bench_binary())
+        .arg("run-matrix")
+        .arg("--challenges-dir")
+        .arg(challenges_dir())
+        .arg("--adversary")
+        .arg("x")
+        .arg("--command")
+        .arg("sh")
+        .output()
+        .expect("invoke babbleon-bench");
+    assert!(
+        !output.status.success(),
+        "expected failure when --layer-config not supplied",
+    );
+}
+
+#[test]
+fn run_matrix_errors_on_empty_challenges_dir() {
+    let tmp = tempfile::tempdir().unwrap();
+    let output = Command::new(bench_binary())
+        .arg("run-matrix")
+        .arg("--challenges-dir")
+        .arg(tmp.path())
+        .arg("--layer-config")
+        .arg("l2-plus-l3")
+        .arg("--adversary")
+        .arg("x")
+        .arg("--command")
+        .arg("sh")
+        .output()
+        .expect("invoke babbleon-bench");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("no") && stderr.contains("toml"),
+        "expected empty-dir diagnostic: {stderr}",
+    );
+}
+
+#[test]
 fn run_subcommand_drives_subprocess_end_to_end() {
     let challenge =
         challenges_dir().join("auth-literal-string.toml");
