@@ -27,18 +27,20 @@
 //!
 //! Same as the per-file pipeline (see `scramble_lifecycle.rs`):
 //! the CLI process never holds the per-host secret.  The daemon
-//! round-trip yields a single `WhitespaceWordlist`; that wordlist
-//! is reused for every file in the batch.
+//! round-trip yields a `WhitespaceWordlist` AND (since the
+//! 2026-06-22 L2-wire commit) a `KeywordWordlist`; both wordlists
+//! are reused for every file in the batch.
 //!
 //! # Pipeline
 //!
 //! 1. Validate input / output directories.  Output dir must not
 //!    exist (or must be empty) unless `--force`.
-//! 2. Fetch compounds (one daemon round-trip).  Build a
-//!    `WhitespaceWordlist`.
+//! 2. Fetch compounds (two daemon round-trips, one per pool).
+//!    Build a `WhitespaceWordlist` and a `KeywordWordlist`.
 //! 3. Walk input dir recursively.  For each `.py` file:
 //!    - Compute the relative path.
-//!    - Read source bytes, tokenize, scramble (or unscramble).
+//!    - Read source bytes, tokenize, `scramble_keywords` (L2),
+//!      `scramble` to bytes (L3) — or the inverse on unscramble.
 //!    - Write to `output_dir / relative_path`, creating parent
 //!      directories as needed.
 //! 4. Report counts to stdout: files processed, bytes in / out,
@@ -46,6 +48,15 @@
 //!
 //! Non-`.py` files are skipped silently in MVP; future revision
 //! can add a `--include-glob` flag.
+//!
+//! ## L2 wiring rationale
+//!
+//! Until the 2026-06-22 (later) commit this module emitted L3-only
+//! output even though the single-file `scramble` subcommand
+//! emitted L2+L3.  Same operator-facing CLI, two different layer
+//! behaviours depending on whether the user passed `-i FILE` or
+//! `scramble-dir DIR` — a regression-shaped bug.  This module now
+//! matches the per-file pipeline exactly.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -53,11 +64,19 @@ use std::time::Instant;
 
 use anyhow::{anyhow, Context, Result};
 
+use babbleon_preprocessor_v2::keyword_scrambler::{
+    scramble_keywords, unscramble_keywords,
+};
 use babbleon_preprocessor_v2::python_tokenizer::tokenize;
 use babbleon_preprocessor_v2::scrambler::scramble;
-use babbleon_preprocessor_v2::unscrambler::unscramble;
+use babbleon_preprocessor_v2::unscrambler::{
+    tokens_to_source, unscramble_to_tokens,
+};
 
-use crate::scramble_lifecycle::fetch_whitespace_wordlist_pub as fetch_whitespace_wordlist;
+use crate::scramble_lifecycle::{
+    fetch_keyword_wordlist_pub as fetch_keyword_wordlist,
+    fetch_whitespace_wordlist_pub as fetch_whitespace_wordlist,
+};
 
 /// Operator options for the directory-batch subcommands.
 pub struct CorpusOptions {
@@ -107,10 +126,12 @@ pub fn run_scramble_dir(opts: CorpusOptions) -> Result<CorpusReport> {
     prepare_output_dir(&output_dir, allow_overwrite)?;
 
     let wl = fetch_whitespace_wordlist(&socket_path)?;
+    let kwl = fetch_keyword_wordlist(&socket_path)?;
     let start = Instant::now();
     let mut report = CorpusReport::default();
     walk_and_apply(&input_dir, &input_dir, &output_dir, &mut |src| {
-        let tokens = tokenize(src);
+        let mut tokens = tokenize(src);
+        scramble_keywords(&mut tokens, &kwl);
         scramble(&tokens, &wl).map_err(|e| anyhow!("scramble: {e}"))
     }, &mut report)?;
     report.elapsed_ms = start.elapsed().as_millis();
@@ -135,10 +156,17 @@ pub fn run_unscramble_dir(opts: CorpusOptions) -> Result<CorpusReport> {
     prepare_output_dir(&output_dir, allow_overwrite)?;
 
     let wl = fetch_whitespace_wordlist(&socket_path)?;
+    let kwl = fetch_keyword_wordlist(&socket_path)?;
     let start = Instant::now();
     let mut report = CorpusReport::default();
     walk_and_apply(&input_dir, &input_dir, &output_dir, &mut |src| {
-        unscramble(src, &wl).map_err(|e| anyhow!("unscramble: {e}"))
+        // `unscramble_to_tokens` is infallible (any leftover bytes
+        // become a final Word); L2 inverse is pass-mutate then
+        // re-emit as source bytes.  No anyhow! wrap needed inside
+        // the closure since neither step returns Result.
+        let mut tokens = unscramble_to_tokens(src, &wl);
+        unscramble_keywords(&mut tokens, &kwl);
+        Ok(tokens_to_source(&tokens))
     }, &mut report)?;
     report.elapsed_ms = start.elapsed().as_millis();
     Ok(report)

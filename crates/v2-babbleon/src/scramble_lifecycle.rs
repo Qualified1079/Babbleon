@@ -219,6 +219,23 @@ pub fn fetch_whitespace_wordlist_pub(
     fetch_whitespace_wordlist(socket_path)
 }
 
+/// Sister of [`fetch_whitespace_wordlist_pub`] for layer-2 (keyword
+/// scramble).  Public so the directory-batch
+/// [`crate::corpus_lifecycle`] path can share one round-trip
+/// across a multi-file walk instead of paying per-file socket
+/// chatter.
+///
+/// # Errors
+///
+/// Same shape as `fetch_whitespace_wordlist_pub`: connect /
+/// round-trip / error-response / wrong-variant / compound
+/// validation failures fold into `anyhow::Error`.
+pub fn fetch_keyword_wordlist_pub(
+    socket_path: &Path,
+) -> Result<KeywordWordlist> {
+    fetch_keyword_wordlist(socket_path)
+}
+
 fn fetch_whitespace_wordlist(socket_path: &Path) -> Result<WhitespaceWordlist> {
     let resp = round_trip(socket_path, &Request::GetWhitespaceCompounds)
         .with_context(|| {
