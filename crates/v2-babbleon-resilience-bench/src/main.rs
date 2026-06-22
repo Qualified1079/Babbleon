@@ -444,7 +444,7 @@ fn subcommand_run_matrix(
         let challenge = Challenge::from_toml_file(path)
             .with_context(|| format!("load challenge {}", path.display()))?;
         for config in layer_configs {
-            let records = run_attempts(&challenge, *config, &adv, attempts)
+            let records = run_attempts(&challenge, *config, &adv, attempts, None)
                 .map_err(|e| {
                     anyhow!(
                         "run cell {}/{}: {e}",
@@ -477,7 +477,7 @@ fn subcommand_run(
         .with_context(|| format!("load challenge {}", challenge_path.display()))?;
     let adv = SubprocessEvaluator::new(command, evaluator_label)
         .map_err(|e| anyhow!("evaluator config: {e}"))?;
-    let records = run_attempts(&challenge, config, &adv, attempts)
+    let records = run_attempts(&challenge, config, &adv, attempts, None)
         .map_err(|e| anyhow!("run attempts: {e}"))?;
     let mut stdout = io::stdout().lock();
     for record in &records {

@@ -109,6 +109,16 @@ pub enum Error {
         /// What failed.
         message: String,
     },
+
+    /// Per-cell sandbox directory setup failed (directory creation
+    /// or file write).  The `message` carries the path and the
+    /// underlying `io::Error`'s display; no secrets involved (the
+    /// bench has no secrets in its address space).
+    #[error("sandbox setup: {message}")]
+    SandboxSetup {
+        /// Operator-facing explanation including the failing path.
+        message: String,
+    },
 }
 
 impl From<serde_json::Error> for Error {

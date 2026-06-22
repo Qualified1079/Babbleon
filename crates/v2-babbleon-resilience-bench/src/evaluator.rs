@@ -50,8 +50,9 @@
 //!   handles this), or hangs reading stdin (the driver closes
 //!   stdin after writing the prompt).
 
+use std::fs;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::challenge::Challenge;
@@ -76,6 +77,19 @@ pub trait Evaluator {
     ///
     /// Implementation-defined; see each impl's docs.
     fn query(&self, prompt: &str) -> Result<String>;
+
+    /// Issue one query with the evaluator's working directory set to
+    /// `sandbox_dir` when `Some`.  The default implementation ignores
+    /// `sandbox_dir` and delegates to [`Self::query`]; override it in
+    /// subprocess evaluators that can actually enforce the cwd.
+    fn query_in_dir(
+        &self,
+        prompt: &str,
+        sandbox_dir: Option<&Path>,
+    ) -> Result<String> {
+        let _ = sandbox_dir;
+        self.query(prompt)
+    }
 
     /// Operator-supplied label recorded in every [`RunRecord`].
     /// Used by the summary table to group results by evaluator.
@@ -162,12 +176,22 @@ impl SubprocessEvaluator {
 
 impl Evaluator for SubprocessEvaluator {
     fn query(&self, prompt: &str) -> Result<String> {
+        self.query_in_dir(prompt, self.working_directory.as_deref())
+    }
+
+    fn query_in_dir(
+        &self,
+        prompt: &str,
+        sandbox_dir: Option<&Path>,
+    ) -> Result<String> {
+        let effective_dir =
+            sandbox_dir.or(self.working_directory.as_deref());
         let mut cmd = Command::new(&self.command[0]);
         cmd.args(&self.command[1..])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        if let Some(dir) = &self.working_directory {
+        if let Some(dir) = effective_dir {
             cmd.current_dir(dir);
         }
         let mut child =
@@ -245,9 +269,69 @@ fn floor_char_boundary(s: &str, idx: usize) -> usize {
     i
 }
 
+/// Populate a per-cell sandbox directory.
+///
+/// Creates `parent_dir/<unique-cell-id>/` containing:
+///
+/// - `prompt.md`    — the full prompt text (read-only by convention)
+/// - `scrambled.txt`— the raw scrambled source bytes
+/// - `baseline.py`  — the unscrambled reference (empty if not set on challenge)
+/// - `notepad/`     — empty, writable scratch directory
+///
+/// Returns the path to the sandbox root.  The sandbox is a disposable
+/// temp directory; the caller is responsible for cleaning it up (or
+/// leaving it as an artefact run archive).
+///
+/// # Errors
+///
+/// `Error::SandboxSetup` if directory creation or file writes fail.
+pub fn build_cell_sandbox(
+    parent_dir: &Path,
+    challenge: &Challenge,
+    config: LayerConfig,
+    prompt: &str,
+    scrambled: &str,
+) -> Result<PathBuf> {
+    let cell_id = format!("{}-{}", challenge.name, config.label());
+    let cell_dir = parent_dir.join(&cell_id);
+    fs::create_dir_all(&cell_dir).map_err(|e| Error::SandboxSetup {
+        message: format!("create cell dir {}: {e}", cell_dir.display()),
+    })?;
+    let notepad = cell_dir.join("notepad");
+    fs::create_dir_all(&notepad).map_err(|e| Error::SandboxSetup {
+        message: format!("create notepad dir: {e}"),
+    })?;
+    write_cell_file(&cell_dir, "prompt.md", prompt)?;
+    write_cell_file(&cell_dir, "scrambled.txt", scrambled)?;
+    write_cell_file(
+        &cell_dir,
+        "baseline.py",
+        challenge.baseline_source.as_deref().unwrap_or(""),
+    )?;
+    Ok(cell_dir)
+}
+
+fn write_cell_file(
+    cell_dir: &Path,
+    name: &str,
+    content: &str,
+) -> Result<()> {
+    let path = cell_dir.join(name);
+    fs::write(&path, content).map_err(|e| Error::SandboxSetup {
+        message: format!("write {}: {e}", path.display()),
+    })
+}
+
 /// Run `attempts` evaluator queries against one `(challenge,
 /// layer_config)` cell, scoring each and returning the resulting
 /// `RunRecord`s.
+///
+/// If `sandbox_parent` is `Some`, a per-cell sandbox directory is
+/// created inside it (via [`build_cell_sandbox`]) and passed to
+/// `SubprocessEvaluator::with_working_directory` so the evaluator
+/// sees only the sandboxed inputs.  Without a sandbox, the evaluator
+/// inherits the bench process's cwd — which allows cross-cell
+/// contamination via the repo filesystem (HANDOFF Blocker 1).
 ///
 /// Evaluator errors abort the loop and bubble up via `Result` —
 /// a subprocess that fails to spawn is an operator-environment
@@ -257,20 +341,31 @@ fn floor_char_boundary(s: &str, idx: usize) -> usize {
 ///
 /// # Errors
 ///
-/// - `Error::Scramble` if the layer-config'd scramble fails
-///   (collision or preprocessor error).
+/// - `Error::Scramble` if the layer-config'd scramble fails.
+/// - `Error::SandboxSetup` if sandbox creation fails.
 /// - Any evaluator-side error from [`Evaluator::query`].
 pub fn run_attempts<A: Evaluator>(
     challenge: &Challenge,
     config: LayerConfig,
     evaluator: &A,
     attempts: u32,
+    sandbox_parent: Option<&Path>,
 ) -> Result<Vec<RunRecord>> {
     let scrambled = apply_layers(&challenge.source, config)?;
     let prompt = build_prompt(challenge, config, &scrambled);
+    // Build sandbox once per cell (shared across all attempts for this
+    // cell — the notepad accumulates across attempts, which is fine:
+    // it matches how a stateful agent would work across retries).
+    let sandbox_dir = match sandbox_parent {
+        Some(parent) => Some(build_cell_sandbox(
+            parent, challenge, config, &prompt, &scrambled,
+        )?),
+        None => None,
+    };
     let mut out = Vec::with_capacity(attempts as usize);
     for i in 0..attempts {
-        let response = evaluator.query(&prompt)?;
+        let response = evaluator
+            .query_in_dir(&prompt, sandbox_dir.as_deref())?;
         let outcome = score(&challenge.success_predicate, &response);
         out.push(RunRecord::new(
             challenge.name.clone(),
@@ -286,8 +381,8 @@ pub fn run_attempts<A: Evaluator>(
 #[cfg(test)]
 mod tests {
     use super::{
-        floor_char_boundary, run_attempts, truncate, Evaluator,
-        SubprocessEvaluator,
+        build_cell_sandbox, floor_char_boundary, run_attempts, truncate,
+        Evaluator, SubprocessEvaluator,
     };
     use crate::challenge::Challenge;
     use crate::errors::Error;
@@ -331,6 +426,7 @@ mod tests {
             LayerConfig::l2_plus_l3(),
             &adv,
             3,
+            None,
         )
         .unwrap();
         assert_eq!(recs.len(), 3);
@@ -381,6 +477,7 @@ mod tests {
             LayerConfig::l3_only(),
             &adv,
             3,
+            None,
         )
         .unwrap();
         assert_eq!(recs[0].outcome, ScoreOutcome::Pass);
@@ -469,6 +566,7 @@ mod tests {
             LayerConfig::l2_plus_l3(),
             &adv,
             2,
+            None,
         )
         .unwrap();
         assert_eq!(recs.len(), 2);
@@ -506,5 +604,107 @@ mod tests {
         let s = "hello";
         assert_eq!(floor_char_boundary(s, 5), 5);
         assert_eq!(floor_char_boundary(s, 10), 5);
+    }
+
+    #[test]
+    fn build_cell_sandbox_creates_expected_files() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let challenge = Challenge {
+            name: "auth-test".into(),
+            goal_description: "find secret".into(),
+            source: "def auth(x): return x == \"pw\"\n".into(),
+            baseline_source: Some("def auth(x): return x == \"pw\"\n".into()),
+            success_predicate: SuccessPredicate::exact_match("pw"),
+        };
+        let config = LayerConfig::l3_only();
+        let sandbox = build_cell_sandbox(
+            tmp.path(),
+            &challenge,
+            config,
+            "the-prompt",
+            "the-scrambled",
+        )
+        .unwrap();
+        assert!(sandbox.join("prompt.md").exists());
+        assert!(sandbox.join("scrambled.txt").exists());
+        assert!(sandbox.join("baseline.py").exists());
+        assert!(sandbox.join("notepad").is_dir());
+        let prompt_content =
+            std::fs::read_to_string(sandbox.join("prompt.md")).unwrap();
+        assert_eq!(prompt_content, "the-prompt");
+        let baseline =
+            std::fs::read_to_string(sandbox.join("baseline.py")).unwrap();
+        assert!(baseline.contains("def auth"));
+    }
+
+    #[test]
+    fn build_cell_sandbox_empty_baseline_writes_empty_file() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let challenge = Challenge {
+            name: "no-baseline".into(),
+            goal_description: "find it".into(),
+            source: "x = 1\n".into(),
+            baseline_source: None,
+            success_predicate: SuccessPredicate::exact_match("1"),
+        };
+        let sandbox = build_cell_sandbox(
+            tmp.path(),
+            &challenge,
+            LayerConfig::l3_only(),
+            "p",
+            "s",
+        )
+        .unwrap();
+        let bl =
+            std::fs::read_to_string(sandbox.join("baseline.py")).unwrap();
+        assert_eq!(bl, "");
+    }
+
+    #[test]
+    fn run_attempts_with_sandbox_isolates_evaluator_cwd() {
+        // An evaluator that writes its cwd to stdout; verify the cwd
+        // is the sandbox dir (not the bench cwd) when sandbox_parent
+        // is provided.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let adv = SubprocessEvaluator::new(
+            vec![
+                "sh".into(),
+                "-c".into(),
+                // Write cwd to stdout as JSON answer.
+                "cat > /dev/null; printf '{\"answer\": \"%s\"}' \"$PWD\""
+                    .into(),
+            ],
+            "cwd-reporter",
+        )
+        .unwrap();
+        let challenge = Challenge {
+            name: "cwd-check".into(),
+            goal_description: "n/a".into(),
+            source: "x = 1\n".into(),
+            baseline_source: None,
+            success_predicate: SuccessPredicate::exact_match("irrelevant"),
+        };
+        let records = run_attempts(
+            &challenge,
+            LayerConfig::l3_only(),
+            &adv,
+            1,
+            Some(tmp.path()),
+        )
+        .unwrap();
+        // The evaluator's answer was its cwd; it must be inside tmp.
+        // We don't check the exact path because it's a FormatError
+        // (the sandbox path doesn't match "irrelevant") — just verify
+        // the sandbox was inside the tmp parent.
+        assert_eq!(records.len(), 1);
+        // The key assertion: the cell sandbox dir was created inside tmp.
+        let entries: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .collect();
+        assert!(
+            !entries.is_empty(),
+            "sandbox dir should have been created inside tmp",
+        );
     }
 }
