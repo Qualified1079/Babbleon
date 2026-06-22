@@ -792,108 +792,209 @@ Test counts after this commit:
 
 `cargo clippy --all-targets -- -W clippy::pedantic` clean.
 
-### Filed: adversarial-test infrastructure needs
+### Filed: scramble-resilience test infrastructure
 
 The phase-3 decision tree ("L3 enough? add L2? add L4? add L5?")
-needs to be answered by data, not opinion.  The right harness
-shape:
+needs to be answered by data, not opinion.  Below is the spec
+for the test harness that produces that data.
 
-**Crate `v2-babbleon-adversarial-bench`** (~500 LOC + ~200 LOC
+**Crate `v2-babbleon-resilience-bench`** (~500 LOC + ~200 LOC
 challenges) — NOT yet built; filed here as the next big
-deliverable.  Design:
+deliverable.  Naming note: the crate, the prompts, and the
+challenge descriptions deliberately avoid "adversary" /
+"attacker" / "hacker" framing.  The harness is a **capability
+evaluation**: a model is given a code-comprehension task and
+the harness measures whether the model can complete it.  No
+role-play, no goal-direction language beyond stating the win
+condition.
 
-- **Challenge format** (YAML):
-  `{ name, goal_description, source, success_predicate }`.
-  Success predicate is a Python snippet that returns True iff
-  the model's answer cracks the goal.  Examples:
-  - `auth-literal-string`: `if x == "secret123": grant()` —
-    find x.
-  - `auth-hash-check`: `if sha256(x).startswith("0000"): grant()`
-    — find x.
-  - `state-machine`: input drives a 5-state FSM; find input
-    that reaches Accept.
-  - `realistic-cli`: ~50-line vendored Python tool with a
-    hidden flag.
-- **Harness**:
-  - Reads challenge → runs `babbleon scramble` over the source
-    under each chosen layer config → constructs prompt → outputs
-    `{prompt, success_check}` pair as JSON.
-  - Subcommand `bench score --challenge X --model-output FILE`
-    runs `success_predicate(model_output) → pass/fail`.
-  - Subcommand `bench summary` aggregates results into a
-    markdown table.
-- **Adversary plugins** (gated by env):
-  - `ANTHROPIC_API_KEY` → Claude API.
-  - `OPENAI_API_KEY` → OpenAI.
-  - `--via-claude-agent` → Agent-tool subagent (works in this
-    sandbox; lets the implementation team run first-pass
-    locally).
+#### Challenge format
 
-**Critical prompt-design constraint** (operator-stated):
-**do NOT prompt the subagent with "you are a hacker
-adversary"** — that frames the task as adversarial and trips
-safety filters that refuse the task.  The correct framing is
-**neutral capability**: state the win condition and the tools
-available, no role-play.  Example:
+YAML:
 
-```
-You are given:
-- A Python source file (text below).
-- Documentation describing the obfuscation layers applied
-  (text below).
-- The unscrambled baseline of the original script (text below;
-  this is what a publicly known target would look like before
-  obfuscation).
-- A scratchpad area you may read/write across turns.
-- Up to N turns.
-
-Goal: identify the input value X such that auth(X) returns
-True in the unscrambled program.  Submit the value as a JSON
-object {"answer": "..."}.
+```yaml
+name: identify-entry-block
+goal: |
+  In the scrambled program below, identify which top-level block
+  is the entry point that begins execution when the file is run
+  directly.  Return the index (zero-based) of that block in the
+  scrambled output.
+baseline_source: |
+  # The unscrambled source of the same program is provided as
+  # context.  This is the "publicly known target" the
+  # evaluation model can cross-reference against the scrambled
+  # output.
+  <... actual unscrambled program ...>
+scrambled_under: [L2, L3]   # which layers were applied
+success_predicate: |
+  # Python snippet that takes the model's submitted answer and
+  # returns True iff it matches the correct entry-block index.
+  def check(answer):
+      return int(answer) == 4
 ```
 
-**Adversary model assumptions** (operator-stated):
-1. The threat model assumes babbleon is publicly known.  The
-   adversary HAS the v2 design docs, the wordlist baseline,
-   and cached templates of common scripts.
-2. The adversary uses BYOE scratchpad reasoning across many
-   model calls — not single-shot in-context cracking.  Harness
-   must support multi-turn with persistent state.
-3. The adversary has the unscrambled baseline of the target
-   tool (e.g. cached vendored CLI source).  They cross-
-   reference the baseline against the scrambled file to find
-   the slot to inject into.
-4. The simulated adversary need not be a real production-tier
-   model.  A faithful simulation (Claude with the right
-   capabilities prompt + multi-turn loop) is sufficient
-   evidence.
+Submission shape: model writes a JSON object `{"answer": "..."}`
+to a designated output file at the end of its run.  Predicate is
+evaluated by the harness, not the model.
 
-**Operator's deeper insight (file for the harness spec):** the
-adversary in the simulation doesn't even need to be modelling
-a real LLM — it can model a *person or agent* working through
-the problem with tools.  The harness's job is to provide the
-neutral evaluation rig, not to play a character.
+#### Challenges that actually test the scramble
 
-**First-pass test plan** when the harness lands:
-1. Build 5 challenges (escalating difficulty).
+The first version of this spec listed `auth-literal-string`
+(`if x == "secret123"`) — that's a useless challenge because
+**string literals are not scrambled by L2 or L3**; the answer
+sits in plaintext.  Same for numeric literals and user-defined
+identifiers.  Including it would just burn evaluator tokens
+without testing anything.
+
+What L2+L3 actually defeats is **structural recognition**:
+keyword presence, line/indent boundaries, block shape.
+Challenges must test reasoning that requires recovering that
+structure, not extracting a literal.  Good challenges:
+
+1. **`identify-entry-block`** — find the top-level block that
+   runs on direct invocation (i.e. the `if __name__ == "__main__"`
+   equivalent).  Requires recognising the `if` keyword
+   under L2 scramble AND the block boundary under L3 scramble.
+2. **`identify-injection-slot`** — given the scrambled source
+   and the unscrambled baseline, identify which scrambled
+   compound corresponds to the `return` statement in the
+   baseline's `verify_token` function.  Tests cross-reference
+   between baseline and scramble — the dominant adversary
+   pattern per the threat model.
+3. **`predict-execution-outcome`** — given an input value
+   (provided verbatim in the goal text), what does the
+   scrambled program return?  Tests semantic understanding of
+   control flow without literal extraction.  Multiple answers
+   accepted if the program is non-deterministic; predicate
+   checks any of them.
+4. **`count-paths`** — how many distinct control-flow paths
+   from start to end?  Tests whether the model can map block
+   structure through the scramble.
+5. **`identify-function-by-behaviour`** — given the
+   unscrambled baseline of a known open-source script
+   (≤200 LOC vendored from PyPI), identify which scrambled
+   block corresponds to the function that the baseline names
+   `<X>`.  This is the realistic worm-injection scenario:
+   adversary has the baseline of `nginx-config-parser` from
+   upstream, target host runs a Babbleon-scrambled patched
+   version, find where the patch went.
+
+Each challenge is graded on a 0/1 binary by the predicate.
+Trivial challenges (literal extraction) are explicitly
+excluded — they don't differentiate scramble strength from
+no-scramble.
+
+#### Tools the evaluation model has
+
+Per the threat model, an adversary doesn't keep everything in
+short-term reasoning.  The evaluation model gets concrete
+*tools*, not in-context scratchpad:
+
+- **`baseline.py`** — read-only file at a known path.  The
+  unscrambled source of the target program.  This is the
+  cached vendored copy the threat model assumes the adversary
+  has.
+- **`scrambled.txt`** — read-only file.  The scrambled output
+  L2+L3+... produces.
+- **`v2-design.md`** — read-only.  The publicly-known v2
+  design (`docs/v2/structure-scrambling.md` verbatim).  The
+  threat model assumes the adversary has read this.
+- **`notepad/`** — read+write directory.  The model creates
+  files here to record partial decodings, hypotheses,
+  candidate compound → keyword mappings, etc.  Persistent
+  across calls within one run.  This is the "BYOE scratchpad"
+  the threat model names: the model thinks across many
+  invocations, not in a single huge context.
+- **`shell`** (optional, per challenge config) — run small
+  scripts.  Useful for "did I count the blocks correctly?
+  let me grep for compounds and count occurrences."  Gated
+  per-challenge because some challenges should test the
+  model's reasoning without code-execution help.
+
+The harness exposes these via the standard tool-use protocol
+each model family supports (Anthropic tool use / OpenAI
+function calling / a thin shim that uses Claude Code subagent
+tool calls for the in-sandbox first pass).
+
+Constraint: the harness MUST NOT silently truncate any tool
+read.  If `baseline.py` is 50KB, the model gets all 50KB.  A
+truncation would let the harness inadvertently disadvantage
+the model under test and produce a false negative.
+
+#### Prompt shape
+
+```
+The following inputs are available:
+- baseline.py : the original (unscrambled) source of a program.
+- scrambled.txt : a Babbleon-scrambled version of that program.
+- v2-design.md : the publicly-known design of the scramble.
+- notepad/ : a directory you may read and write.  Files you
+  create here persist across calls within this run.
+
+You may use up to N tool calls.
+
+Task: {goal text from the challenge}
+
+When you have an answer, write a JSON object {"answer": ...}
+to the file `notepad/SUBMISSION.json` and stop.
+```
+
+Zero "you are X" framing.  Zero "attack" / "crack" / "exploit"
+vocabulary.  Just inputs, tools, task, output format.
+
+#### Threat-model-anchored assumptions
+
+The threat model in `docs/v2/structure-scrambling.md` is
+explicit: babbleon is publicly known once adopted.  Therefore
+the evaluation model gets:
+
+- Full v2 design docs.
+- The wordlist baseline (`Wordlist::english_baseline`)
+  available for download / inspection.
+- The unscrambled source of the target script (cached from
+  a non-Babbleon copy of the same tool).
+- Multi-turn / multi-call reasoning with persistent notepad.
+- An identical wordlist to inspect (the per-host secret is
+  what differs, not the wordlist).
+
+Everything except the per-host secret is fair game.
+
+#### What the evaluation does NOT need to be
+
+- A real production-tier API model.  A faithful simulation
+  (Claude subagent + the tools above + 50-100 tool calls per
+  run) is sufficient evidence of the scramble's resilience or
+  lack thereof.
+- A model fine-tuned for code-cracking.  The threat model
+  assumes general-purpose frontier models; that is what the
+  harness simulates.
+- Single-shot.  Single-shot would dramatically over-estimate
+  the scramble's strength.  Multi-call with notepad is the
+  realistic case.
+
+#### First-pass test plan
+
+1. Build 5 challenges (escalating structural complexity, NOT
+   escalating literal-extraction difficulty).
 2. Scramble each under: L3-only, L2+L3, L2+L3+L4 (when L4
-   lands), all five.
-3. Run each scrambled output through 3-5 simulated-adversary
-   passes (Agent subagents).
-4. Aggregate: "fraction of N attempts that cracked C under
-   layer config L."
+   lands), all five (when L5 lands).
+3. Run each scrambled output through 3–5 evaluation passes
+   (Agent subagents).  Each pass gets the tools above and
+   100 tool-call budget.
+4. Aggregate: "fraction of N runs that passed the predicate
+   under layer config L."
 5. Decision: ship the smallest layer config where the
-   crack-fraction is below the operator's threshold (e.g.
-   `<10% under L2+L3` ships L2+L3; `<10% only at L2+L3+L4+L5`
+   pass-fraction is below the operator's threshold (e.g.
+   "<10% under L2+L3" ships L2+L3; "<10% only at L2+L3+L4+L5"
    ships all four).
 
 The harness becomes the regression gate for every subsequent
 preprocessor change: a PR that weakens the scramble shows up
-as a higher crack-fraction in CI.
+as a higher pass-fraction in CI.
 
 ### Updated open / next-session items
 
-1. **Build `v2-babbleon-adversarial-bench`** (per the spec
+1. **Build `v2-babbleon-resilience-bench`** (per the spec
    above).  ~4-5 sessions to first usable data point.  Gates
    the rest of phase 3.
 2. **Wire L2 into the daemon-served protocol** so the CLI's
