@@ -32,7 +32,7 @@ docs(HANDOFF): file this session's 3 commits — items 2, 4, 5 closed.
 ## 2026-06-22 (later) — SLEEPING-OPERATOR SESSION 2: L2 wire + phase-4 design
 
 Author: Claude Opus 4.7 (autonomous overnight continuation).
-Branch: `claude/magical-turing-mele8c`.  4 commits, all
+Branch: `claude/magical-turing-mele8c`.  6 commits, all
 green-tests + clippy-pedantic clean, no new workspace deps.
 
 ### Commit ledger (oldest first)
@@ -43,6 +43,8 @@ green-tests + clippy-pedantic clean, no new workspace deps.
 | 2 | `c489b1e` | feat(daemon): wire L2 keyword compounds into daemon-served protocol |
 | 3 | `7e62fcb` | docs(v2): file chunk-reorder + decoy-injection implementation design |
 | 4 | `69fde4d` | feat(v2-babbleon): emit L2+L3 from scramble/unscramble CLI |
+| 5 | `4d596fe` | docs(HANDOFF): file 2026-06-22 (later) session block (this entry) |
+| 6 | `a9c67e8` | fix(v2-babbleon): wire L2 into scramble-dir / unscramble-dir corpus pipeline |
 
 ### Headline accomplishments
 
@@ -88,12 +90,22 @@ green-tests + clippy-pedantic clean, no new workspace deps.
 
 | Metric | Before this session block | After | Δ |
 |---|---|---|---|
-| Commits on branch | 39 | 43 | +4 |
+| Commits on branch | 39 | 45 | +6 |
 | v2 lib tests | ~637 | ~671 | +34 |
 | New CLI integ tests | 11 | 12 | +1 |
 | New design docs in `docs/v2/` | 14 | 15 | +1 |
 | Touched crates | n/a | preprocessor, daemon-protocol, daemon, v2-babbleon | 4 |
 | New workspace deps | 0 | 0 | 0 |
+
+### Parity-bug caught in same block
+
+`corpus_lifecycle.rs` (the `scramble-dir` / `unscramble-dir`
+batch path) was missed by the first L2-wire commit (#4) and
+continued emitting L3-only output while the per-file path
+emitted L2+L3.  Commit #6 closes the gap: same operator-facing
+CLI, same layer behaviour regardless of file vs directory
+invocation.  Captured here so a future session greps for "L2"
+and finds both code paths.
 
 cargo clippy `--all-targets -- -W clippy::pedantic` clean across
 every touched crate.  Push target observed:
