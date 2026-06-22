@@ -29,6 +29,111 @@ docs(HANDOFF): file this session's 3 commits — items 2, 4, 5 closed.
 
 ---
 
+## 2026-06-22 — layer-7 bench prototype validated (100% → 0%)
+
+One commit lands the experimental layer-7 secret-literal
+substitution mechanism as a bench-only prototype, and the
+bench-against-subagent run confirms the design at N=1.  This
+is the first cell in the bench's history where the scramble
+actually defeats the simulated adversary.
+
+### Commit
+
+`49879e7` — `feat(bench): experimental layer-7 secret-literal
+substitution prototype + bench-validated at 100%→0% crack-
+fraction change`.
+
+The library piece: a new `secret_literal_layer.rs` module
+(~480 LOC + 18 unit tests) that scans source text for
+`secret("BODY")` patterns and substitutes the body with a
+per-epoch HKDF-derived wordlist compound.  Reverse mapping
+returned to the caller as a `HashMap`.  HKDF info =
+`b"v2-bench-secret-literal:" + body.as_bytes()` — distinct
+from production keyword / whitespace purpose labels for
+statistical independence.
+
+Wiring: new `LayerConfig.layer7_secret_literal` field +
+`l2_plus_l3_plus_l7()` preset + CLI `--layer-config
+l2-plus-l3-plus-l7` + new challenge
+`challenges/secret-wrapped.toml` (`def auth(x): target =
+secret("opal-river-42"); if x == target: return True`).
+
+### Headline bench result
+
+Ran the new `secret-wrapped` challenge against the Claude
+Opus 4.7 subagent under two cells:
+
+| challenge      | layer config         | result      |
+|----------------|----------------------|-------------|
+| secret-wrapped | l2-plus-l3           | 1/1 (100%)  |
+| secret-wrapped | l2-plus-l3-plus-l7   | 0/1 (0%)    |
+
+The subagent's own response under L2+L3+L7 is the validation:
+
+> "The key insight from the docs: 'The per-host secret is held
+> only on the operator's host and is NOT included in this
+> prompt.'  This means the HKDF-derived substitution is
+> cryptographically opaque - I cannot reverse it without the
+> per-host secret."
+
+The subagent submitted the substituted compound as a
+best-guess "I have to answer something" — the scorer
+correctly classifies as `fail` (not `pass`).  Full artifacts
++ discussion archived at
+`crates/v2-babbleon-adversarial-bench/runs/2026-06-22-claude-opus-4-7-subagent-layer7-prototype/`.
+
+### Caveat list
+
+- **N=1.**  Re-run at N=5-10 with multiple adversaries before
+  claiming the mechanism is robust.
+- **Bench-only.**  Production layer-7 still needs: per-epoch
+  (compound → body) table persistence, `babbleon.runtime.
+  secret(...)` Python helper, daemon-protocol extension for
+  serving the table.  6-step plan in
+  `docs/v2/string-literal-leak.md`.
+- **Marked-literal scope only.**  Opt-in per literal; operator
+  must wrap secrets.  Unmarked literals leak as today.
+- **Does not address sandbox execution.**  The 2026-06-21
+  `computed-secret` finding is orthogonal — secrets
+  reconstructed at runtime from `chr()` leak whether or not
+  layer 7 is active.
+
+### Refreshed open / next-session items (priority order, after layer-7)
+
+1. ✅ **Layer-7 bench prototype** — closed by `49879e7`.
+2. **Port layer-7 to production** per the 6-step plan in
+   `docs/v2/string-literal-leak.md`.  Now the highest-impact
+   production-code work outstanding.  Needs operator review
+   of the per-epoch table storage design.
+3. **Re-run bench at N=5-10 per cell** for all challenges
+   (including secret-wrapped) against multiple adversaries to
+   firm up the qualitative finding into a threshold-grade
+   number.  Use the new `babbleon-bench run --command ...`
+   plumbing.
+4. **Sandbox-execution countermeasure design**.  Orthogonal to
+   layer 7; addresses the `computed-secret` failure mode.
+   Candidates: runtime constructions that depend on daemon
+   state, opaque control flow that aborts when preprocessor
+   invariants don't hold.  Brand new research thread.
+5. **Phase-4 design pass: chunk reorder + decoy injection**
+   (existing layers 4-5 from `docs/v2/structure-scrambling.md`).
+6. **Wire L2 into the daemon-served protocol** (lower priority
+   now that layer 7's higher-leverage; same ~200 LOC scope).
+7. **Drop `--insecure-stub-secret`** (lone polish item).
+
+### Test counts (cumulative across all 2026-06-21 + 2026-06-22)
+
+| Crate | Before this session block | After | Δ |
+|---|---|---|---|
+| `v2-babbleon-adversarial-bench` (NEW) | — | 108 unit + 9 CLI + 5 seed | +122 |
+| **Total v2 tests (excl rooted)** | **~510** | **~632** | **+122** |
+
+cargo clippy `--all-targets pedantic` clean across all bench
+crate touches.  No new workspace deps across the whole
+session.
+
+---
+
 ## 2026-06-21 night (continued) — 5 follow-up commits
 
 Five additional commits land on top of the bench crate +
