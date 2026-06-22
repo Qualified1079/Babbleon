@@ -46,6 +46,8 @@ use babbleon_core_v2::per_host_secret::PerHostSecret;
 use babbleon_core_v2::wordlist::Wordlist;
 use babbleon_preprocessor_v2::keyword_scrambler::scramble_keywords;
 use babbleon_preprocessor_v2::keyword_wordlist::KeywordWordlist;
+use babbleon_preprocessor_v2::operator_scrambler::scramble_operators;
+use babbleon_preprocessor_v2::operator_wordlist::OperatorWordlist;
 use babbleon_preprocessor_v2::python_tokenizer::tokenize;
 use babbleon_preprocessor_v2::scrambler::scramble;
 use babbleon_preprocessor_v2::tokens::Token;
@@ -96,6 +98,18 @@ pub fn apply_layers(source: &str, config: LayerConfig) -> Result<String> {
             message: format!("build keyword wordlist: {e}"),
         })?;
         scramble_keywords(&mut tokens, &kwl);
+    }
+
+    if config.layer2b_operator_scramble {
+        let owl = OperatorWordlist::build(
+            &synthetic_secret,
+            wordlist,
+            config.epoch,
+        )
+        .map_err(|e| Error::Scramble {
+            message: format!("build operator wordlist: {e}"),
+        })?;
+        tokens = scramble_operators(tokens, &owl);
     }
 
     if config.layer3_whitespace_as_words {
@@ -260,6 +274,21 @@ mod tests {
         )
         .unwrap();
         assert_ne!(a, b, "different epochs must produce different output");
+    }
+
+    #[test]
+    fn l2_plus_l2b_plus_l3_eliminates_parens_and_colon() {
+        // The L2b operator scramble should remove `(`, `)`, `:`,
+        // and `==` as visible ASCII from the scrambled output.
+        let out = apply_layers(
+            SAMPLE,
+            LayerConfig::l2_plus_l2b_plus_l3(),
+        )
+        .unwrap();
+        assert!(!out.contains("("), "L2b must scramble `(`: {out}");
+        assert!(!out.contains(")"), "L2b must scramble `)`: {out}");
+        assert!(!out.contains("=="), "L2b must scramble `==`: {out}");
+        assert!(!out.contains(": "), "L2b must scramble `:`: {out}");
     }
 
     #[test]

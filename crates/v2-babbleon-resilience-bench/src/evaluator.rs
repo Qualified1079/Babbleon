@@ -51,6 +51,7 @@
 //!   stdin after writing the prompt).
 
 use std::io::Write;
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 use crate::challenge::Challenge;
@@ -116,6 +117,7 @@ pub struct SubprocessEvaluator {
     command: Vec<String>,
     label: String,
     stderr_capture_limit: usize,
+    working_directory: Option<PathBuf>,
 }
 
 impl SubprocessEvaluator {
@@ -138,7 +140,23 @@ impl SubprocessEvaluator {
             command,
             label: label.into(),
             stderr_capture_limit: 4096,
+            working_directory: None,
         })
+    }
+
+    /// Set the working directory the subprocess is spawned with.
+    ///
+    /// Per the 2026-06-22 evaluator-sandboxing gap finding
+    /// (HANDOFF 2026-06-22, Blocker 1), evaluators running in the
+    /// repo cwd can cross-contaminate cells by reading sibling
+    /// files from a prior cell's notepad.  Setting a per-cell
+    /// temp directory and pointing `--working-directory` at it
+    /// gives each cell a fresh scratch space and makes the
+    /// notepad-as-files prompt instruction actually meaningful.
+    #[must_use]
+    pub fn with_working_directory(mut self, dir: PathBuf) -> Self {
+        self.working_directory = Some(dir);
+        self
     }
 }
 
@@ -149,6 +167,9 @@ impl Evaluator for SubprocessEvaluator {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if let Some(dir) = &self.working_directory {
+            cmd.current_dir(dir);
+        }
         let mut child =
             cmd.spawn().map_err(|source| Error::EvaluatorSpawn {
                 program: self.command[0].clone(),
@@ -294,6 +315,7 @@ mod tests {
             name: "x".into(),
             goal_description: "find x".into(),
             source: "def auth(x): return x == \"hunter2\"\n".into(),
+            baseline_source: None,
             success_predicate: SuccessPredicate::exact_match("hunter2"),
         }
     }

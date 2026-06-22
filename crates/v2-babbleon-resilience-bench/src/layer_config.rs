@@ -46,6 +46,12 @@ use serde::{Deserialize, Serialize};
 pub struct LayerConfig {
     /// Apply layer-2 (Python keyword scramble) before layer 3.
     pub layer2_keyword_scramble: bool,
+    /// Apply layer-2b (Python operator scramble) after L2 and before L3.
+    /// Substitutes per-epoch wordlist compounds for the 37 Python
+    /// operators tracked by the preprocessor (parens, comparison
+    /// operators, `:`, `=`, brackets, etc.).
+    #[serde(default)]
+    pub layer2b_operator_scramble: bool,
     /// Apply layer-3 (whitespace-as-words).
     pub layer3_whitespace_as_words: bool,
     /// Apply experimental layer-7 secret-literal substitution
@@ -77,6 +83,7 @@ impl LayerConfig {
     ) -> Self {
         Self {
             layer2_keyword_scramble,
+            layer2b_operator_scramble: false,
             layer3_whitespace_as_words,
             layer7_secret_literal: false,
             seed_byte,
@@ -97,6 +104,23 @@ impl LayerConfig {
     #[must_use]
     pub fn l2_plus_l3() -> Self {
         Self::new(true, true, 0xAB, 0)
+    }
+
+    /// L2 + L2b + L3: the post-2026-06-22 corrected floor.  The
+    /// operator's 2026-06-22 directive made operator scrambling
+    /// part of the floor: "operators should be scrambled too as
+    /// the floor.  ' ', (), **, -, etc."  This config measures
+    /// the resilience of the corrected floor.
+    #[must_use]
+    pub fn l2_plus_l2b_plus_l3() -> Self {
+        Self {
+            layer2_keyword_scramble: true,
+            layer2b_operator_scramble: true,
+            layer3_whitespace_as_words: true,
+            layer7_secret_literal: false,
+            seed_byte: 0xAB,
+            epoch: 0,
+        }
     }
 
     /// L2 only: keyword scramble on, whitespace scramble off.
@@ -122,6 +146,22 @@ impl LayerConfig {
     pub fn l2_plus_l3_plus_l7() -> Self {
         Self {
             layer2_keyword_scramble: true,
+            layer2b_operator_scramble: false,
+            layer3_whitespace_as_words: true,
+            layer7_secret_literal: true,
+            seed_byte: 0xAB,
+            epoch: 0,
+        }
+    }
+
+    /// L2 + L2b + L3 + L7: full corrected floor + experimental
+    /// secret-literal substitution.  Bench-only cell that measures
+    /// whether the full stack defeats literal-extraction.
+    #[must_use]
+    pub fn l2_plus_l2b_plus_l3_plus_l7() -> Self {
+        Self {
+            layer2_keyword_scramble: true,
+            layer2b_operator_scramble: true,
             layer3_whitespace_as_words: true,
             layer7_secret_literal: true,
             seed_byte: 0xAB,
@@ -135,17 +175,22 @@ impl LayerConfig {
     pub fn label(&self) -> String {
         let base = match (
             self.layer2_keyword_scramble,
+            self.layer2b_operator_scramble,
             self.layer3_whitespace_as_words,
         ) {
-            (false, false) => "baseline",
-            (true, false) => "l2-only",
-            (false, true) => "l3-only",
-            (true, true) => "l2-plus-l3",
+            (false, false, false) => "baseline".to_string(),
+            (true, false, false) => "l2-only".to_string(),
+            (false, false, true) => "l3-only".to_string(),
+            (true, false, true) => "l2-plus-l3".to_string(),
+            (true, true, true) => "l2-plus-l2b-plus-l3".to_string(),
+            (a, b, c) => format!(
+                "custom-l2={a}-l2b={b}-l3={c}"
+            ),
         };
         if self.layer7_secret_literal {
             format!("{base}-plus-l7")
         } else {
-            base.to_string()
+            base
         }
     }
 }
@@ -169,18 +214,28 @@ mod tests {
     }
 
     #[test]
-    fn five_preset_labels_are_distinct() {
+    fn preset_labels_are_distinct() {
         let labels = [
             LayerConfig::baseline_no_scramble().label(),
             LayerConfig::l2_only().label(),
             LayerConfig::l3_only().label(),
             LayerConfig::l2_plus_l3().label(),
+            LayerConfig::l2_plus_l2b_plus_l3().label(),
             LayerConfig::l2_plus_l3_plus_l7().label(),
+            LayerConfig::l2_plus_l2b_plus_l3_plus_l7().label(),
         ];
         let mut set: Vec<_> = labels.to_vec();
         set.sort();
         set.dedup();
-        assert_eq!(set.len(), 5, "labels must be pairwise distinct");
+        assert_eq!(set.len(), 7, "labels must be pairwise distinct");
+    }
+
+    #[test]
+    fn l2_plus_l2b_plus_l3_label() {
+        assert_eq!(
+            LayerConfig::l2_plus_l2b_plus_l3().label(),
+            "l2-plus-l2b-plus-l3"
+        );
     }
 
     #[test]

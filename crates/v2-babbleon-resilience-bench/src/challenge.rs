@@ -65,6 +65,24 @@ pub struct Challenge {
     /// The Python source the harness scrambles before showing to the
     /// evaluator.  Validated non-empty.
     pub source: String,
+    /// Optional reference source the adversary is assumed to have
+    /// cached out-of-band.  Per the operator's 2026-06-22 directive
+    /// ("Also give them the original. The point is defeating LLMs
+    /// that know the unscrambled code [of the target tool], have an
+    /// exploit to push, and ... can't know where to put it in"), the
+    /// realistic threat model is an adversary who already holds the
+    /// public source of a sibling version of the target tool.  When
+    /// `Some`, the prompt shows this text verbatim under a
+    /// "BASELINE (unscrambled reference)" header.  For challenges
+    /// where the per-host-secret-protected payload is structurally
+    /// distinct from a public sibling (e.g. a password baked into a
+    /// fork the adversary does not have), the baseline omits the
+    /// payload region; for tautological literal-extraction
+    /// challenges, including this field at all collapses the test
+    /// to grep, which is itself a useful "this challenge is a token
+    /// burner" signal.
+    #[serde(default)]
+    pub baseline_source: Option<String>,
     /// The decision rule for whether the model's answer cracks the
     /// challenge.  Renamed to `predicate` on the wire so the TOML
     /// section header reads as a normal English word.

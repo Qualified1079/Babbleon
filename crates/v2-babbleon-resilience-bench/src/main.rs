@@ -213,12 +213,17 @@ enum LayerConfigPreset {
     L2Only,
     /// Layer 3 only (whitespace-as-words).
     L3Only,
-    /// Layer 2 + Layer 3 (the HANDOFF-recommended floor).
+    /// Layer 2 + Layer 3 (the HANDOFF-recommended floor; pre-2026-06-22).
     L2PlusL3,
+    /// Layer 2 + Layer 2b + Layer 3 (the corrected post-2026-06-22 floor:
+    /// keywords + operators + whitespace).
+    L2PlusL2bPlusL3,
     /// Layer 2 + Layer 3 + experimental Layer 7 (secret-literal
     /// substitution; bench-only prototype per
     /// `docs/v2/string-literal-leak.md`).
     L2PlusL3PlusL7,
+    /// Layer 2 + Layer 2b + Layer 3 + experimental Layer 7.
+    L2PlusL2bPlusL3PlusL7,
 }
 
 impl LayerConfigPreset {
@@ -228,8 +233,14 @@ impl LayerConfigPreset {
             LayerConfigPreset::L2Only => LayerConfig::l2_only(),
             LayerConfigPreset::L3Only => LayerConfig::l3_only(),
             LayerConfigPreset::L2PlusL3 => LayerConfig::l2_plus_l3(),
+            LayerConfigPreset::L2PlusL2bPlusL3 => {
+                LayerConfig::l2_plus_l2b_plus_l3()
+            }
             LayerConfigPreset::L2PlusL3PlusL7 => {
                 LayerConfig::l2_plus_l3_plus_l7()
+            }
+            LayerConfigPreset::L2PlusL2bPlusL3PlusL7 => {
+                LayerConfig::l2_plus_l2b_plus_l3_plus_l7()
             }
         }
     }

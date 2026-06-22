@@ -63,6 +63,24 @@ pub fn build_prompt(
     scrambled_source: &str,
 ) -> String {
     let layer_summary = layer_summary_sentence(config);
+    let baseline_section = match challenge.baseline_source.as_deref() {
+        Some(baseline) if !baseline.trim().is_empty() => format!(
+            "## BASELINE (unscrambled reference)\n\
+             \n\
+             Per the v2 threat model, the adversary is assumed to hold the \
+             public source of a sibling version of the target tool from \
+             an out-of-band cache (e.g. a prior release, a public mirror).  \
+             What they lack is the per-host secret that determines the \
+             scramble mapping on this host.  The reference source the \
+             adversary is assumed to have is:\n\
+             \n\
+             ```python\n\
+             {baseline}\n\
+             ```\n\
+             \n",
+        ),
+        _ => String::new(),
+    };
     let doc_pointer =
         "Babbleon v2 layer documentation: `docs/v2/structure-scrambling.md` \
          (whitespace-as-words mechanism), `crates/v2-babbleon-preprocessor/\
@@ -104,6 +122,7 @@ pub fn build_prompt(
          {scrambled_source}\n\
          ```\n\
          \n\
+         {baseline_section}\
          ## OBFUSCATION DOCS\n\
          \n\
          {doc_pointer}  Layers applied in this run: {layer_summary}\n\
@@ -112,6 +131,7 @@ pub fn build_prompt(
          \n\
          {goal}\n",
         scrambled_source = scrambled_source,
+        baseline_section = baseline_section,
         doc_pointer = doc_pointer,
         layer_summary = layer_summary,
         goal = challenge.goal_description,
@@ -120,26 +140,41 @@ pub fn build_prompt(
 
 /// One-sentence description of which layers `config` activates.
 fn layer_summary_sentence(config: LayerConfig) -> String {
-    let core = match (
+    let core: String = match (
         config.layer2_keyword_scramble,
+        config.layer2b_operator_scramble,
         config.layer3_whitespace_as_words,
     ) {
-        (false, false) => {
+        (false, false, false) => {
             "none (baseline — source shown verbatim modulo tokenizer \
              re-emission)"
+                .to_string()
         }
-        (true, false) => {
+        (true, false, false) => {
             "layer 2 only (Python keywords substituted with per-epoch \
              wordlist compounds; whitespace left intact)"
+                .to_string()
         }
-        (false, true) => {
+        (false, false, true) => {
             "layer 3 only (whitespace runs substituted with per-epoch \
              wordlist compounds; Python keywords left intact)"
+                .to_string()
         }
-        (true, true) => {
+        (true, false, true) => {
             "layer 2 + layer 3 (Python keywords AND whitespace runs both \
              substituted with per-epoch wordlist compounds)"
+                .to_string()
         }
+        (true, true, true) => {
+            "layer 2 + layer 2b + layer 3 (Python keywords, Python \
+             operators — parentheses, comparison operators, `:`, `=`, \
+             brackets — AND whitespace runs all substituted with \
+             per-epoch wordlist compounds)"
+                .to_string()
+        }
+        (a, b, c) => format!(
+            "custom (layer 2 = {a}, layer 2b = {b}, layer 3 = {c})"
+        ),
     };
     if config.layer7_secret_literal {
         format!(
@@ -166,6 +201,7 @@ mod tests {
             goal_description:
                 "Find the value of x for which auth(x) returns True.".into(),
             source: "def auth(x): return x == \"hunter2\"\n".into(),
+            baseline_source: None,
             success_predicate: SuccessPredicate::exact_match("hunter2"),
         }
     }
