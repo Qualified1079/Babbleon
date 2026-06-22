@@ -29,6 +29,125 @@ docs(HANDOFF): file this session's 3 commits — items 2, 4, 5 closed.
 
 ---
 
+## 2026-06-22 (later) — SLEEPING-OPERATOR SESSION 2: L2 wire + phase-4 design
+
+Author: Claude Opus 4.7 (autonomous overnight continuation).
+Branch: `claude/magical-turing-mele8c`.  4 commits, all
+green-tests + clippy-pedantic clean, no new workspace deps.
+
+### Commit ledger (oldest first)
+
+| # | Hash | Subject |
+|---|---|---|
+| 1 | `e508670` | feat(v2-babbleon-preprocessor): KeywordWordlist::from_compounds + all_compounds_in_static_order |
+| 2 | `c489b1e` | feat(daemon): wire L2 keyword compounds into daemon-served protocol |
+| 3 | `7e62fcb` | docs(v2): file chunk-reorder + decoy-injection implementation design |
+| 4 | `69fde4d` | feat(v2-babbleon): emit L2+L3 from scramble/unscramble CLI |
+
+### Headline accomplishments
+
+1. **HANDOFF priority 5 closed end-to-end.**  The
+   `babbleon scramble` / `babbleon unscramble` CLI now emits
+   L2+L3 against a real daemon, not L3-only.  Three layers built
+   parallel to the existing whitespace path:
+   - Preprocessor: `KeywordWordlist::from_compounds(epoch,
+     [String; 35])` + `all_compounds_in_static_order()` constructor.
+   - Protocol: `Request::GetKeywordCompounds` →
+     `Response::KeywordCompounds { epoch, Box<[String; 35]> }`,
+     parser + serializer + proptest coverage.  Box used because the
+     35-string variant otherwise inflates the `Response` enum to
+     848 bytes (clippy::large_enum_variant).
+   - Daemon: `DaemonState::keyword_compounds()` mirrors
+     `whitespace_compounds()` (Vault-error when Locked; HKDF +
+     Fisher-Yates from current `(secret, epoch)`); handler dispatch
+     wired; main.rs one-shot match arm exhaustive.
+   - CLI: `fetch_keyword_wordlist` helper; `run_scramble` does
+     tokenize → `scramble_keywords` → `scramble`; `run_unscramble`
+     does `unscramble_to_tokens` → `unscramble_keywords` →
+     `tokens_to_source`.  New
+     `cli_scramble_strips_python_keywords_from_output_bytes`
+     integration test scrambles a source built from 8 long Python
+     keywords and asserts none appear as byte substrings of the
+     scrambled output.
+2. **HANDOFF priority 4 closed: phase-4 design pass filed.**
+   `docs/v2/chunk-reorder-and-decoys.md` (464 lines) takes layers
+   4 and 5 from conceptual sketch (`structure-scrambling.md`) to
+   implementation design ready for operator-reviewed code work.
+   Covers: decision table with rationale per line, chunker data
+   model + dependency-analysis pass, marker compound encoding
+   (4096-entry pool, reserved 0..16 sub-pool for decoy markers),
+   inline + whole-chunk decoy design with keyword-density
+   salting against decoy-shape fingerprinting, composition with
+   every other layer (full scramble + unscramble pipeline
+   diagram), wire-format additions (`GetMarkerCompounds`,
+   `GetDecoyCompounds`), 7-commit implementation sequence
+   (~2350 LOC, ~105 tests), test strategy, 5 named open questions,
+   explicit non-goals.
+
+### Stats
+
+| Metric | Before this session block | After | Δ |
+|---|---|---|---|
+| Commits on branch | 39 | 43 | +4 |
+| v2 lib tests | ~637 | ~671 | +34 |
+| New CLI integ tests | 11 | 12 | +1 |
+| New design docs in `docs/v2/` | 14 | 15 | +1 |
+| Touched crates | n/a | preprocessor, daemon-protocol, daemon, v2-babbleon | 4 |
+| New workspace deps | 0 | 0 | 0 |
+
+cargo clippy `--all-targets -- -W clippy::pedantic` clean across
+every touched crate.  Push target observed:
+`claude/magical-turing-mele8c` (per `CLAUDE.md` + HANDOFF header
+rule).
+
+### Refreshed next-session priorities (updated 2026-06-22 later)
+
+Ordered as before; items closed this block struck through.
+
+1. **Port layer-7 to production** per
+   `docs/v2/string-literal-leak.md` §"Implementation sequence."
+   ~6 steps, ~350 LOC + tests.  Needs operator review of per-epoch
+   table storage design.  **Still the highest-impact production-
+   code item.**
+2. **Re-run bench at N=5-10 per cell** against the L2+L3 CLI
+   output (this session enabled the L2 leg, so the prior-session
+   N=1 L3-only result is now stale).  Use
+   `babbleon-bench run-matrix --command claude-cli ...` against
+   at least one frontier-model adversary; the in-sandbox Claude
+   Opus 4.7 subagent is the cheapest first cell.
+3. **Implement sandbox-execution countermeasure C1** per
+   `docs/v2/sandbox-execution-defence.md`.  Closes the
+   `computed-secret` failure mode.  Adds
+   `babbleon.runtime.compute_secret(...)` helper + daemon-protocol
+   extension.  Operator review first.
+4. **Implement phase-4 layers 4 + 5** per **this session's**
+   `docs/v2/chunk-reorder-and-decoys.md` §"Implementation
+   sequence."  7 commits, ~2350 LOC + ~105 tests.
+5. ~~Wire L2 into the daemon-served protocol~~ — **closed this
+   session block.**
+6. **Drop `--insecure-stub-secret`** (still the lone polish item
+   from prior session's list).  Scope: ~5–7 test files migrate
+   from `--insecure-stub-secret` startup to a `Request::Unlock`
+   round-trip after spawn; CLI flag is removed; design docs
+   (`pam-flavour-1.md`, `daemon-seccomp-envelope.md`) updated to
+   show the unlock-flow instead.  Bigger than "polish" once
+   estimated — ~200 LOC of test migration.
+
+### What this session did NOT do (intentionally)
+
+- No code on phase-4 layers 4 + 5 — the design doc just landed;
+  operator review of the wire-format / pool-size decisions is the
+  precondition for code work.
+- No bench re-runs at N>1 — the L2 wire just landed; a session
+  with `babbleon-bench run-matrix` invocations is the right
+  follow-up.
+- No production layer-7 port — same review-gate as the prior
+  session listed.
+- No `--insecure-stub-secret` drop — flagged for next session;
+  the L2 wire was higher leverage and self-contained.
+
+---
+
 ## 2026-06-22 — END OF SLEEPING-OPERATOR SESSION
 
 This section consolidates everything that landed across the
