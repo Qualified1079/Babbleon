@@ -29,6 +29,173 @@ docs(HANDOFF): file this session's 3 commits — items 2, 4, 5 closed.
 
 ---
 
+## 2026-06-22 — END OF SLEEPING-OPERATOR SESSION
+
+This section consolidates everything that landed across the
+2026-06-21 → 2026-06-22 sleeping-operator session block.  14
+commits in total, all on `claude/magical-turing-mele8c`, all
+green-tests + clippy-pedantic clean, no new workspace deps.
+
+### Commit ledger (oldest first)
+
+| # | Hash | Subject |
+|---|---|---|
+| 1 | `d30b05d` | feat(v2-babbleon-adversarial-bench): seed crate |
+| 2 | `4017f62` | feat(...): seed 4 challenges + round-trip integ test |
+| 3 | `31aa0f3` | feat(...): babbleon-bench CLI binary (prompt/score/summary) |
+| 4 | `6d4bc36` | docs(HANDOFF) + bench-runs: first bench data point (N=1) |
+| 5 | `81a9a38` | feat(...): ScoreOutcome::RefusedByPolicy + summary suffix |
+| 6 | `0048e31` | docs(v2): file string-literal-leak.md design doc |
+| 7 | `ae97d55` | feat(bench): add computed-secret challenge (neg ctrl) |
+| 8 | `afbc778` | feat(bench): Adversary trait + SubprocessAdversary + run subcmd |
+| 9 | `e48d629` | docs(HANDOFF): file 5 follow-up commits |
+| 10 | `49879e7` | feat(bench): experimental layer-7 prototype, validated 100%→0% |
+| 11 | `24c303d` | docs(HANDOFF): file 2026-06-22 layer-7 milestone |
+| 12 | `14fe3d2` | docs(v2): file sandbox-execution-defence.md |
+| 13 | `f597e35` | feat(bench): babbleon-bench run-matrix subcommand |
+| 14 | `6a9b8e8` | feat(bench): summary --pass-threshold-pct CI gate |
+
+### Headline accomplishments
+
+1. **New crate `v2-babbleon-adversarial-bench` ships green.**
+   127 tests (108 unit + 14 CLI integ + 5 seed integ).  Four
+   CLI subcommands: `prompt`, `score`, `summary`, `run`,
+   `run-matrix`.  `summary` supports `--pass-threshold-pct` for
+   CI regression-gate use (HANDOFF spec's "regression gate"
+   promise — closed).
+2. **First concrete bench data point.**  Drove the bench
+   against in-sandbox Claude Opus 4.7 subagents at N=1 across
+   the full 5-challenge × 2-config matrix.  All graded cells
+   cracked at 100% under both L3-only and L2+L3.
+3. **Identified two root causes of the cracks:**
+   - String literals containing secrets survive L2+L3 verbatim
+     (literal-grep attack).
+   - Computed secrets survive any purely-textual scramble
+     (sandbox-execution attack).
+4. **Designed + bench-validated layer-7 prototype.**  Documented
+   in `docs/v2/string-literal-leak.md`; prototyped in
+   `crates/v2-babbleon-adversarial-bench/src/secret_literal_layer.rs`;
+   bench-confirmed at 100% → 0% crack-fraction on the new
+   `secret-wrapped` challenge.  Production port is the highest-
+   impact production-code item outstanding.
+5. **Designed sandbox-execution defence.**  Documented in
+   `docs/v2/sandbox-execution-defence.md`.  4 candidate
+   countermeasures evaluated; recommended sequence
+   C1 (runtime-only construction) → C3 (chunk reorder) →
+   C2 + C4 (supporting).  No code yet; pure design input.
+
+### Bench data (final state of this session, N=1)
+
+| challenge            | l3-only      | l2-plus-l3                  | l2-plus-l3-plus-l7 |
+|----------------------|--------------|-----------------------------|--------------------|
+| auth-literal-string  | 1/1 (100%)   | 1/1 (100%)                  | (not run)          |
+| auth-hash-check      | 1/1 (100%)   | 1/1 (100%)                  | (not run)          |
+| state-machine        | 1/1 (100%)   | 0/0 (n/a) [+1 refused]      | (not run)          |
+| realistic-cli        | 1/1 (100%)   | 1/1 (100%)                  | (not run)          |
+| computed-secret      | 1/1 (100%)   | 0/0 (n/a) [+1 refused]      | (not run; layer 7 doesn't address this case) |
+| secret-wrapped       | (not run)    | 1/1 (100%)                  | **0/1 (0%)**       |
+
+### Files added or substantially modified
+
+```
+crates/v2-babbleon-adversarial-bench/    (NEW crate, ~3500 LOC)
+  Cargo.toml
+  README.md (in challenges/)
+  challenges/auth-literal-string.toml
+  challenges/auth-hash-check.toml
+  challenges/state-machine.toml
+  challenges/realistic-cli.toml
+  challenges/computed-secret.toml
+  challenges/secret-wrapped.toml
+  src/lib.rs
+  src/errors.rs
+  src/success_predicate.rs
+  src/challenge.rs
+  src/layer_config.rs
+  src/scramble_pipeline.rs
+  src/prompt.rs
+  src/scoring.rs
+  src/run_record.rs
+  src/summary.rs
+  src/adversary.rs
+  src/secret_literal_layer.rs    (experimental layer-7)
+  src/main.rs                     (4 subcommands)
+  tests/seed_challenges_round_trip.rs
+  tests/cli_end_to_end.rs
+  runs/2026-06-21-claude-opus-4-7-subagent/...     (archive)
+  runs/2026-06-22-claude-opus-4-7-subagent-layer7-prototype/...
+
+docs/v2/string-literal-leak.md           (NEW)
+docs/v2/sandbox-execution-defence.md     (NEW)
+
+Cargo.toml + Cargo.lock                  (workspace member added)
+HANDOFF.md                               (this file)
+```
+
+### Operator must-reads for next session
+
+1. `crates/v2-babbleon-adversarial-bench/runs/2026-06-22-claude-opus-4-7-subagent-layer7-prototype/README.md`
+   — the headline result; layer-7 prototype validated.
+2. `docs/v2/string-literal-leak.md` — production layer-7 design.
+3. `docs/v2/sandbox-execution-defence.md` — orthogonal failure
+   mode + 4-candidate countermeasure design.
+4. This HANDOFF section.
+
+### Refreshed open / next-session items (final priority order)
+
+1. **Port layer-7 to production** per
+   `docs/v2/string-literal-leak.md` §"Implementation sequence."
+   ~6 steps, ~350 LOC + tests.  Needs operator review of
+   per-epoch table storage design.  **Highest-impact production-
+   code work outstanding.**
+2. **Re-run bench at N=5-10 per cell** against:
+   - The existing Claude Opus 4.7 subagent (firm up the N=1
+     numbers).
+   - At least one frontier-model adversary (Claude API via
+     `babbleon-bench run-matrix --command claude-cli ...`).
+   - Optionally: OpenAI / Gemini for cross-vendor signal.
+3. **Implement sandbox-execution countermeasure C1** per
+   `docs/v2/sandbox-execution-defence.md`.  Closes the
+   `computed-secret` failure mode.  Adds
+   `babbleon.runtime.compute_secret(...)` helper + daemon-
+   protocol extension.  Operator review first.
+4. **Phase-4 design pass: chunk reorder + decoy injection**
+   (existing layers 4-5).  Composes with layer 7 and C1.
+5. **Wire L2 into the daemon-served protocol** (HANDOFF item 2
+   from prior session; lower priority than 1-4 now).
+6. **Drop `--insecure-stub-secret`** (lone polish item).
+
+### What this session did NOT do (intentionally)
+
+- No changes to production `v2-babbleon-preprocessor`,
+  `v2-babbleon-daemon`, `v2-babbleon` CLI, or any other v2
+  crate.  All work is in the new bench crate + design docs.
+- No production layer-7 implementation.  The bench-only
+  prototype lives in the bench crate's
+  `secret_literal_layer.rs`; the production port is filed
+  for operator-reviewed follow-up.
+- No HTTP adversary plugins.  `SubprocessAdversary` is the only
+  built-in; operators wire HTTP providers via shell commands.
+- No bench N>1 re-run.  N=1 is sufficient for the qualitative
+  finding ("layer 7 works"); N=5-10 is filed for next session.
+
+### Stats
+
+| Metric | Before session | After session | Δ |
+|---|---|---|---|
+| Commits on branch | 25 | 39 | +14 |
+| v2 tests (excl rooted) | ~510 | ~637 | +127 |
+| New crates | 0 | 1 | +1 |
+| New design docs in `docs/v2/` | 0 | 2 | +2 |
+| Lines of code added | — | ~3 500 (bench crate) + ~500 (docs) + HANDOFF | — |
+
+cargo clippy `--all-targets -- -W clippy::pedantic` clean
+across every touched crate.  Push target observed:
+`claude/magical-turing-mele8c` (per `CLAUDE.md` + HANDOFF
+header rule).
+
+---
+
 ## 2026-06-22 — layer-7 bench prototype validated (100% → 0%)
 
 One commit lands the experimental layer-7 secret-literal
