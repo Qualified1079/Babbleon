@@ -24,8 +24,214 @@ lands, push here)
 
 Date: 2026-06-21 (user-asleep session continued — claude-opus-4-7)
 
-Last commit before this handoff section: `2c7ae6c` —
-docs(HANDOFF): file this session's 3 commits — items 2, 4, 5 closed.
+Last commit before this handoff section: `ef00419` —
+bench: rerun secret-wrapped under post-rename harness; file
+evaluator-sandboxing gap.
+
+---
+
+## 2026-06-22 — operator-stated phase-3 blockers BEFORE more bench runs
+
+**Three load-bearing items the operator has flagged.  No bench
+run produces trustworthy data until ALL three land.  Filed
+here so context loss does not drop them.**
+
+### Blocker 1 — Sandbox the evaluator to a per-cell working directory
+
+Reason: the 2026-06-22 rerun showed the L7 cell "defended" the
+scramble — but the model didn't actually try.  It had
+unrestricted `Read` access to the whole repo, found a sibling
+challenge's answer in `auth-literal-string.toml`, and submitted
+that.  Wrong-from-cross-contamination, not defeated-by-scramble.
+
+The grader can't distinguish "model could not crack the
+scramble" from "model hallucinated from a sibling answer key"
+once the evaluator has filesystem reach beyond its cell.
+
+Fix:
+
+- Spawn the evaluator with a working directory containing ONLY:
+  - `prompt.md` (read-only)
+  - `notepad/` (read+write)
+  - `baseline.py` (read-only) — see Blocker 2
+  - `scrambled.txt` (read-only)
+  - `v2-design.md` (read-only)
+- The `SubprocessEvaluator` (and any future API-driven
+  evaluator) must constrain the child's filesystem reach to
+  that dir.  For subagents: spawn with cwd set, no
+  parent-environment Read tool access outside the cwd.
+- Shell tool, if the challenge enables it, runs inside the
+  cwd jail too.
+
+Scope: 1-2 sessions.  Touches
+`crates/v2-babbleon-resilience-bench/src/evaluator.rs` (jail
+the spawn) + the subagent-wrapper prompts.
+
+### Blocker 2 — Include the unscrambled baseline as an input
+
+Reason: the bench currently violates its own threat model.
+Per `docs/v2/structure-scrambling.md` §"The problem v2 solves",
+the adversary KNOWS what the unscrambled code looks like.
+They have the original source cached from a non-Babbleon copy
+of the same tool.  Their job is to find WHERE in the scrambled
+output to inject a known exploit, not to derive the source
+from nothing.
+
+The current prompt gives the evaluator only the scrambled
+bytes + a pointer at design docs.  It does NOT include the
+unscrambled baseline.  That makes the bench harder than the
+real threat (model has to reconstruct meaning from scratch
+instead of cross-referencing).
+
+Fix:
+
+- Add `baseline_source` field to challenge TOML.  Every
+  challenge must provide the unscrambled source as a separate
+  field (the existing `source` field will continue to hold the
+  pre-scramble source that the scrambler runs against; the
+  `baseline_source` is what the evaluator sees as cached
+  knowledge of the target).
+- For most challenges `baseline_source == source` — the
+  evaluator has the exact pre-scramble bytes.  For
+  realistic-cli style challenges they may differ slightly
+  (a vendored version vs. an operator-patched version on the
+  target host) to test cross-version cross-referencing.
+- Prompt builder writes `baseline_source` to
+  `notepad/baseline.py` at the start of every cell, OR
+  includes it as a third labelled prompt section.  Pick the
+  file path; consistent with Blocker 1's sandbox layout.
+
+Scope: 1 session.  Touches challenge TOML schema +
+`crates/v2-babbleon-resilience-bench/src/challenge.rs` +
+`prompt.rs` + every existing challenge file.
+
+### Blocker 3 — Operator scramble layer (L2b) in the preprocessor
+
+Reason: the operator stated, paraphrased: "L2+L3 is the floor,
+but operators need to be scrambled too — `( )`, `: =`, `**`,
+`+ -`, etc.  If that isn't part of the basic scramble then it
+needs to be."
+
+The operator is correct.  Today L2 scrambles 35 Python hard
+keywords.  L3 scrambles whitespace.  But every Python operator
+(`( ) [ ] { } : , . ; = == != < > <= >= + - * ** / // % @ &
+| ^ ~ << >> := += -= *= /= //= %= **= @= &= |= ^= >>= <<=
+...`) passes through verbatim as part of `Token::Word` content.
+
+Consequence: an attacker reads the scrambled wall-of-text and
+sees:
+- `(` `)` reveal function signatures.
+- `:` reveals block headers.
+- `=` reveals assignments.
+- `==` `<` `>` reveal conditionals.
+- `+` `*` `**` reveal arithmetic patterns.
+
+That's the program's structural skeleton.  Cross-reference
+against the unscrambled baseline's same skeleton and you find
+correspondences trivially.  L2+L3 without operator-scramble
+defeats keyword recognition and visual structure but leaves
+the load-bearing structural signal intact.
+
+Fix (preprocessor code, ~600-800 LOC, analogous to L2 keyword
+scramble that landed in `ef0a97d`):
+
+- `python_operators.rs` — the ~40 Python operator strings
+  (longest first for greedy match).  Distinct from soft
+  punctuation; brackets and assignment operators included.
+- `operator_wordlist.rs` — per-epoch `OperatorWordlist::build`
+  via HKDF with purpose label `b"v2-operator-mapping"`.
+  Statistically independent from keyword / identifier /
+  honey / whitespace permutations under the same secret +
+  epoch.
+- `operator_scrambler.rs` — Token-stream pass.
+  `scramble_operators` and `unscramble_operators`, analogous
+  to `keyword_scrambler`.
+- Tokenizer extension: emit `Token::Operator(OperatorKind)`
+  for each operator.  CRITICAL: the tokenizer also emits a
+  `Token::Whitespace(Space)` between any identifier and any
+  operator, so the scrambled output always has whitespace
+  compounds as delimiters around operator compounds.  This
+  avoids the ambiguity `xriverstoney` (where does the
+  compound start / end?).  Output file grows ~30% larger;
+  acceptable cost.
+- Scrambler / unscrambler chain order: tokenize → keyword
+  pass → operator pass → whitespace pass → emit.  Inverse on
+  unscramble.
+
+New seccomp / lifetime concerns: none — operator scramble is
+pure-Rust same as L2.
+
+The bench must then add an `l2-plus-l2b-plus-l3` (or just
+`l2-floor-plus-l3`) config so cells can be run against the
+real floor.
+
+Scope: 2-3 sessions.  Largest of the three blockers but
+purely preprocessor work — independent of the bench
+follow-ups.
+
+### Followup improvements (after the three blockers land)
+
+| # | Improvement | Scope |
+|---|---|---|
+| 4 | Replace deprecated literal challenges (auth-literal-string, secret-wrapped, etc.) with structural challenges.  Examples: `identify-entry-block` (find the `__main__` equivalent block in the scramble), `identify-injection-slot-by-baseline-cross-reference` (given baseline + scramble, find the byte offset where to inject a payload that triggers during X), `predict-control-flow-output` (given an input, what does the program return).  Each tests reasoning that requires recovering structure, not extracting a literal.  ~5 challenges, ~200 LOC challenges + small predicate-runner changes. | 2 sessions |
+| 5 | Raise attempts-per-cell to N=5-10 minimum.  N=1 is signal-only.  Cheap once the harness sandboxes; just compute cost. | 0 code |
+| 6 | Plumb the notepad-as-files tool surface through the `Evaluator` trait so an external CLI evaluator (Claude API / OpenAI API / etc.) gets the same notepad surface as the in-sandbox subagent.  Currently the subagent has built-in Write/Read; an external CLI would not. | 1-2 sessions |
+| 7 | Multi-model coverage (Anthropic + OpenAI + Google).  Currently subagents are one family.  Requires API key infrastructure (already gated by env in the existing run-matrix surface). | 1 session + API keys |
+
+### What the 2026-06-22 rerun results actually mean
+
+Filed as supplementary record so the next session does not
+treat the rerun as a real data point.
+
+- **L2+L3 @ `secret-wrapped`: 1/1 cracked.**  Confirms the
+  known degenerate case (L2+L3 do not touch string literals).
+  Tests what L2+L3 doesn't do, not what L2+L3 does.  The TOML
+  is self-deprecated for this reason.
+- **L2+L3+L7 @ `secret-wrapped`: 0/1 cracked.**  Recorded as
+  "defended" by the grader but the evaluator did not actually
+  attempt to crack the L7 substitution.  It read a sibling
+  challenge's answer key (`auth-literal-string.toml` →
+  `hunter2`) and submitted that, which the grader rejected as
+  wrong.  We have NO signal on whether L7 actually defends
+  what it claims to defend.  Filed in the run's README under
+  "Implication for the bench design."
+
+Net: the rerun validated that the post-rename harness still
+runs.  It did NOT produce evidence about scramble strength.
+That evidence comes after Blockers 1+2+3 land and the new
+structural-challenge corpus replaces the deprecated literal
+challenges.
+
+### Evaluator-model identity note (operator question)
+
+The 2026-06-22 rerun used in-sandbox Agent-tool subagents.
+The parent session runs as `claude-opus-4-7` (per the
+environment system prompt).  The general-purpose Agent type
+inherits the parent's model unless overridden, so the
+subagents were very probably `claude-opus-4-7` too.  Confirm
+by reading the subagent system prompt or by spawning with an
+explicit `model:` override the next time it matters.  For
+audit purposes, the run README records the label
+`claude-opus-4-7-subagent@2026-06-22-rerun` with a footnote
+about the inheritance assumption.
+
+### Execution order
+
+Doing Blocker 3 (operator scramble in preprocessor) FIRST.
+Reasons:
+1. Largest of the three; doing it now lets it bake in CI
+   for any future bench reruns.
+2. Purely preprocessor work — does not need bench coordination,
+   does not block Blockers 1+2 (which are bench-side fixes
+   that can land in parallel).
+3. Closes the most-pressing semantic gap (the structural
+   skeleton being visible without it).
+
+After Blocker 3 lands, the bench-side fixes 1 + 2 can land
+together in one session.  THEN run the structural-challenge
+corpus at N=5-10 per cell against L2+L2b+L3 as the floor.
+
+---
 
 ---
 
