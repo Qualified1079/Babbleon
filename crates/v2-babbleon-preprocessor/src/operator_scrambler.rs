@@ -113,8 +113,29 @@ fn is_string_or_comment_word(body: &str) -> bool {
     matches!(body.as_bytes().first(), Some(b'"' | b'\'' | b'#'))
 }
 
+/// State of the per-Word splitter as it walks bytes.  String
+/// literals inside the Word body (`"..."`, `'...'`, including
+/// f/r/b prefixes) must NOT have their interior split on
+/// operators — `"a=b"` should pass through, not become
+/// `"a` + `<compound for =>` + `b"`.
+#[derive(Debug)]
+enum SplitState {
+    /// Default: split operators normally.
+    Code,
+    /// Inside a `"..."` literal.  Reset to `Code` on the closing
+    /// `"`.  Escapes (`\X`) consume two bytes.
+    DoubleString,
+    /// Inside a `'...'` literal.  Same shape as `DoubleString`.
+    SingleString,
+}
+
 /// Split `body` on operator substrings (longest match) and push
 /// the resulting `Word` + `Whitespace(Space)` sequence onto `out`.
+///
+/// Tracks an internal string-literal state so operators inside
+/// `"..."` and `'...'` are never split.  This handles `print(f"hi")`
+/// and similar cases where the tokenizer produces a single Word
+/// containing both code and string content.
 fn split_word_into_tokens(
     body: &str,
     owl: &OperatorWordlist,
@@ -122,36 +143,75 @@ fn split_word_into_tokens(
 ) {
     let bytes = body.as_bytes();
     let mut frag = String::new();
+    let mut state = SplitState::Code;
     let mut i = 0;
     while i < bytes.len() {
-        if let Some((op, op_len)) = match_operator_at(&bytes[i..]) {
-            // Flush any accumulated non-operator fragment.
-            if !frag.is_empty() {
-                out.push(Token::Word(std::mem::take(&mut frag)));
-                out.push(Token::whitespace(WhitespaceKind::Space));
+        match state {
+            SplitState::DoubleString | SplitState::SingleString => {
+                // Inside a string literal: never split on operators.
+                // Just accumulate bytes (handling backslash escapes
+                // so an escaped quote doesn't close the string).
+                let b = bytes[i];
+                let ch_len = utf8_char_len(b);
+                frag.push_str(
+                    std::str::from_utf8(&bytes[i..i + ch_len])
+                        .expect("source is UTF-8 by construction"),
+                );
+                if b == b'\\' && i + 1 + ch_len <= bytes.len() {
+                    // Consume the next byte verbatim too.
+                    let next_len = utf8_char_len(bytes[i + ch_len]);
+                    frag.push_str(
+                        std::str::from_utf8(
+                            &bytes[i + ch_len..i + ch_len + next_len],
+                        )
+                        .expect("source is UTF-8 by construction"),
+                    );
+                    i += ch_len + next_len;
+                    continue;
+                }
+                if matches!(state, SplitState::DoubleString) && b == b'"' {
+                    state = SplitState::Code;
+                } else if matches!(state, SplitState::SingleString) && b == b'\'' {
+                    state = SplitState::Code;
+                }
+                i += ch_len;
             }
-            // Emit the operator's per-epoch compound as a Word.
-            let compound = owl
-                .compound_for(op)
-                .expect("operator from match_operator_at must be in OWL");
-            out.push(Token::Word(compound.to_string()));
-            // Insert a Space after the operator so the next
-            // fragment (or the next operator) is delimited by
-            // L3 whitespace compounds on unscramble.
-            out.push(Token::whitespace(WhitespaceKind::Space));
-            i += op_len;
-        } else {
-            // Accumulate one UTF-8 character into the current
-            // non-operator fragment.  Operators are ASCII so we
-            // safely advance one byte; non-ASCII bytes are part
-            // of identifiers / literals which don't intersect
-            // with the operator list.
-            let ch_len = utf8_char_len(bytes[i]);
-            frag.push_str(
-                std::str::from_utf8(&bytes[i..i + ch_len])
-                    .expect("source is UTF-8 by construction"),
-            );
-            i += ch_len;
+            SplitState::Code => {
+                if bytes[i] == b'"' {
+                    // Quote opens a string literal.  Accumulate
+                    // the quote into the current fragment so it
+                    // re-emerges verbatim on round-trip.
+                    frag.push('"');
+                    state = SplitState::DoubleString;
+                    i += 1;
+                    continue;
+                }
+                if bytes[i] == b'\'' {
+                    frag.push('\'');
+                    state = SplitState::SingleString;
+                    i += 1;
+                    continue;
+                }
+                if let Some((op, op_len)) = match_operator_at(&bytes[i..]) {
+                    if !frag.is_empty() {
+                        out.push(Token::Word(std::mem::take(&mut frag)));
+                        out.push(Token::whitespace(WhitespaceKind::Space));
+                    }
+                    let compound = owl
+                        .compound_for(op)
+                        .expect("operator from match_operator_at must be in OWL");
+                    out.push(Token::Word(compound.to_string()));
+                    out.push(Token::whitespace(WhitespaceKind::Space));
+                    i += op_len;
+                } else {
+                    let ch_len = utf8_char_len(bytes[i]);
+                    frag.push_str(
+                        std::str::from_utf8(&bytes[i..i + ch_len])
+                            .expect("source is UTF-8 by construction"),
+                    );
+                    i += ch_len;
+                }
+            }
         }
     }
     if !frag.is_empty() {
