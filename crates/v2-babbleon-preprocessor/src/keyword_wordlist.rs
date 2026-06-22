@@ -190,6 +190,120 @@ impl KeywordWordlist {
     pub fn reverse_lookup(&self, compound: &str) -> Option<&'static str> {
         self.reverse.get(compound).copied()
     }
+
+    /// All [`PYTHON_KEYWORD_COUNT`] compounds in
+    /// [`PYTHON_KEYWORDS`] static order — `out[i]` is the per-epoch
+    /// compound for `PYTHON_KEYWORDS[i]`.
+    ///
+    /// Used by the daemon's wire surface to emit
+    /// `Response::KeywordCompounds` without exposing the underlying
+    /// map representation, and by callers that need a stable index
+    /// for serialisation.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal `forward` map is missing an entry for
+    /// any keyword in [`PYTHON_KEYWORDS`].  This is an invariant
+    /// violation: both [`Self::build`] and [`Self::from_compounds`]
+    /// populate one entry per static keyword before returning, so a
+    /// missing entry indicates memory corruption rather than user
+    /// input.
+    #[must_use]
+    pub fn all_compounds_in_static_order(
+        &self,
+    ) -> [String; PYTHON_KEYWORD_COUNT] {
+        std::array::from_fn(|i| {
+            self.forward
+                .get(PYTHON_KEYWORDS[i])
+                .expect(
+                    "KeywordWordlist forward map missing a PYTHON_KEYWORDS \
+                     entry; invariant violated",
+                )
+                .clone()
+        })
+    }
+
+    /// Construct a `KeywordWordlist` from caller-supplied compounds.
+    ///
+    /// # When to use this
+    ///
+    /// The **trust-tier client** entry point, paired with the
+    /// daemon's `Response::KeywordCompounds` wire reply.  The
+    /// operator-facing CLI (`babbleon scramble` / `babbleon
+    /// unscramble`) receives the per-epoch compounds over the local
+    /// Unix socket and reconstructs the mapping locally without
+    /// ever holding the per-host secret in its own address space.
+    ///
+    /// `compounds` MUST be in [`PYTHON_KEYWORDS`] static order —
+    /// `compounds[i]` is the compound for `PYTHON_KEYWORDS[i]`.
+    ///
+    /// # Validation
+    ///
+    /// Compounds are validated for the same invariants the
+    /// HKDF-derived path enforces by construction:
+    ///
+    /// - Each compound non-empty.
+    /// - Each byte ASCII-lowercase (matches the v2 baseline
+    ///   wordlist's vocabulary; defeats homoglyph injection on the
+    ///   wire).
+    /// - All compounds pairwise distinct (`reverse_lookup`
+    ///   correctness depends on this).
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::InvalidSuppliedKeywordCompounds`] on any
+    ///   validation failure.  The variant carries the slot index
+    ///   and a structural reason; it does NOT carry the compound
+    ///   bytes (rule 13).
+    pub fn from_compounds(
+        epoch: u64,
+        compounds: [String; PYTHON_KEYWORD_COUNT],
+    ) -> Result<Self> {
+        for (slot, compound) in compounds.iter().enumerate() {
+            if compound.is_empty() {
+                return Err(Error::InvalidSuppliedKeywordCompounds {
+                    slot,
+                    reason: "empty",
+                });
+            }
+            if !compound.bytes().all(|b| b.is_ascii_lowercase()) {
+                return Err(Error::InvalidSuppliedKeywordCompounds {
+                    slot,
+                    reason: "non-ascii-lowercase",
+                });
+            }
+        }
+        // Pairwise distinct: O(n^2) over 35 items (~600 comparisons)
+        // is microseconds; the simple form keeps the invariant
+        // obvious to a reviewer.
+        for i in 0..compounds.len() {
+            for j in (i + 1)..compounds.len() {
+                if compounds[i] == compounds[j] {
+                    return Err(Error::InvalidSuppliedKeywordCompounds {
+                        slot: j,
+                        reason: "duplicate",
+                    });
+                }
+            }
+        }
+        let mut forward: HashMap<&'static str, String> =
+            HashMap::with_capacity(PYTHON_KEYWORD_COUNT);
+        let mut reverse: HashMap<String, &'static str> =
+            HashMap::with_capacity(PYTHON_KEYWORD_COUNT);
+        // Consume `compounds`: one clone per entry (forward needs an
+        // owned `String` value; reverse needs an owned `String` key).
+        // The into_iter form keeps clippy::needless_pass_by_value
+        // satisfied — the parameter is fully moved through.
+        for (i, compound) in compounds.into_iter().enumerate() {
+            forward.insert(PYTHON_KEYWORDS[i], compound.clone());
+            reverse.insert(compound, PYTHON_KEYWORDS[i]);
+        }
+        Ok(Self {
+            epoch,
+            forward,
+            reverse,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -331,6 +445,189 @@ mod tests {
                 assert_eq!(needed, MIN_WORDLIST_SIZE);
             }
             other => panic!("expected WordlistTooSmall, got {other:?}"),
+        }
+    }
+
+    // ----- all_compounds_in_static_order -----
+
+    #[test]
+    fn all_compounds_in_static_order_indexes_match_python_keywords() {
+        let kwl = KeywordWordlist::build(
+            &secret(11),
+            Wordlist::english_baseline(),
+            3,
+        )
+        .unwrap();
+        let arr = kwl.all_compounds_in_static_order();
+        assert_eq!(arr.len(), PYTHON_KEYWORD_COUNT);
+        for (i, kw) in PYTHON_KEYWORDS.iter().enumerate() {
+            // Slot agreement: array index ↔ static-list index ↔
+            // forward-map keyword.
+            assert_eq!(arr[i], kwl.compound_for(kw).unwrap());
+        }
+    }
+
+    #[test]
+    fn all_compounds_in_static_order_yields_pairwise_distinct_entries() {
+        let kwl = KeywordWordlist::build(
+            &secret(2),
+            Wordlist::english_baseline(),
+            0,
+        )
+        .unwrap();
+        let arr = kwl.all_compounds_in_static_order();
+        let mut seen: std::collections::HashSet<&str> =
+            std::collections::HashSet::new();
+        for c in &arr {
+            assert!(seen.insert(c.as_str()), "duplicate compound: {c}");
+        }
+    }
+
+    // ----- from_compounds (operator-CLI-side constructor) -----
+
+    fn synth_distinct_keyword_compounds()
+        -> [String; PYTHON_KEYWORD_COUNT]
+    {
+        // 35 deterministic, distinct, all-ASCII-lowercase strings.
+        // Bytes are unrelated to any real wordlist entry.  We
+        // encode the index in base-26 lowercase to keep the
+        // ASCII-lowercase invariant the validator enforces.
+        std::array::from_fn(|i| {
+            // Two-letter suffix `aa..bj` gives 35 distinct codes
+            // (35 = 1*26 + 9 ≤ 26*2).  `u8::try_from` cannot fail
+            // because both quotient and remainder are below 26.
+            let hi = u8::try_from(i / 26).expect("i/26 < 26") + b'a';
+            let lo = u8::try_from(i % 26).expect("i%26 < 26") + b'a';
+            format!("synthkeyword{}{}", hi as char, lo as char)
+        })
+    }
+
+    #[test]
+    fn from_compounds_round_trips_through_all_compounds() {
+        let arr = synth_distinct_keyword_compounds();
+        let kwl =
+            KeywordWordlist::from_compounds(9, arr.clone()).unwrap();
+        assert_eq!(kwl.epoch(), 9);
+        assert_eq!(kwl.all_compounds_in_static_order(), arr);
+        // Reverse lookup: each compound resolves to its keyword.
+        for (i, kw) in PYTHON_KEYWORDS.iter().enumerate() {
+            assert_eq!(kwl.reverse_lookup(&arr[i]), Some(*kw));
+            assert_eq!(kwl.compound_for(kw), Some(arr[i].as_str()));
+        }
+    }
+
+    #[test]
+    fn from_compounds_matches_hkdf_path_for_same_compounds() {
+        // Derive via HKDF, snapshot the compounds, reconstruct via
+        // from_compounds, assert reverse_lookup agrees on every kw.
+        let derived = KeywordWordlist::build(
+            &secret(13),
+            Wordlist::english_baseline(),
+            5,
+        )
+        .unwrap();
+        let snapshot = derived.all_compounds_in_static_order();
+        let reconstructed =
+            KeywordWordlist::from_compounds(5, snapshot).unwrap();
+        for kw in PYTHON_KEYWORDS {
+            assert_eq!(
+                derived.compound_for(kw),
+                reconstructed.compound_for(kw),
+            );
+            let c = derived.compound_for(kw).unwrap();
+            assert_eq!(
+                derived.reverse_lookup(c),
+                reconstructed.reverse_lookup(c),
+            );
+        }
+    }
+
+    #[test]
+    fn from_compounds_rejects_empty_compound() {
+        let mut arr = synth_distinct_keyword_compounds();
+        arr[7].clear();
+        let err = KeywordWordlist::from_compounds(0, arr).unwrap_err();
+        match err {
+            crate::errors::Error::InvalidSuppliedKeywordCompounds {
+                slot,
+                reason,
+            } => {
+                assert_eq!(slot, 7);
+                assert_eq!(reason, "empty");
+            }
+            other => panic!(
+                "expected InvalidSuppliedKeywordCompounds, got {other:?}"
+            ),
+        }
+    }
+
+    #[test]
+    fn from_compounds_rejects_non_ascii_lowercase() {
+        let mut arr = synth_distinct_keyword_compounds();
+        arr[2] = "SYNTH02KEYWORD".to_string();
+        let err = KeywordWordlist::from_compounds(0, arr).unwrap_err();
+        match err {
+            crate::errors::Error::InvalidSuppliedKeywordCompounds {
+                slot,
+                reason,
+            } => {
+                assert_eq!(slot, 2);
+                assert_eq!(reason, "non-ascii-lowercase");
+            }
+            other => panic!(
+                "expected InvalidSuppliedKeywordCompounds, got {other:?}"
+            ),
+        }
+    }
+
+    #[test]
+    fn from_compounds_rejects_non_ascii_byte() {
+        let mut arr = synth_distinct_keyword_compounds();
+        arr[4] = "synth\u{1F600}04keyword".to_string();
+        let err = KeywordWordlist::from_compounds(0, arr).unwrap_err();
+        match err {
+            crate::errors::Error::InvalidSuppliedKeywordCompounds {
+                slot,
+                reason,
+            } => {
+                assert_eq!(slot, 4);
+                assert_eq!(reason, "non-ascii-lowercase");
+            }
+            other => panic!(
+                "expected InvalidSuppliedKeywordCompounds, got {other:?}"
+            ),
+        }
+    }
+
+    #[test]
+    fn from_compounds_rejects_duplicate_pair() {
+        let mut arr = synth_distinct_keyword_compounds();
+        arr[20] = arr[3].clone();
+        let err = KeywordWordlist::from_compounds(0, arr).unwrap_err();
+        match err {
+            crate::errors::Error::InvalidSuppliedKeywordCompounds {
+                slot,
+                reason,
+            } => {
+                // Higher of the colliding pair is reported.
+                assert_eq!(slot, 20);
+                assert_eq!(reason, "duplicate");
+            }
+            other => panic!(
+                "expected InvalidSuppliedKeywordCompounds, got {other:?}"
+            ),
+        }
+    }
+
+    #[test]
+    fn from_compounds_preserves_supplied_epoch() {
+        for epoch in [0, 1, 42, u64::MAX] {
+            let kwl = KeywordWordlist::from_compounds(
+                epoch,
+                synth_distinct_keyword_compounds(),
+            )
+            .unwrap();
+            assert_eq!(kwl.epoch(), epoch);
         }
     }
 }

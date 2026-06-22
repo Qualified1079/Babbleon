@@ -113,4 +113,31 @@ pub enum Error {
         /// `"empty"`, `"non-ascii-lowercase"`, `"duplicate"`.
         reason: &'static str,
     },
+
+    /// A `KeywordWordlist::from_compounds` caller supplied
+    /// compounds that violate the table's invariants — empty
+    /// compound, non-ASCII-lowercase byte, duplicate compound.
+    ///
+    /// Mirrors `InvalidSuppliedCompounds` for the
+    /// `PYTHON_KEYWORDS`-indexed keyword pool.  Distinct variant so
+    /// operator logs can disambiguate which wire response carried
+    /// the malformed payload and so a future per-pool validator can
+    /// diverge without touching the whitespace path.
+    ///
+    /// Per security-baseline rule 13, carries the offending slot
+    /// index and a structural reason only; never the compound
+    /// bytes themselves.
+    #[error(
+        "supplied keyword compounds invalid at slot {slot}: {reason}"
+    )]
+    InvalidSuppliedKeywordCompounds {
+        /// Index in
+        /// [`crate::python_keywords::PYTHON_KEYWORDS`] where the
+        /// violation was detected.  For duplicate-pair violations,
+        /// the higher of the two slot indices.
+        slot: usize,
+        /// Structural reason without compound bytes.  One of:
+        /// `"empty"`, `"non-ascii-lowercase"`, `"duplicate"`.
+        reason: &'static str,
+    },
 }
