@@ -499,6 +499,87 @@ fn cli_scramble_then_unscramble_round_trips_python_source() {
     shutdown(child);
 }
 
+/// Layer-2 (operator-scramble) wiring proof: scrambled output for
+/// a source containing only Python keywords must NOT contain those
+/// keywords as standalone tokens.  Catches the regression where
+/// the CLI silently drops the `GetKeywordCompounds` round-trip or
+/// fails to apply `scramble_keywords` to the token stream.
+///
+/// Method: scramble a source built from long, unmistakable
+/// keywords (`continue`, `finally`, `lambda`, `nonlocal`, `raise`,
+/// `yield`, `import`, `return`).  These have 6+ byte names and are
+/// vanishingly unlikely to appear as a coincidental substring of
+/// any 4-word English wordlist compound; if a single one survives
+/// in the scrambled bytes, the L2 substitution didn't run.
+///
+/// We avoid short keywords (`if`, `or`, `in`, `is`, `as`) for the
+/// byte-substring scan — those legitimately appear inside common
+/// English words like `gift`, `for`, `pin`, `disc`, `mast`.
+#[test]
+fn cli_scramble_strips_python_keywords_from_output_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("daemon.sock");
+    let wrapper_dir = dir.path().join("wrappers");
+    std::fs::create_dir_all(&wrapper_dir).unwrap();
+    let curl = fake_real_binary(dir.path(), "curl");
+    let child = spawn_daemon(&sock, &wrapper_dir, ("curl", &curl));
+
+    let cli = sibling_binary("babbleon-v2");
+
+    let src_path = dir.path().join("src.py");
+    let scr_path = dir.path().join("out.scr");
+    // Source uses each chosen keyword exactly once, separated by
+    // single spaces.  The MVP tokenizer treats each as a Word; L2
+    // must rewrite each Word to a per-epoch compound.
+    let long_keywords =
+        ["continue", "finally", "lambda", "nonlocal", "raise", "yield", "import", "return"];
+    let original = format!("{}\n", long_keywords.join(" "));
+    std::fs::write(&src_path, &original).unwrap();
+
+    let out = Command::new(&cli)
+        .arg("--socket")
+        .arg(&sock)
+        .arg("scramble")
+        .arg("-i")
+        .arg(&src_path)
+        .arg("-o")
+        .arg(&scr_path)
+        .output()
+        .unwrap();
+    if !out.status.success() {
+        shutdown(child);
+        panic!(
+            "scramble failed: stdout={:?} stderr={:?}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+    }
+
+    let scrambled = std::fs::read(&scr_path).unwrap();
+
+    for kw in long_keywords {
+        assert!(
+            !contains_subsequence(&scrambled, kw.as_bytes()),
+            "scrambled output still contains keyword {kw:?} verbatim",
+        );
+    }
+
+    shutdown(child);
+}
+
+/// True iff `haystack` contains `needle` as a contiguous byte
+/// subsequence.  Trivial O(N*M) scan — fine for the small test
+/// inputs here.
+fn contains_subsequence(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if needle.len() > haystack.len() {
+        return false;
+    }
+    haystack.windows(needle.len()).any(|w| w == needle)
+}
+
 /// Scramble against a daemon that is locked must surface the
 /// daemon's Vault-error cleanly (not panic, not hang).
 #[test]

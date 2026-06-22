@@ -31,15 +31,34 @@
 //! `scramble`:
 //!
 //! 1. Read source bytes (UTF-8) from FILE (`-` or absent ⇒ stdin).
-//! 2. Round-trip `Request::GetWhitespaceCompounds` against the
-//!    daemon's socket.
-//! 3. Build a `WhitespaceWordlist` from the returned compounds via
-//!    `WhitespaceWordlist::from_compounds`.
-//! 4. `python_tokenizer::tokenize` → `scrambler::scramble`.
+//! 2. Round-trip `Request::GetWhitespaceCompounds` AND
+//!    `Request::GetKeywordCompounds` against the daemon's socket
+//!    (two one-shots; both cheap, both gated by the same Locked /
+//!    Unlocked vault check).
+//! 3. Build a `WhitespaceWordlist` and a `KeywordWordlist` from the
+//!    returned compounds via the respective `from_compounds`
+//!    constructors.
+//! 4. `python_tokenizer::tokenize` →
+//!    `keyword_scrambler::scramble_keywords` (layer 2, in-place) →
+//!    `scrambler::scramble` (layer 3, token-stream-to-bytes).
 //! 5. Write scrambled bytes to OUTPUT (`-` or absent ⇒ stdout).
 //!
-//! `unscramble` reverses steps 4-5 via `unscrambler::unscramble`;
-//! steps 1-3 are identical.
+//! `unscramble` reverses steps 4-5 via
+//! `unscrambler::unscramble_to_tokens` →
+//! `keyword_scrambler::unscramble_keywords` (in-place inverse of
+//! layer 2) → `unscrambler::tokens_to_source`; steps 1-3 are
+//! identical to `scramble`.
+//!
+//! ## L2 wiring rationale (2026-06-22)
+//!
+//! Until this commit the CLI emitted L3-only output even though the
+//! preprocessor library has had L2 since its first release.  The
+//! bench's 2026-06-21 N=1 data (`docs/v2/string-literal-leak.md`)
+//! showed the L3-only surface cracks at 100% under in-sandbox
+//! Claude Opus 4.7 attack.  L2 raises the cost meaningfully without
+//! disturbing L3's wall-of-words property — the keyword
+//! substitution happens at the token level and the same byte stream
+//! L3 emits today survives the additional pass.
 //!
 //! # Errors
 //!
@@ -57,10 +76,15 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context, Result};
 
 use babbleon_daemon_protocol_v2::{round_trip, Request, Response};
+use babbleon_preprocessor_v2::keyword_scrambler::{
+    scramble_keywords, unscramble_keywords,
+};
 use babbleon_preprocessor_v2::python_tokenizer::tokenize;
 use babbleon_preprocessor_v2::scrambler::scramble;
-use babbleon_preprocessor_v2::unscrambler::unscramble;
-use babbleon_preprocessor_v2::WhitespaceWordlist;
+use babbleon_preprocessor_v2::unscrambler::{
+    tokens_to_source, unscramble_to_tokens,
+};
+use babbleon_preprocessor_v2::{KeywordWordlist, WhitespaceWordlist};
 
 /// Operator-supplied options for the `scramble` and `unscramble`
 /// subcommands.
@@ -112,7 +136,9 @@ pub fn run_scramble(opts: ScrambleOptions) -> Result<()> {
     } = opts;
     let source = read_input(&input)?;
     let wl = fetch_whitespace_wordlist(&socket_path)?;
-    let tokens = tokenize(&source);
+    let kwl = fetch_keyword_wordlist(&socket_path)?;
+    let mut tokens = tokenize(&source);
+    scramble_keywords(&mut tokens, &kwl);
     let scrambled = scramble(&tokens, &wl)
         .with_context(|| "scramble")?;
     write_output(&output, scrambled.as_bytes())?;
@@ -136,8 +162,13 @@ pub fn run_unscramble(opts: ScrambleOptions) -> Result<()> {
     } = opts;
     let scrambled = read_input(&input)?;
     let wl = fetch_whitespace_wordlist(&socket_path)?;
-    let source = unscramble(&scrambled, &wl)
-        .with_context(|| "unscramble")?;
+    let kwl = fetch_keyword_wordlist(&socket_path)?;
+    // `unscramble_to_tokens` is infallible at MVP scope (any
+    // leftover bytes are emitted as a final Word); no error fold-in
+    // needed.
+    let mut tokens = unscramble_to_tokens(&scrambled, &wl);
+    unscramble_keywords(&mut tokens, &kwl);
+    let source = tokens_to_source(&tokens);
     write_output(&output, source.as_bytes())?;
     Ok(())
 }
@@ -208,6 +239,47 @@ fn fetch_whitespace_wordlist(socket_path: &Path) -> Result<WhitespaceWordlist> {
         }
         other => Err(anyhow!(
             "expected WhitespaceCompounds response, got {other:?}",
+        )),
+    }
+}
+
+/// Sister of [`fetch_whitespace_wordlist`] for layer-2 (operator-
+/// scramble) compounds.  Round-trips
+/// [`Request::GetKeywordCompounds`] against the daemon and
+/// reconstructs a [`KeywordWordlist`] from the boxed 35-element
+/// reply.
+///
+/// Two daemon round-trips per scramble call is the right shape for
+/// v2.0: each request is microseconds against a local Unix socket,
+/// and the two compounds rotate together (the daemon's epoch is
+/// the same for both replies issued back-to-back).  A future
+/// combined `GetEpochCompounds` request that returns both pools in
+/// one wire reply is a v2.1 optimisation, filed under
+/// HANDOFF "wire optimisations."
+fn fetch_keyword_wordlist(socket_path: &Path) -> Result<KeywordWordlist> {
+    let resp = round_trip(socket_path, &Request::GetKeywordCompounds)
+        .with_context(|| {
+            format!("daemon round-trip via {}", socket_path.display())
+        })?;
+    match resp {
+        Response::KeywordCompounds { epoch, compounds } => {
+            // `compounds` is a Box<[String; 35]>; move the array
+            // out of the box (`*compounds` consumes the box and
+            // yields the array by value) so `from_compounds` can
+            // take ownership of the strings.
+            KeywordWordlist::from_compounds(epoch, *compounds).map_err(
+                |e| {
+                    anyhow!(
+                        "daemon returned invalid keyword compounds: {e}"
+                    )
+                },
+            )
+        }
+        Response::Error { kind, message } => {
+            Err(anyhow!("daemon error ({kind:?}): {message}"))
+        }
+        other => Err(anyhow!(
+            "expected KeywordCompounds response, got {other:?}",
         )),
     }
 }
