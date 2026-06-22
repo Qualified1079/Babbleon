@@ -80,6 +80,25 @@ pub const WHITESPACE_COMPOUND_COUNT_WIRE: usize = 5;
 /// stopped at the protocol parser.
 const WHITESPACE_COMPOUND_MAX_BYTES: usize = 1024;
 
+/// Number of Python keyword compounds in the `KeywordCompounds`
+/// response, mirroring `v2-babbleon-preprocessor`'s
+/// `PYTHON_KEYWORD_COUNT` (Python 3.12 hard keywords).
+///
+/// As with [`WHITESPACE_COMPOUND_COUNT_WIRE`], the protocol crate
+/// is independent of `v2-babbleon-preprocessor`; cross-crate
+/// agreement is enforced by tests on both sides — if the
+/// preprocessor's static list grows or shrinks (a hard-keyword set
+/// is a wire-format break for layer 2), this constant updates in
+/// the same commit and a HANDOFF entry records the break.
+pub const PYTHON_KEYWORD_COMPOUND_COUNT_WIRE: usize = 35;
+
+/// Reasonable upper bound on the byte length of a single keyword
+/// compound on the wire.  Same rationale as
+/// [`WHITESPACE_COMPOUND_MAX_BYTES`]; sized to comfortably hold any
+/// 4-word compound from the v2 baseline wordlist while bounding a
+/// hostile-peer allocation.
+const KEYWORD_COMPOUND_MAX_BYTES: usize = 1024;
+
 /// Inbound request from a peer.
 ///
 /// `Clone` is derived because the proptest harness requires it
@@ -119,6 +138,18 @@ pub enum Request {
     /// per-host secret.  Trust-tier-only — caller authentication
     /// (peer-uid check on the socket layer) gates the request.
     GetWhitespaceCompounds,
+    /// Read the per-epoch Python-keyword compounds the daemon is
+    /// currently serving (layer 2 — operator scramble).  Daemon
+    /// answers with [`Response::KeywordCompounds`].  Requires the
+    /// vault to be unlocked; the daemon answers `Response::Error
+    /// { kind: ErrorKind::Vault, ... }` otherwise.
+    ///
+    /// Same trust-boundary as [`Self::GetWhitespaceCompounds`]:
+    /// the daemon retains the per-host secret; only the HKDF-derived
+    /// per-keyword compounds cross the socket.  Trust-tier-only —
+    /// caller authentication (peer-uid check on the socket layer)
+    /// gates the request.
+    GetKeywordCompounds,
 }
 
 /// Outbound response from the daemon.
@@ -183,6 +214,38 @@ pub enum Response {
         /// receiver's `from_compounds` enforces the invariants
         /// against tampering on the local-socket path.
         compounds: [String; WHITESPACE_COMPOUND_COUNT_WIRE],
+    },
+    /// The daemon's per-epoch Python-keyword compounds (layer 2 —
+    /// operator scramble).
+    ///
+    /// Indexed by `v2-babbleon-preprocessor::PYTHON_KEYWORDS` static
+    /// order — `compounds[i]` is the per-epoch compound for the
+    /// `i`-th keyword in `PYTHON_KEYWORDS`.  The receiving CLI feeds
+    /// `compounds` directly into
+    /// `v2-babbleon-preprocessor::KeywordWordlist::from_compounds`.
+    ///
+    /// Same secret-adjacency note as
+    /// [`Self::WhitespaceCompounds`]: a worm that gets one epoch's
+    /// compounds can scramble keywords against that epoch but cannot
+    /// recover the per-host secret.  Wire-side rotation invalidates
+    /// a leaked compound set.
+    KeywordCompounds {
+        /// Epoch the compounds were derived for.  Mirrors
+        /// [`Self::Status`]'s `epoch` when the daemon is unlocked.
+        epoch: u64,
+        /// 35 compounds in `PYTHON_KEYWORDS` slot order.  Each is
+        /// non-empty ASCII-lowercase; the receiver's
+        /// `KeywordWordlist::from_compounds` enforces the
+        /// invariants against tampering on the local-socket path.
+        ///
+        /// The fixed-size array is heap-boxed so the
+        /// [`Response`] enum stays small (without the box this
+        /// variant alone would inflate every `Response` value to
+        /// ~848 bytes on the stack, dominating the discriminant +
+        /// other variants).  Production paths consume the box
+        /// exactly once via `*compounds` into
+        /// `KeywordWordlist::from_compounds`.
+        compounds: Box<[String; PYTHON_KEYWORD_COMPOUND_COUNT_WIRE]>,
     },
     /// Daemon-side error.  Message does not leak secret material
     /// (security-baseline rule 13).
@@ -279,6 +342,7 @@ impl Request {
             "rotate-mapping" => Ok(Self::RotateMapping),
             "unlock" => parse_unlock(obj),
             "get-whitespace-compounds" => Ok(Self::GetWhitespaceCompounds),
+            "get-keyword-compounds" => Ok(Self::GetKeywordCompounds),
             other => Err(Error::Ipc(format!("request: unknown kind {other:?}"))),
         }
     }
@@ -312,6 +376,9 @@ impl Request {
             }),
             Self::GetWhitespaceCompounds => {
                 serde_json::json!({ "kind": "get-whitespace-compounds" })
+            }
+            Self::GetKeywordCompounds => {
+                serde_json::json!({ "kind": "get-keyword-compounds" })
             }
         };
         let mut out = serde_json::to_vec(&v)
@@ -413,6 +480,19 @@ impl Response {
                     "compounds": compounds,
                 })
             }
+            Self::KeywordCompounds { epoch, compounds } => {
+                // serde_json's built-in `Serialize` impl for `[T;N]`
+                // only covers `N <= 32`.  Pass a slice view so the
+                // 35-element array serialises through the
+                // slice-Serialize impl instead of the fixed-size-
+                // array one.
+                serde_json::json!({
+                    "ok": true,
+                    "kind": "keyword-compounds",
+                    "epoch": epoch,
+                    "compounds": compounds.as_slice(),
+                })
+            }
             Self::Error { kind, message } => serde_json::json!({
                 "ok": false,
                 "kind": "error",
@@ -476,6 +556,7 @@ impl Response {
             "rotated" => parse_rotated(obj),
             "unlocked" => parse_unlocked(obj),
             "whitespace-compounds" => parse_whitespace_compounds(obj),
+            "keyword-compounds" => parse_keyword_compounds(obj),
             other => Err(Error::Ipc(format!(
                 "response: unknown kind {other:?}"
             ))),
@@ -655,6 +736,83 @@ fn parse_whitespace_compounds(
             )
         })?;
     Ok(Response::WhitespaceCompounds { epoch, compounds })
+}
+
+/// Parse a `keyword-compounds` response into a typed
+/// [`Response::KeywordCompounds`].
+///
+/// Strict on:
+/// - `epoch` present + u64.
+/// - `compounds` present + JSON array.
+/// - Exactly [`PYTHON_KEYWORD_COMPOUND_COUNT_WIRE`] entries.
+/// - Each entry a string with length in
+///   `1..=KEYWORD_COMPOUND_MAX_BYTES`.
+///
+/// Leaves structural-invariant checking (ASCII-lowercase, pairwise
+/// distinct) to the consumer's
+/// `KeywordWordlist::from_compounds`.  Keeps the parser focused on
+/// the wire schema; layering responsibility avoids two crates
+/// disagreeing on what counts as valid.
+fn parse_keyword_compounds(
+    obj: &serde_json::Map<String, serde_json::Value>,
+) -> Result<Response> {
+    let epoch = obj
+        .get("epoch")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| {
+            Error::Ipc(
+                "keyword-compounds response: missing/non-u64 epoch".into(),
+            )
+        })?;
+    let arr = obj
+        .get("compounds")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| {
+            Error::Ipc(
+                "keyword-compounds response: missing/non-array compounds"
+                    .into(),
+            )
+        })?;
+    if arr.len() != PYTHON_KEYWORD_COMPOUND_COUNT_WIRE {
+        return Err(Error::Ipc(format!(
+            "keyword-compounds response: compounds array length {} != \
+             expected {PYTHON_KEYWORD_COMPOUND_COUNT_WIRE}",
+            arr.len(),
+        )));
+    }
+    let mut compounds: Vec<String> = Vec::with_capacity(arr.len());
+    for (i, entry) in arr.iter().enumerate() {
+        let s = entry.as_str().ok_or_else(|| {
+            Error::Ipc(format!(
+                "keyword-compounds response: entry {i} is not a string"
+            ))
+        })?;
+        if s.is_empty() {
+            return Err(Error::Ipc(format!(
+                "keyword-compounds response: entry {i} is empty"
+            )));
+        }
+        if s.len() > KEYWORD_COMPOUND_MAX_BYTES {
+            return Err(Error::Ipc(format!(
+                "keyword-compounds response: entry {i} length {} exceeds \
+                 cap {KEYWORD_COMPOUND_MAX_BYTES}",
+                s.len(),
+            )));
+        }
+        compounds.push(s.to_owned());
+    }
+    let compounds: [String; PYTHON_KEYWORD_COMPOUND_COUNT_WIRE] = compounds
+        .try_into()
+        .map_err(|_| {
+            Error::Ipc(
+                "keyword-compounds response: internal length mismatch"
+                    .into(),
+            )
+        })?;
+    Ok(Response::KeywordCompounds {
+        epoch,
+        compounds: Box::new(compounds),
+    })
 }
 
 #[cfg(test)]
@@ -1158,6 +1316,189 @@ mod tests {
         let r = Response::WhitespaceCompounds {
             epoch: 0,
             compounds: sample_compounds(),
+        };
+        let wire = r.to_wire().unwrap();
+        assert_eq!(wire.iter().filter(|b| **b == b'\n').count(), 1);
+        assert_eq!(*wire.last().unwrap(), b'\n');
+    }
+
+    // ----- GetKeywordCompounds request -----
+
+    #[test]
+    fn get_keyword_compounds_request_roundtrips() {
+        let wire = Request::GetKeywordCompounds.to_wire();
+        let parsed = Request::parse(&wire).unwrap();
+        assert_eq!(parsed, Request::GetKeywordCompounds);
+    }
+
+    #[test]
+    fn get_keyword_compounds_request_wire_form_is_one_line() {
+        let wire = Request::GetKeywordCompounds.to_wire();
+        assert_eq!(wire.iter().filter(|b| **b == b'\n').count(), 1);
+        assert_eq!(*wire.last().unwrap(), b'\n');
+    }
+
+    // ----- KeywordCompounds response -----
+
+    fn sample_keyword_compounds()
+        -> [String; PYTHON_KEYWORD_COMPOUND_COUNT_WIRE]
+    {
+        // 35 deterministic, distinct, all-ASCII-lowercase strings.
+        // Wire-side validators don't require lowercase, but real
+        // payloads from the daemon are; tests using this helper
+        // exercise the realistic case.  Index-encoded so a parser
+        // that scrambles slot order is caught by the "preserves
+        // slot order" test below.
+        std::array::from_fn(|i| {
+            let hi =
+                u8::try_from(i / 26).expect("i/26 < 26") + b'a';
+            let lo =
+                u8::try_from(i % 26).expect("i%26 < 26") + b'a';
+            format!("kw{}{}sample", hi as char, lo as char)
+        })
+    }
+
+    #[test]
+    fn keyword_compounds_response_roundtrips() {
+        let r = Response::KeywordCompounds {
+            epoch: 11,
+            compounds: Box::new(sample_keyword_compounds()),
+        };
+        let wire = r.to_wire().unwrap();
+        let parsed = Response::parse(&wire).unwrap();
+        assert_eq!(parsed, r);
+    }
+
+    #[test]
+    fn keyword_compounds_response_preserves_slot_order() {
+        let original = sample_keyword_compounds();
+        let r = Response::KeywordCompounds {
+            epoch: 0,
+            compounds: Box::new(original.clone()),
+        };
+        let wire = r.to_wire().unwrap();
+        let parsed = Response::parse(&wire).unwrap();
+        match parsed {
+            Response::KeywordCompounds { compounds, .. } => {
+                for (i, c) in compounds.iter().enumerate() {
+                    assert_eq!(c, &original[i], "slot {i} mismatch");
+                }
+            }
+            other => {
+                panic!("expected KeywordCompounds, got {other:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn keyword_compounds_response_rejects_missing_epoch() {
+        let arr_json: Vec<String> = (0..PYTHON_KEYWORD_COMPOUND_COUNT_WIRE)
+            .map(|i| format!("\"kw{i}\""))
+            .collect();
+        let body = format!(
+            r#"{{"ok":true,"kind":"keyword-compounds","compounds":[{}]}}"#,
+            arr_json.join(",")
+        );
+        let err = Response::parse(body.as_bytes()).unwrap_err();
+        assert!(format!("{err}").contains("epoch"));
+    }
+
+    #[test]
+    fn keyword_compounds_response_rejects_missing_compounds() {
+        let bytes = br#"{"ok":true,"kind":"keyword-compounds","epoch":0}"#;
+        let err = Response::parse(bytes).unwrap_err();
+        assert!(format!("{err}").contains("compounds"));
+    }
+
+    #[test]
+    fn keyword_compounds_response_rejects_wrong_array_length() {
+        // Too short (34) and too long (36).  The 35-entry case is
+        // the happy path covered by `roundtrips` above.
+        let short: Vec<String> =
+            (0..(PYTHON_KEYWORD_COMPOUND_COUNT_WIRE - 1))
+                .map(|i| format!("\"kw{i}\""))
+                .collect();
+        let long: Vec<String> =
+            (0..=PYTHON_KEYWORD_COMPOUND_COUNT_WIRE)
+                .map(|i| format!("\"kw{i}\""))
+                .collect();
+        for arr in [short, long] {
+            let body = format!(
+                r#"{{"ok":true,"kind":"keyword-compounds","epoch":0,"compounds":[{}]}}"#,
+                arr.join(",")
+            );
+            let err = Response::parse(body.as_bytes()).unwrap_err();
+            assert!(
+                format!("{err}").contains("length"),
+                "expected length error for {body}, got {err}",
+            );
+        }
+    }
+
+    #[test]
+    fn keyword_compounds_response_rejects_non_array_compounds() {
+        let bytes = br#"{"ok":true,"kind":"keyword-compounds","epoch":0,"compounds":"notarray"}"#;
+        let err = Response::parse(bytes).unwrap_err();
+        assert!(format!("{err}").contains("non-array"));
+    }
+
+    #[test]
+    fn keyword_compounds_response_rejects_non_string_entry() {
+        // 35 entries with a single number at slot 10.
+        let mut arr: Vec<String> =
+            (0..PYTHON_KEYWORD_COMPOUND_COUNT_WIRE)
+                .map(|i| format!("\"kw{i}\""))
+                .collect();
+        arr[10] = "42".to_string();
+        let body = format!(
+            r#"{{"ok":true,"kind":"keyword-compounds","epoch":0,"compounds":[{}]}}"#,
+            arr.join(",")
+        );
+        let err = Response::parse(body.as_bytes()).unwrap_err();
+        assert!(format!("{err}").contains("not a string"));
+    }
+
+    #[test]
+    fn keyword_compounds_response_rejects_empty_entry() {
+        let mut arr: Vec<String> =
+            (0..PYTHON_KEYWORD_COMPOUND_COUNT_WIRE)
+                .map(|i| format!("\"kw{i}\""))
+                .collect();
+        arr[5] = "\"\"".to_string();
+        let body = format!(
+            r#"{{"ok":true,"kind":"keyword-compounds","epoch":0,"compounds":[{}]}}"#,
+            arr.join(",")
+        );
+        let err = Response::parse(body.as_bytes()).unwrap_err();
+        assert!(format!("{err}").contains("empty"));
+    }
+
+    #[test]
+    fn keyword_compounds_response_rejects_oversize_entry() {
+        // An entry above KEYWORD_COMPOUND_MAX_BYTES must be rejected
+        // before reaching the consumer's from_compounds validator.
+        // Total request must stay under MAX_REQUEST_BYTES (8 KiB) so
+        // the size cap doesn't fire first — 35 small entries + one
+        // ~2 KiB blob is ~2.3 KiB total, fits comfortably.
+        let big = "a".repeat(2000);
+        let mut arr: Vec<String> =
+            (0..PYTHON_KEYWORD_COMPOUND_COUNT_WIRE)
+                .map(|i| format!("\"kw{i}\""))
+                .collect();
+        arr[0] = format!("\"{big}\"");
+        let body = format!(
+            r#"{{"ok":true,"kind":"keyword-compounds","epoch":0,"compounds":[{}]}}"#,
+            arr.join(",")
+        );
+        let err = Response::parse(body.as_bytes()).unwrap_err();
+        assert!(format!("{err}").contains("exceeds cap"), "{err}");
+    }
+
+    #[test]
+    fn keyword_compounds_response_wire_format_is_one_line() {
+        let r = Response::KeywordCompounds {
+            epoch: 0,
+            compounds: Box::new(sample_keyword_compounds()),
         };
         let wire = r.to_wire().unwrap();
         assert_eq!(wire.iter().filter(|b| **b == b'\n').count(), 1);

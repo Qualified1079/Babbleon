@@ -527,6 +527,48 @@ impl DaemonState {
         // Fisher-Yates above.
         Ok((*epoch, wl.all_compounds().clone()))
     }
+
+    /// Derive the 35 per-epoch Python-keyword compounds for layer 2
+    /// (operator scramble).  Sister of [`Self::whitespace_compounds`]
+    /// for the operator-CLI's `babbleon scramble` /
+    /// `babbleon unscramble` path.
+    ///
+    /// Returns the current epoch and the compound array in
+    /// `PYTHON_KEYWORDS` static order.  The daemon's `PerHostSecret`
+    /// stays inside this `DaemonState` for the call; only the
+    /// HKDF-derived output crosses the wire to the trust-tier CLI
+    /// peer (same compartmentalisation as the whitespace path).
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::Vault`] when the daemon is Locked (the secret
+    ///   needed to derive the keyword permutation is not in memory).
+    /// - [`Error::Mapping`] if the keyword derivation fails.  In
+    ///   practice unreachable with the v2 baseline wordlist
+    ///   (369 652 entries; 35×4=140-entry minimum); the error path
+    ///   exists so a future smaller-wordlist swap surfaces loudly
+    ///   rather than panicking.
+    pub fn keyword_compounds(
+        &self,
+    ) -> Result<(
+        u64,
+        [String; babbleon_preprocessor_v2::python_keywords::PYTHON_KEYWORD_COUNT],
+    )> {
+        let SecretState::Unlocked { secret, epoch, .. } = &self.secret_state else {
+            return Err(Error::Vault(
+                "keyword-compounds requires an unlocked vault; \
+                 send Unlock first"
+                    .into(),
+            ));
+        };
+        let kwl = babbleon_preprocessor_v2::KeywordWordlist::build(
+            secret,
+            self.config.wordlist,
+            *epoch,
+        )
+        .map_err(|e| Error::Mapping(e.to_string()))?;
+        Ok((*epoch, kwl.all_compounds_in_static_order()))
+    }
 }
 
 /// Validate and pack the static configuration shared across lifecycle
@@ -1182,6 +1224,96 @@ mod tests {
                 reconstructed.match_prefix(&with_trailer).unwrap();
             assert_eq!(matched, kind);
             assert_eq!(len, compounds[kind.slot()].len());
+        }
+    }
+
+    // ----- keyword_compounds (preprocessor-bridge) -----
+
+    #[test]
+    fn keyword_compounds_returns_thirty_five_distinct_lowercase_strings() {
+        let s = build_state(tracked(), "/wrappers");
+        let (epoch, compounds) = s.keyword_compounds().unwrap();
+        assert_eq!(epoch, 0);
+        assert_eq!(compounds.len(), 35);
+        for c in &compounds {
+            assert!(!c.is_empty(), "compound is empty");
+            assert!(
+                c.bytes().all(|b| b.is_ascii_lowercase()),
+                "compound contains non-lowercase byte: {c:?}",
+            );
+        }
+        let mut sorted: Vec<&str> =
+            compounds.iter().map(String::as_str).collect();
+        sorted.sort_unstable();
+        let len = sorted.len();
+        sorted.dedup();
+        assert_eq!(sorted.len(), len, "compounds must be pairwise distinct");
+    }
+
+    #[test]
+    fn keyword_compounds_locked_returns_vault_error() {
+        let s = build_locked(tracked(), "/wrappers");
+        match s.keyword_compounds() {
+            Err(Error::Vault(m)) => assert!(m.contains("locked"), "{m}"),
+            Err(other) => panic!("expected Error::Vault, got {other:?}"),
+            Ok(_) => panic!("locked state must refuse keyword-compounds"),
+        }
+    }
+
+    #[test]
+    fn keyword_compounds_change_across_rotation() {
+        let mut s = build_state(tracked(), "/wrappers");
+        let (e0, c0) = s.keyword_compounds().unwrap();
+        assert_eq!(e0, 0);
+        s.rotate().unwrap();
+        let (e1, c1) = s.keyword_compounds().unwrap();
+        assert_eq!(e1, 1);
+        // Every keyword's compound moves across rotation (HKDF +
+        // Fisher-Yates over 35 slots — a fixed point is
+        // astronomically unlikely, but the assertion allows one for
+        // resilience against future wordlist swaps).
+        let same: usize = c0
+            .iter()
+            .zip(c1.iter())
+            .filter(|(a, b)| a == b)
+            .count();
+        assert!(
+            same <= 1,
+            "rotation left {same}/35 keyword compounds unchanged",
+        );
+    }
+
+    #[test]
+    fn keyword_compounds_are_deterministic_for_same_secret_and_epoch() {
+        let a = build_state(tracked(), "/wrappers");
+        let b = build_state(tracked(), "/wrappers");
+        let (_, ca) = a.keyword_compounds().unwrap();
+        let (_, cb) = b.keyword_compounds().unwrap();
+        assert_eq!(ca, cb);
+    }
+
+    #[test]
+    fn keyword_compounds_round_trip_through_preprocessor() {
+        // End-to-end seam: take the daemon's compounds, feed them
+        // into the preprocessor's `KeywordWordlist::from_compounds`,
+        // and confirm reverse_lookup recovers each keyword.
+        use babbleon_preprocessor_v2::python_keywords::PYTHON_KEYWORDS;
+        use babbleon_preprocessor_v2::KeywordWordlist;
+        let s = build_state(tracked(), "/wrappers");
+        let (epoch, compounds) = s.keyword_compounds().unwrap();
+        let reconstructed =
+            KeywordWordlist::from_compounds(epoch, compounds.clone())
+                .unwrap();
+        for (i, kw) in PYTHON_KEYWORDS.iter().enumerate() {
+            assert_eq!(
+                reconstructed.compound_for(kw),
+                Some(compounds[i].as_str()),
+                "compound for {kw:?} mismatched",
+            );
+            assert_eq!(
+                reconstructed.reverse_lookup(&compounds[i]),
+                Some(*kw),
+            );
         }
     }
 

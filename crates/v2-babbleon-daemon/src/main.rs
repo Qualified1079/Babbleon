@@ -206,6 +206,17 @@ fn one_shot(
                 println!("  [{i}] {c}");
             }
         }
+        Response::KeywordCompounds { epoch, compounds } => {
+            // Same diagnostic-only treatment as the whitespace
+            // variant: the user-CLI is the production consumer; if
+            // a future scripted use of the daemon binary needs
+            // these, the diagnostic shape is the right thing to
+            // print rather than swallowing the response.
+            println!("keyword-compounds for epoch: {epoch}");
+            for (i, c) in compounds.iter().enumerate() {
+                println!("  [{i}] {c}");
+            }
+        }
         Response::Error { kind, message } => {
             return Err(format!("daemon error ({kind:?}): {message}"));
         }

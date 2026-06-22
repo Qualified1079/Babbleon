@@ -40,6 +40,7 @@ pub fn dispatch(state: &mut DaemonState, request: Request) -> Response {
         Request::RotateMapping => rotate_mapping(state),
         Request::Unlock(secret) => unlock(state, &secret),
         Request::GetWhitespaceCompounds => get_whitespace_compounds(state),
+        Request::GetKeywordCompounds => get_keyword_compounds(state),
     }
 }
 
@@ -112,6 +113,24 @@ fn get_whitespace_compounds(state: &DaemonState) -> Response {
         Ok((epoch, compounds)) => {
             Response::WhitespaceCompounds { epoch, compounds }
         }
+        Err(e) => error_response(&e),
+    }
+}
+
+/// Derive and return the daemon's per-epoch keyword compounds.
+///
+/// Compartmentalisation mirrors [`get_whitespace_compounds`]: this
+/// is the only call site that reads the secret-derived keyword
+/// mapping for inclusion in a wire reply.  The
+/// `DaemonState::keyword_compounds` method keeps the per-host
+/// secret on the daemon side; only the HKDF-derived per-keyword
+/// compounds cross the socket.
+fn get_keyword_compounds(state: &DaemonState) -> Response {
+    match state.keyword_compounds() {
+        Ok((epoch, compounds)) => Response::KeywordCompounds {
+            epoch,
+            compounds: Box::new(compounds),
+        },
         Err(e) => error_response(&e),
     }
 }
@@ -458,6 +477,95 @@ mod tests {
             other => panic!(
                 "expected WhitespaceCompounds, got {other:?}",
             ),
+        }
+    }
+
+    // ----- GetKeywordCompounds dispatch -----
+
+    #[test]
+    fn get_keyword_compounds_returns_response_for_unlocked() {
+        let mut s = state();
+        let r = dispatch(&mut s, Request::GetKeywordCompounds);
+        match r {
+            Response::KeywordCompounds { epoch, compounds } => {
+                assert_eq!(epoch, 0);
+                assert_eq!(compounds.len(), 35);
+                for c in compounds.iter() {
+                    assert!(!c.is_empty());
+                    assert!(c.bytes().all(|b| b.is_ascii_lowercase()));
+                }
+            }
+            other => panic!(
+                "expected KeywordCompounds response, got {other:?}",
+            ),
+        }
+    }
+
+    #[test]
+    fn get_keyword_compounds_returns_vault_error_when_locked() {
+        let mut s = locked_state();
+        let r = dispatch(&mut s, Request::GetKeywordCompounds);
+        match r {
+            Response::Error { kind, message } => {
+                assert_eq!(kind, ErrorKind::Vault);
+                assert!(message.contains("locked"), "{message}");
+            }
+            other => panic!("expected Error response, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn get_keyword_compounds_reports_current_epoch() {
+        let mut s = state();
+        dispatch(&mut s, Request::RotateMapping);
+        dispatch(&mut s, Request::RotateMapping);
+        let r = dispatch(&mut s, Request::GetKeywordCompounds);
+        match r {
+            Response::KeywordCompounds { epoch, .. } => {
+                assert_eq!(epoch, 2);
+            }
+            other => {
+                panic!("expected KeywordCompounds, got {other:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn get_keyword_compounds_round_trips_through_from_compounds() {
+        // The whole point of the wire reply: the operator-side CLI
+        // can reconstruct a working KeywordWordlist from the wire
+        // bytes alone, without holding the per-host secret.
+        let mut s = state();
+        let r = dispatch(&mut s, Request::GetKeywordCompounds);
+        let (epoch, compounds) = match r {
+            Response::KeywordCompounds { epoch, compounds } => {
+                (epoch, *compounds)
+            }
+            other => panic!("expected KeywordCompounds, got {other:?}"),
+        };
+        let reconstructed =
+            babbleon_preprocessor_v2::KeywordWordlist::from_compounds(
+                epoch, compounds,
+            )
+            .expect(
+                "daemon-derived compounds must satisfy from_compounds invariants",
+            );
+        // Reconstructed table must agree with a freshly built one
+        // for the same (secret, epoch).  Verifies the wire surface
+        // is faithful end-to-end.
+        let direct = babbleon_preprocessor_v2::KeywordWordlist::build(
+            &babbleon_core_v2::PerHostSecret::from_bytes(&[3u8; 32])
+                .unwrap(),
+            babbleon_core_v2::Wordlist::english_baseline(),
+            epoch,
+        )
+        .unwrap();
+        for kw in babbleon_preprocessor_v2::PYTHON_KEYWORDS {
+            assert_eq!(
+                reconstructed.compound_for(kw),
+                direct.compound_for(kw),
+                "compound for {kw:?} differs between wire path and direct path",
+            );
         }
     }
 

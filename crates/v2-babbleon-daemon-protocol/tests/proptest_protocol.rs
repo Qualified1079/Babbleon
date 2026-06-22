@@ -31,8 +31,11 @@
 #![allow(clippy::naive_bytecount, clippy::doc_markdown)]
 
 use babbleon_daemon_protocol_v2::{
-    protocol::WHITESPACE_COMPOUND_COUNT_WIRE, ErrorKind, Request, Response,
-    UnlockSecret, MAX_REQUEST_BYTES, UNLOCK_SECRET_LEN,
+    protocol::{
+        PYTHON_KEYWORD_COMPOUND_COUNT_WIRE, WHITESPACE_COMPOUND_COUNT_WIRE,
+    },
+    ErrorKind, Request, Response, UnlockSecret, MAX_REQUEST_BYTES,
+    UNLOCK_SECRET_LEN,
 };
 use proptest::array::uniform32;
 use proptest::collection::vec;
@@ -54,6 +57,7 @@ fn arb_request() -> impl Strategy<Value = Request> {
         Just(Request::RotateMapping),
         arb_unlock_secret().prop_map(Request::Unlock),
         Just(Request::GetWhitespaceCompounds),
+        Just(Request::GetKeywordCompounds),
     ]
 }
 
@@ -87,6 +91,31 @@ fn arb_compounds()
             v[3].clone(),
             v[4].clone(),
         ]
+    })
+}
+
+/// 35 distinct keyword compounds.  Same distinctness-forcing
+/// strategy as `arb_compounds`, scaled to the
+/// `PYTHON_KEYWORD_COMPOUND_COUNT_WIRE` slot count.  The two-byte
+/// suffix (`aa..bj`) keeps every entry under the wire's
+/// `KEYWORD_COMPOUND_MAX_BYTES` cap even after the base draw.
+fn arb_keyword_compounds()
+-> impl Strategy<Value = [String; PYTHON_KEYWORD_COMPOUND_COUNT_WIRE]> {
+    proptest::collection::vec(
+        arb_compound(),
+        PYTHON_KEYWORD_COMPOUND_COUNT_WIRE..=PYTHON_KEYWORD_COMPOUND_COUNT_WIRE,
+    )
+    .prop_map(|mut v| {
+        for (i, s) in v.iter_mut().enumerate() {
+            let hi = u8::try_from(i / 26).expect("i/26 < 26") + b'a';
+            let lo = u8::try_from(i % 26).expect("i%26 < 26") + b'a';
+            s.push(char::from(hi));
+            s.push(char::from(lo));
+        }
+        v.try_into().expect(
+            "vec length matches PYTHON_KEYWORD_COMPOUND_COUNT_WIRE \
+             by construction",
+        )
     })
 }
 
@@ -135,6 +164,14 @@ fn arb_response() -> impl Strategy<Value = Response> {
         (any::<u64>(), arb_compounds()).prop_map(|(epoch, compounds)| {
             Response::WhitespaceCompounds { epoch, compounds }
         }),
+        (any::<u64>(), arb_keyword_compounds()).prop_map(
+            |(epoch, compounds)| {
+                Response::KeywordCompounds {
+                    epoch,
+                    compounds: Box::new(compounds),
+                }
+            }
+        ),
         (arb_error_kind(), ".{0,256}").prop_map(|(kind, message)| {
             Response::Error { kind, message }
         }),
