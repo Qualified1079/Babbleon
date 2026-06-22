@@ -136,6 +136,69 @@ fn score_subcommand_marks_unparseable_answer_as_format_error() {
 }
 
 #[test]
+fn summary_with_threshold_exits_2_on_breach() {
+    let tmp = tempfile::tempdir().unwrap();
+    let runs = tmp.path().join("runs.jsonl");
+    let body = r#"{"challenge_name":"c","layer_config":{"layer2_keyword_scramble":true,"layer3_whitespace_as_words":true,"layer7_secret_literal":false,"seed_byte":171,"epoch":0},"adversary_label":"adv","attempt_index":0,"outcome":"pass"}
+{"challenge_name":"c","layer_config":{"layer2_keyword_scramble":true,"layer3_whitespace_as_words":true,"layer7_secret_literal":false,"seed_byte":171,"epoch":0},"adversary_label":"adv","attempt_index":1,"outcome":"pass"}
+"#;
+    std::fs::write(&runs, body).unwrap();
+
+    let output = Command::new(bench_binary())
+        .arg("summary")
+        .arg("--records")
+        .arg(&runs)
+        .arg("--pass-threshold-pct")
+        .arg("50")
+        .output()
+        .expect("invoke babbleon-bench");
+    // Pass-fraction is 100% (2/2); threshold is 50% → breach →
+    // exit code 2.
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "expected exit 2 on threshold breach, got {:?}",
+        output.status.code(),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("CI gate breach"),
+        "expected breach diagnostic on stderr: {stderr}",
+    );
+    // The markdown table still lands on stdout.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("| c | l2-plus-l3 | 2/2 (100%) |"));
+}
+
+#[test]
+fn summary_with_threshold_exits_0_when_under_threshold() {
+    let tmp = tempfile::tempdir().unwrap();
+    let runs = tmp.path().join("runs.jsonl");
+    // 1/4 = 25% pass rate.
+    let body = r#"{"challenge_name":"c","layer_config":{"layer2_keyword_scramble":true,"layer3_whitespace_as_words":true,"layer7_secret_literal":false,"seed_byte":171,"epoch":0},"adversary_label":"adv","attempt_index":0,"outcome":"pass"}
+{"challenge_name":"c","layer_config":{"layer2_keyword_scramble":true,"layer3_whitespace_as_words":true,"layer7_secret_literal":false,"seed_byte":171,"epoch":0},"adversary_label":"adv","attempt_index":1,"outcome":"fail"}
+{"challenge_name":"c","layer_config":{"layer2_keyword_scramble":true,"layer3_whitespace_as_words":true,"layer7_secret_literal":false,"seed_byte":171,"epoch":0},"adversary_label":"adv","attempt_index":2,"outcome":"fail"}
+{"challenge_name":"c","layer_config":{"layer2_keyword_scramble":true,"layer3_whitespace_as_words":true,"layer7_secret_literal":false,"seed_byte":171,"epoch":0},"adversary_label":"adv","attempt_index":3,"outcome":"fail"}
+"#;
+    std::fs::write(&runs, body).unwrap();
+
+    let output = Command::new(bench_binary())
+        .arg("summary")
+        .arg("--records")
+        .arg(&runs)
+        .arg("--pass-threshold-pct")
+        .arg("50")
+        .output()
+        .expect("invoke babbleon-bench");
+    // 25% < 50% threshold → no breach → exit code 0.
+    assert!(
+        output.status.success(),
+        "expected exit 0 under threshold, got {:?}",
+        output.status.code(),
+    );
+}
+
+#[test]
 fn summary_subcommand_aggregates_jsonl_into_markdown() {
     let tmp = tempfile::tempdir().unwrap();
     let runs = tmp.path().join("runs.jsonl");

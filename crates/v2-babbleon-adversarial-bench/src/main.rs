@@ -112,6 +112,16 @@ enum Command {
         /// be repeated.
         #[arg(short, long, value_name = "FILE", required = true)]
         records: Vec<PathBuf>,
+        /// Optional crack-fraction CI gate: if any (challenge,
+        /// `layer_config`, adversary) cell's pass-rate exceeds this
+        /// percent (0-100), `summary` exits with status 2 after
+        /// printing the table.  The HANDOFF spec calls this the
+        /// "regression gate" — a PR that weakens the scramble
+        /// shows up as a higher crack-fraction here.  Cells
+        /// without graded attempts (all format-errors or all
+        /// refused-by-policy) are ignored.
+        #[arg(long, value_name = "PCT")]
+        pass_threshold_pct: Option<u32>,
     },
 
     /// Drive an external adversary command across the full
@@ -245,7 +255,10 @@ fn main() -> Result<()> {
             &adversary,
             attempt,
         ),
-        Command::Summary { records } => subcommand_summary(&records),
+        Command::Summary {
+            records,
+            pass_threshold_pct,
+        } => subcommand_summary(&records, pass_threshold_pct),
         Command::RunMatrix {
             challenges_dir,
             layer_config,
@@ -320,7 +333,10 @@ fn subcommand_score(
     Ok(())
 }
 
-fn subcommand_summary(record_paths: &[PathBuf]) -> Result<()> {
+fn subcommand_summary(
+    record_paths: &[PathBuf],
+    pass_threshold_pct: Option<u32>,
+) -> Result<()> {
     let mut all_records: Vec<RunRecord> = Vec::new();
     for path in record_paths {
         let body = read_input_path(path).with_context(|| {
@@ -332,10 +348,58 @@ fn subcommand_summary(record_paths: &[PathBuf]) -> Result<()> {
         all_records.append(&mut parsed);
     }
     let table = render_markdown(&all_records);
-    let mut stdout = io::stdout().lock();
-    stdout.write_all(table.as_bytes()).context("write stdout")?;
-    stdout.flush().context("flush stdout")?;
+    {
+        let mut stdout = io::stdout().lock();
+        stdout.write_all(table.as_bytes()).context("write stdout")?;
+        stdout.flush().context("flush stdout")?;
+    }
+
+    if let Some(threshold_pct) = pass_threshold_pct {
+        let breaches = cells_above_threshold(&all_records, threshold_pct);
+        if !breaches.is_empty() {
+            // Print the breach list to stderr so the markdown
+            // table on stdout stays clean for the operator to
+            // paste into HANDOFF.
+            eprintln!(
+                "\nCI gate breach: {} cell(s) exceed pass-threshold {}%:",
+                breaches.len(),
+                threshold_pct,
+            );
+            for breach in &breaches {
+                eprintln!("  {breach}");
+            }
+            std::process::exit(2);
+        }
+    }
     Ok(())
+}
+
+/// Identify `(challenge, layer_config, adversary)` cells whose
+/// crack-fraction exceeds the threshold (as a percent).  Returns
+/// a list of operator-friendly breach descriptions.
+fn cells_above_threshold(
+    records: &[RunRecord],
+    threshold_pct: u32,
+) -> Vec<String> {
+    use babbleon_adversarial_bench_v2::summary::aggregate;
+    let cells = aggregate(records);
+    let threshold_frac = f64::from(threshold_pct) / 100.0;
+    let mut breaches = Vec::new();
+    for ((challenge, config_label, adversary), cell) in &cells {
+        if let Some(frac) = cell.crack_fraction() {
+            if frac > threshold_frac {
+                breaches.push(format!(
+                    "{challenge} / {config_label} / {adversary}: \
+                     {}/{} pass ({:.1}% > {threshold_pct}%)",
+                    cell.pass_count,
+                    cell.graded_count(),
+                    frac * 100.0,
+                ));
+            }
+        }
+    }
+    breaches.sort();
+    breaches
 }
 
 fn subcommand_run_matrix(
