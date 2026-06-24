@@ -131,9 +131,18 @@ fn each_seed_challenge_predicate_passes_on_its_expected_answer() {
     // catches typos in the seed-challenge files.
     for path in seed_challenge_paths() {
         let c = Challenge::from_toml_file(&path).unwrap();
-        let expected = match &c.success_predicate {
+        let expected: &str = match &c.success_predicate {
             SuccessPredicate::ExactMatch { expected }
             | SuccessPredicate::CaseInsensitiveMatch { expected } => expected,
+            SuccessPredicate::KeywordMatch { synonyms } => {
+                // Self-check on KeywordMatch uses the first synonym
+                // as the canonical answer.  Challenge::validate
+                // already guarantees the list is non-empty.
+                synonyms
+                    .first()
+                    .expect("KeywordMatch synonyms validated non-empty")
+                    .as_str()
+            }
         };
         let model_output = format!(r#"{{"answer": "{}"}}"#, escape_for_json(expected));
         let outcome = score(&c.success_predicate, &model_output);

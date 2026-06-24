@@ -184,6 +184,24 @@ impl Challenge {
                     });
                 }
             }
+            SuccessPredicate::KeywordMatch { synonyms } => {
+                if synonyms.is_empty() {
+                    return Err(Error::ValidateChallenge {
+                        path: PathBuf::from("<inline>"),
+                        message:
+                            "predicate.synonyms must contain at least one entry"
+                                .into(),
+                    });
+                }
+                if synonyms.iter().any(|s| s.trim().is_empty()) {
+                    return Err(Error::ValidateChallenge {
+                        path: PathBuf::from("<inline>"),
+                        message:
+                            "predicate.synonyms entries must be non-empty (a blank synonym would Pass on any blank answer)"
+                                .into(),
+                    });
+                }
+            }
         }
         Ok(())
     }
@@ -220,8 +238,9 @@ expected = "hunter2"
             SuccessPredicate::ExactMatch { expected } => {
                 assert_eq!(expected, "hunter2");
             }
-            SuccessPredicate::CaseInsensitiveMatch { .. } => {
-                panic!("expected ExactMatch, got CaseInsensitiveMatch")
+            SuccessPredicate::CaseInsensitiveMatch { .. }
+            | SuccessPredicate::KeywordMatch { .. } => {
+                panic!("expected ExactMatch, got other variant")
             }
         }
     }
@@ -281,6 +300,79 @@ expected = ""
         match err {
             Error::ValidateChallenge { message, .. } => {
                 assert!(message.contains("expected"));
+            }
+            other => panic!("expected ValidateChallenge, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_and_validates_a_keyword_match_challenge() {
+        let toml = r#"
+name = "which-keyword"
+goal_description = "Which control structure does the loop body use?"
+source = """
+def f(n):
+    for i in range(n):
+        if i % 2 == 0:
+            print(i)
+"""
+
+[predicate]
+kind = "keyword-match"
+synonyms = ["if", "if-else", "if/else"]
+"#;
+        let c = Challenge::from_toml_str(toml).unwrap();
+        assert_eq!(c.name, "which-keyword");
+        match c.success_predicate {
+            SuccessPredicate::KeywordMatch { synonyms } => {
+                assert_eq!(synonyms.len(), 3);
+                assert_eq!(synonyms[0], "if");
+            }
+            other => panic!("expected KeywordMatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_empty_keyword_match_synonyms_list() {
+        let toml = r#"
+name = "which-keyword"
+goal_description = "x"
+source = "def f(): pass"
+
+[predicate]
+kind = "keyword-match"
+synonyms = []
+"#;
+        let err = Challenge::from_toml_str(toml).unwrap_err();
+        match err {
+            Error::ValidateChallenge { message, .. } => {
+                assert!(
+                    message.contains("synonyms"),
+                    "unexpected message: {message}"
+                );
+            }
+            other => panic!("expected ValidateChallenge, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_blank_keyword_match_synonym_entry() {
+        let toml = r#"
+name = "which-keyword"
+goal_description = "x"
+source = "def f(): pass"
+
+[predicate]
+kind = "keyword-match"
+synonyms = ["if", "  "]
+"#;
+        let err = Challenge::from_toml_str(toml).unwrap_err();
+        match err {
+            Error::ValidateChallenge { message, .. } => {
+                assert!(
+                    message.contains("synonyms"),
+                    "unexpected message: {message}"
+                );
             }
             other => panic!("expected ValidateChallenge, got {other:?}"),
         }

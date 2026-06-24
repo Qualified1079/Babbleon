@@ -75,6 +75,23 @@ pub enum SuccessPredicate {
         /// The literal answer in any letter casing.
         expected: String,
     },
+
+    /// The model's answer must match any one of `synonyms`
+    /// (case-insensitive, trimmed).  Use this for challenges whose
+    /// canonical answer is a Python keyword or short token with
+    /// multiple acceptable forms — e.g. an L2-target challenge
+    /// asking "which control structure does this loop use?" should
+    /// accept `if`, `if-else`, `if/else`, `if statement` as the
+    /// same answer.
+    ///
+    /// `synonyms` must contain at least one entry; the validator on
+    /// `Challenge::validate` rejects an empty list.  All matching
+    /// is case-insensitive (ASCII) and the model answer is trimmed
+    /// before comparison.
+    KeywordMatch {
+        /// The set of acceptable answer forms.  Must be non-empty.
+        synonyms: Vec<String>,
+    },
 }
 
 impl SuccessPredicate {
@@ -93,6 +110,25 @@ impl SuccessPredicate {
             expected: expected.into(),
         }
     }
+
+    /// Construct a `KeywordMatch` predicate from an iterable of
+    /// acceptable synonyms.  The returned predicate accepts any one
+    /// of the supplied synonyms (case-insensitive ASCII, trimmed).
+    ///
+    /// The constructor does NOT deduplicate or reject an empty
+    /// iterator — the `Challenge::validate` path is the canonical
+    /// non-empty enforcement point so deserialised challenges fail
+    /// at load time, not at constructor time.
+    #[must_use]
+    pub fn keyword_match<I, S>(synonyms: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        SuccessPredicate::KeywordMatch {
+            synonyms: synonyms.into_iter().map(Into::into).collect(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -106,7 +142,8 @@ mod tests {
             SuccessPredicate::ExactMatch { expected } => {
                 assert_eq!(expected, "hunter2");
             }
-            SuccessPredicate::CaseInsensitiveMatch { .. } => {
+            SuccessPredicate::CaseInsensitiveMatch { .. }
+            | SuccessPredicate::KeywordMatch { .. } => {
                 panic!("constructor produced wrong variant")
             }
         }
@@ -119,7 +156,49 @@ mod tests {
             SuccessPredicate::CaseInsensitiveMatch { expected } => {
                 assert_eq!(expected, "HUNTER2");
             }
-            SuccessPredicate::ExactMatch { .. } => {
+            SuccessPredicate::ExactMatch { .. }
+            | SuccessPredicate::KeywordMatch { .. } => {
+                panic!("constructor produced wrong variant")
+            }
+        }
+    }
+
+    #[test]
+    fn keyword_match_constructor_round_trips() {
+        let p =
+            SuccessPredicate::keyword_match(["if", "if-else", "if/else"]);
+        match p {
+            SuccessPredicate::KeywordMatch { synonyms } => {
+                assert_eq!(
+                    synonyms,
+                    vec![
+                        "if".to_string(),
+                        "if-else".to_string(),
+                        "if/else".to_string(),
+                    ],
+                );
+            }
+            SuccessPredicate::ExactMatch { .. }
+            | SuccessPredicate::CaseInsensitiveMatch { .. } => {
+                panic!("constructor produced wrong variant")
+            }
+        }
+    }
+
+    #[test]
+    fn keyword_match_accepts_empty_iter_at_constructor_level() {
+        // The constructor itself is unopinionated about emptiness;
+        // Challenge::validate is the enforcement point.  This keeps
+        // the constructor symmetrical with exact_match / case_-
+        // insensitive_match — none of them validate at construct.
+        let empty: Vec<&str> = Vec::new();
+        let p = SuccessPredicate::keyword_match(empty);
+        match p {
+            SuccessPredicate::KeywordMatch { synonyms } => {
+                assert!(synonyms.is_empty());
+            }
+            SuccessPredicate::ExactMatch { .. }
+            | SuccessPredicate::CaseInsensitiveMatch { .. } => {
                 panic!("constructor produced wrong variant")
             }
         }
@@ -162,5 +241,47 @@ mod tests {
         let a = SuccessPredicate::exact_match("X");
         let b = SuccessPredicate::case_insensitive_match("X");
         assert_ne!(a, b);
+        let c = SuccessPredicate::keyword_match(["X"]);
+        assert_ne!(a, c);
+        assert_ne!(b, c);
+    }
+
+    #[test]
+    fn toml_round_trip_for_keyword_match() {
+        let p = SuccessPredicate::keyword_match(["if", "if-else"]);
+        let s = toml::to_string(&p).unwrap();
+        assert!(s.contains("kind"));
+        assert!(s.contains("keyword-match"));
+        assert!(s.contains("if"));
+        let back: SuccessPredicate = toml::from_str(&s).unwrap();
+        assert_eq!(back, p);
+    }
+
+    #[test]
+    fn toml_parses_keyword_match_with_inline_synonyms() {
+        // The TOML form the operator types in a challenge file.
+        let raw = r#"
+            kind = "keyword-match"
+            synonyms = ["if", "if-else", "if/else"]
+        "#;
+        let p: SuccessPredicate = toml::from_str(raw).unwrap();
+        match p {
+            SuccessPredicate::KeywordMatch { synonyms } => {
+                assert_eq!(synonyms.len(), 3);
+                assert_eq!(synonyms[0], "if");
+                assert_eq!(synonyms[1], "if-else");
+                assert_eq!(synonyms[2], "if/else");
+            }
+            other => panic!("expected KeywordMatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn json_round_trip_for_keyword_match() {
+        let p = SuccessPredicate::keyword_match(["foo", "bar"]);
+        let j = serde_json::to_string(&p).unwrap();
+        assert!(j.contains("\"kind\":\"keyword-match\""));
+        let back: SuccessPredicate = serde_json::from_str(&j).unwrap();
+        assert_eq!(back, p);
     }
 }

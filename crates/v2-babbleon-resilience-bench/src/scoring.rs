@@ -138,6 +138,16 @@ pub fn score(
                 ScoreOutcome::Fail
             }
         }
+        SuccessPredicate::KeywordMatch { synonyms } => {
+            if synonyms
+                .iter()
+                .any(|s| trimmed.eq_ignore_ascii_case(s))
+            {
+                ScoreOutcome::Pass
+            } else {
+                ScoreOutcome::Fail
+            }
+        }
     }
 }
 
@@ -423,6 +433,85 @@ mod tests {
              {\"answer\": \"hunter2\"}",
         );
         assert_eq!(out, ScoreOutcome::Pass);
+    }
+
+    // ----- KeywordMatch -----
+
+    #[test]
+    fn keyword_match_passes_on_first_synonym() {
+        let p = SuccessPredicate::keyword_match(["if", "if-else", "if/else"]);
+        assert_eq!(
+            score(&p, r#"{"answer": "if"}"#),
+            ScoreOutcome::Pass,
+        );
+    }
+
+    #[test]
+    fn keyword_match_passes_on_any_synonym() {
+        let p = SuccessPredicate::keyword_match(["if", "if-else", "if/else"]);
+        for ans in ["if-else", "if/else"] {
+            let body = format!(r#"{{"answer": "{ans}"}}"#);
+            assert_eq!(
+                score(&p, &body),
+                ScoreOutcome::Pass,
+                "expected Pass on synonym {ans}; body={body}",
+            );
+        }
+    }
+
+    #[test]
+    fn keyword_match_is_case_insensitive() {
+        let p = SuccessPredicate::keyword_match(["if", "if-else"]);
+        for ans in ["IF", "If", "IF-ELSE", "If-Else"] {
+            let body = format!(r#"{{"answer": "{ans}"}}"#);
+            assert_eq!(
+                score(&p, &body),
+                ScoreOutcome::Pass,
+                "expected case-insensitive Pass on {ans}",
+            );
+        }
+    }
+
+    #[test]
+    fn keyword_match_trims_surrounding_whitespace() {
+        let p = SuccessPredicate::keyword_match(["if"]);
+        assert_eq!(
+            score(&p, r#"{"answer": "   if   "}"#),
+            ScoreOutcome::Pass,
+        );
+    }
+
+    #[test]
+    fn keyword_match_fails_on_non_synonym() {
+        let p = SuccessPredicate::keyword_match(["if", "if-else"]);
+        assert_eq!(
+            score(&p, r#"{"answer": "while"}"#),
+            ScoreOutcome::Fail,
+        );
+    }
+
+    #[test]
+    fn keyword_match_does_not_substring_match() {
+        // "if-statement" must NOT pass even though it contains "if".
+        // KeywordMatch is whole-string after trim, not substring.
+        let p = SuccessPredicate::keyword_match(["if"]);
+        assert_eq!(
+            score(&p, r#"{"answer": "if-statement"}"#),
+            ScoreOutcome::Fail,
+        );
+    }
+
+    #[test]
+    fn keyword_match_with_empty_synonym_list_always_fails() {
+        // The Challenge validator rejects this at load time; here we
+        // exercise the path defensively: a directly-constructed
+        // empty-synonyms predicate must Fail every answer (it has
+        // nothing to accept), not Pass on anything.
+        let p = SuccessPredicate::keyword_match::<Vec<&str>, &str>(Vec::new());
+        assert_eq!(
+            score(&p, r#"{"answer": "anything"}"#),
+            ScoreOutcome::Fail,
+        );
     }
 
     #[test]
