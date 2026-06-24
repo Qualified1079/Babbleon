@@ -138,6 +138,7 @@
 #![deny(missing_docs)]
 #![warn(clippy::pedantic)]
 
+pub mod adversary_capability;
 pub mod evaluator;
 pub mod challenge;
 pub mod errors;
@@ -150,6 +151,7 @@ pub mod secret_literal_layer;
 pub mod success_predicate;
 pub mod summary;
 
+pub use adversary_capability::AdversaryCapabilityTier;
 pub use evaluator::{run_attempts, Evaluator, SubprocessEvaluator};
 pub use challenge::Challenge;
 pub use errors::{Error, Result};
