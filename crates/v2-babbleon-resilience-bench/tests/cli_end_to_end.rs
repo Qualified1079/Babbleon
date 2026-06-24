@@ -444,3 +444,203 @@ fn score_subcommand_reads_stdin_when_model_output_is_dash() {
     let line = String::from_utf8(output.stdout).unwrap();
     assert!(line.contains("\"outcome\":\"pass\""), "{line}");
 }
+
+// ----- --sandbox-parent-dir flag (HANDOFF Blocker 1 CLI followup) -----
+
+/// `run` populates the per-cell sandbox directory with the four
+/// expected files (`prompt.md`, `scrambled.txt`, `baseline.py`,
+/// `notepad/`) and the evaluator subprocess's reported cwd matches
+/// the sandbox directory.  The evaluator command (`pwd`) writes its
+/// cwd to stdout; the bench scores that as the model's answer.
+/// We don't assert pass/fail — we assert the sandbox layout.
+#[test]
+fn run_with_sandbox_parent_dir_creates_per_cell_sandbox_files() {
+    let challenge = challenges_dir().join("auth-literal-string.toml");
+    let tmp = tempfile::tempdir().unwrap();
+    let parent = tmp.path().to_path_buf();
+
+    let output = Command::new(bench_binary())
+        .arg("run")
+        .arg("--challenge")
+        .arg(&challenge)
+        .arg("--layer-config")
+        .arg("l2-plus-l3")
+        .arg("--evaluator")
+        .arg("sandbox-test")
+        .arg("--attempts")
+        .arg("1")
+        .arg("--sandbox-parent-dir")
+        .arg(&parent)
+        // Trivial evaluator: read prompt from stdin (discard) and
+        // emit a fixed answer.  We just want the side effect of the
+        // sandbox files being created.
+        .arg("--command")
+        .arg("sh")
+        .arg("--command=-c")
+        .arg(r#"--command=cat > /dev/null; printf '%s' '{"answer": "x"}'"#)
+        .output()
+        .expect("invoke babbleon-bench");
+    assert!(
+        output.status.success(),
+        "run failed: stderr={}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    // The sandbox dir is named `<challenge>-<layer-config-label>`.
+    let cell_dir = parent.join("auth-literal-string-l2-plus-l3");
+    assert!(
+        cell_dir.is_dir(),
+        "cell sandbox dir {} not created",
+        cell_dir.display(),
+    );
+    for f in ["prompt.md", "scrambled.txt", "baseline.py"] {
+        assert!(
+            cell_dir.join(f).is_file(),
+            "sandbox file {} missing",
+            cell_dir.join(f).display(),
+        );
+    }
+    assert!(
+        cell_dir.join("notepad").is_dir(),
+        "sandbox notepad dir missing in {}",
+        cell_dir.display(),
+    );
+    // prompt.md must contain the full prompt (asserted by spotting
+    // a known section header).
+    let prompt = std::fs::read_to_string(cell_dir.join("prompt.md"))
+        .expect("read prompt.md");
+    assert!(prompt.contains("## TASK"), "prompt.md missing ## TASK");
+    assert!(
+        prompt.contains("## SCRAMBLED SOURCE"),
+        "prompt.md missing scrambled-source header",
+    );
+}
+
+/// `run-matrix` honours `--sandbox-parent-dir` the same way as `run`:
+/// each `(challenge, layer_config)` cell gets its own subdir.
+#[test]
+fn run_matrix_with_sandbox_parent_dir_creates_one_dir_per_cell() {
+    let tmp = tempfile::tempdir().unwrap();
+    let parent = tmp.path().to_path_buf();
+
+    let output = Command::new(bench_binary())
+        .arg("run-matrix")
+        .arg("--challenges-dir")
+        .arg(challenges_dir())
+        .arg("--layer-config")
+        .arg("l3-only")
+        .arg("--layer-config")
+        .arg("l2-plus-l3")
+        .arg("--evaluator")
+        .arg("matrix-sandbox-test")
+        .arg("--attempts")
+        .arg("1")
+        .arg("--sandbox-parent-dir")
+        .arg(&parent)
+        .arg("--command")
+        .arg("sh")
+        .arg("--command=-c")
+        .arg(r#"--command=cat > /dev/null; printf '%s' '{"answer": "x"}'"#)
+        .output()
+        .expect("invoke babbleon-bench");
+    assert!(
+        output.status.success(),
+        "run-matrix failed: stderr={}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    // Count subdirs created: one per (challenge, layer_config).
+    let subdirs: Vec<_> = std::fs::read_dir(&parent)
+        .unwrap()
+        .filter_map(std::result::Result::ok)
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .collect();
+    let n_challenges = std::fs::read_dir(challenges_dir())
+        .unwrap()
+        .filter_map(std::result::Result::ok)
+        .filter(|e| e.path().extension().is_some_and(|x| x == "toml"))
+        .count();
+    let expected = n_challenges * 2;
+    assert_eq!(
+        subdirs.len(),
+        expected,
+        "expected {expected} per-cell sandbox dirs ({n_challenges} \
+         challenges × 2 layer configs), got {}: {:?}",
+        subdirs.len(),
+        subdirs.iter().map(std::fs::DirEntry::file_name).collect::<Vec<_>>(),
+    );
+
+    // Each must contain prompt.md.
+    for entry in &subdirs {
+        let prompt = entry.path().join("prompt.md");
+        assert!(
+            prompt.is_file(),
+            "missing prompt.md in {}",
+            entry.path().display(),
+        );
+    }
+}
+
+/// `--sandbox-parent-dir` rejects a non-existent parent with a
+/// clear error before launching the evaluator.
+#[test]
+fn run_rejects_missing_sandbox_parent_dir() {
+    let challenge = challenges_dir().join("auth-literal-string.toml");
+    let tmp = tempfile::tempdir().unwrap();
+    let bogus = tmp.path().join("does-not-exist");
+
+    let output = Command::new(bench_binary())
+        .arg("run")
+        .arg("--challenge")
+        .arg(&challenge)
+        .arg("--evaluator")
+        .arg("sandbox-missing-test")
+        .arg("--sandbox-parent-dir")
+        .arg(&bogus)
+        .arg("--command")
+        .arg("true")
+        .output()
+        .expect("invoke babbleon-bench");
+    assert!(
+        !output.status.success(),
+        "expected failure when sandbox parent dir does not exist",
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("sandbox-parent-dir")
+            || stderr.contains("does not exist"),
+        "stderr should mention the missing-dir error: {stderr}",
+    );
+}
+
+/// `run-matrix --sandbox-parent-dir <missing>` errors the same way.
+#[test]
+fn run_matrix_rejects_missing_sandbox_parent_dir() {
+    let tmp = tempfile::tempdir().unwrap();
+    let bogus = tmp.path().join("does-not-exist");
+
+    let output = Command::new(bench_binary())
+        .arg("run-matrix")
+        .arg("--challenges-dir")
+        .arg(challenges_dir())
+        .arg("--layer-config")
+        .arg("l3-only")
+        .arg("--evaluator")
+        .arg("matrix-sandbox-missing-test")
+        .arg("--sandbox-parent-dir")
+        .arg(&bogus)
+        .arg("--command")
+        .arg("true")
+        .output()
+        .expect("invoke babbleon-bench");
+    assert!(
+        !output.status.success(),
+        "expected failure when sandbox parent dir does not exist",
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("sandbox-parent-dir")
+            || stderr.contains("does not exist"),
+        "stderr should mention the missing-dir error: {stderr}",
+    );
+}

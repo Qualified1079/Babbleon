@@ -162,6 +162,24 @@ enum Command {
         /// Evaluator command argv.  Same syntax as `run`.
         #[arg(long = "command", value_name = "ARG", required = true)]
         command: Vec<String>,
+        /// Sandbox the evaluator subprocess to a per-cell working
+        /// directory beneath this parent dir.  When set, each
+        /// `(challenge, layer_config)` cell gets a dedicated
+        /// subdirectory containing `prompt.md`, `scrambled.txt`,
+        /// `baseline.py`, and an empty `notepad/`; the evaluator
+        /// subprocess runs with cwd set to that directory and
+        /// therefore cannot read sibling-cell answer keys from the
+        /// repo (the failure mode HANDOFF Blocker 1 documents).
+        ///
+        /// The parent dir must already exist.  The bench creates
+        /// per-cell subdirs but does NOT clean them up — operators
+        /// can archive a finished matrix as evidence, or `rm -rf`
+        /// it themselves.
+        ///
+        /// When unset, the evaluator inherits the bench process's
+        /// cwd — same behaviour as pre-Blocker-1 runs.
+        #[arg(long, value_name = "DIR")]
+        sandbox_parent_dir: Option<PathBuf>,
     },
 
     /// Drive an external evaluator command end-to-end for N
@@ -198,6 +216,12 @@ enum Command {
         /// argv entry.  The first occurrence is the program name.
         #[arg(long = "command", value_name = "ARG", required = true)]
         command: Vec<String>,
+        /// Sandbox the evaluator subprocess to a per-cell working
+        /// directory beneath this parent dir.  See `run-matrix
+        /// --sandbox-parent-dir` for the full semantics; this flag
+        /// behaves identically for the single-cell case.
+        #[arg(long, value_name = "DIR")]
+        sandbox_parent_dir: Option<PathBuf>,
     },
 }
 
@@ -276,6 +300,7 @@ fn main() -> Result<()> {
             evaluator,
             attempts,
             command,
+            sandbox_parent_dir,
         } => subcommand_run_matrix(
             &challenges_dir,
             &layer_config
@@ -285,6 +310,7 @@ fn main() -> Result<()> {
             &evaluator,
             attempts,
             command,
+            sandbox_parent_dir.as_deref(),
         ),
         Command::Run {
             challenge,
@@ -292,12 +318,14 @@ fn main() -> Result<()> {
             evaluator,
             attempts,
             command,
+            sandbox_parent_dir,
         } => subcommand_run(
             &challenge,
             layer_config.to_config(),
             &evaluator,
             attempts,
             command,
+            sandbox_parent_dir.as_deref(),
         ),
     }
 }
@@ -419,7 +447,16 @@ fn subcommand_run_matrix(
     evaluator_label: &str,
     attempts: u32,
     command: Vec<String>,
+    sandbox_parent: Option<&Path>,
 ) -> Result<()> {
+    if let Some(parent) = sandbox_parent {
+        if !parent.is_dir() {
+            return Err(anyhow!(
+                "--sandbox-parent-dir {} does not exist or is not a directory",
+                parent.display(),
+            ));
+        }
+    }
     // Load every challenge file in the directory.
     let mut challenge_paths: Vec<PathBuf> = fs::read_dir(challenges_dir)
         .with_context(|| {
@@ -444,14 +481,20 @@ fn subcommand_run_matrix(
         let challenge = Challenge::from_toml_file(path)
             .with_context(|| format!("load challenge {}", path.display()))?;
         for config in layer_configs {
-            let records = run_attempts(&challenge, *config, &adv, attempts, None)
-                .map_err(|e| {
-                    anyhow!(
-                        "run cell {}/{}: {e}",
-                        challenge.name,
-                        config.label(),
-                    )
-                })?;
+            let records = run_attempts(
+                &challenge,
+                *config,
+                &adv,
+                attempts,
+                sandbox_parent,
+            )
+            .map_err(|e| {
+                anyhow!(
+                    "run cell {}/{}: {e}",
+                    challenge.name,
+                    config.label(),
+                )
+            })?;
             for record in &records {
                 let line = record
                     .to_jsonl()
@@ -472,12 +515,21 @@ fn subcommand_run(
     evaluator_label: &str,
     attempts: u32,
     command: Vec<String>,
+    sandbox_parent: Option<&Path>,
 ) -> Result<()> {
+    if let Some(parent) = sandbox_parent {
+        if !parent.is_dir() {
+            return Err(anyhow!(
+                "--sandbox-parent-dir {} does not exist or is not a directory",
+                parent.display(),
+            ));
+        }
+    }
     let challenge = Challenge::from_toml_file(challenge_path)
         .with_context(|| format!("load challenge {}", challenge_path.display()))?;
     let adv = SubprocessEvaluator::new(command, evaluator_label)
         .map_err(|e| anyhow!("evaluator config: {e}"))?;
-    let records = run_attempts(&challenge, config, &adv, attempts, None)
+    let records = run_attempts(&challenge, config, &adv, attempts, sandbox_parent)
         .map_err(|e| anyhow!("run attempts: {e}"))?;
     let mut stdout = io::stdout().lock();
     for record in &records {
