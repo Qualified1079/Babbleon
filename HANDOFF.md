@@ -22,11 +22,196 @@ Branch (push target): `claude/magical-turing-mele8c` (operator
 intends to rename to `v1-maintenance` out-of-band; until that
 lands, push here)
 
-Date: 2026-06-21 (user-asleep session continued — claude-opus-4-7)
+Date: 2026-06-24 (user-asleep session — claude-opus-4-7)
 
-Last commit before this handoff section: `ef00419` —
-bench: rerun secret-wrapped under post-rename harness; file
-evaluator-sandboxing gap.
+Last commit before this handoff section: `ccce370` —
+feat(bench): --sandbox-parent-dir CLI flag for run + run-matrix
+(Blocker 1 CLI).
+
+---
+
+## 2026-06-24 — broken-build repair + Blocker-1-CLI + first literal-free challenge
+
+Picks up after the 2026-06-22 (evening) block.  Branch tip on
+entry was `963d779` (sandbox eval cwd, library-side) and the
+workspace **did not compile**: `cargo build -p
+v2-babbleon-preprocessor` failed with two `E0583 file not found`
+errors for `secret_literal_scrambler` and `secret_literal_wordlist`.
+
+### Diagnosis
+
+Commit `4be15d7` ("feat(v2-babbleon-preprocessor): layer-7
+secret-literal substitution") declared the two new modules in
+`lib.rs`, added `Error::SecretLiteralDerivation` to `errors.rs`,
+and even stated in its commit body "All 153 preprocessor tests
+green" — but the actual diff shows only `errors.rs` and `lib.rs`
+were modified.  The two new source files were never staged.
+`git log --all --diff-filter=A --name-only | grep
+secret_literal_wordlist` returned nothing on any branch.  This
+was a botched commit; `cargo test` was presumably run in the
+author's pre-commit working tree (which had the files) and the
+missed `git add` slipped through.
+
+### Resolution
+
+`2716177` — fix(v2-babbleon-preprocessor): land missing layer-7
+modules (build fix).  Reconstructs both modules to match the
+botched commit's described shape:
+
+- `secret_literal_wordlist::SecretLiteralWordlist`: open-set
+  body→compound table with **lazy** derivation (compounds
+  computed on first `derive_for(body, secret, wordlist)` call,
+  cached for idempotency).  HKDF purpose label
+  `b"v2-secret-literal:" || body` — statistically independent
+  from every other v2 purpose label.  `from_reverse_map(epoch,
+  HashMap<String, String>)` constructor for the trust-tier-
+  client path that receives the per-epoch reverse map over the
+  daemon wire and reconstructs the wordlist without holding the
+  per-host secret.  Validates supplied compounds (non-empty,
+  ASCII-lowercase) and bodies (non-empty, bijection — no two
+  compounds may map to the same body).
+- `secret_literal_scrambler`: source-text pre-pass.  Walks
+  `secret("BODY")` calls (MVP scanner: body contains no `"` and
+  no `\\`); scramble runs before tokenization (L7 → tokenize →
+  L2 → L2b → L3) so the downstream Token-IR layers stay unaware
+  of secret-literal handling.
+
+Tests: 31 new unit tests across the two modules (8 wordlist
+derivation + 8 wordlist construction + 9 walker + 6 round-trip).
+Preprocessor crate tests: 139 lib + 16 integ = **155 passing**.
+Downstream v2 crates all build and pass tests after the fix.
+
+### Blocker 1 — CLI plumbing closed
+
+`ccce370` — feat(bench): --sandbox-parent-dir CLI flag for run +
+run-matrix (Blocker 1 CLI).  Surfaces
+`SubprocessEvaluator::with_working_directory` through the
+operator CLI.  When set, each `(challenge, layer_config)` cell
+gets its own subdirectory beneath the parent dir, named
+`<challenge>-<layer-config-label>`; the bench writes prompt.md,
+scrambled.txt, baseline.py, and `notepad/` into it; the
+evaluator subprocess inherits the cell sandbox as cwd.  Default
+(no flag) preserves pre-Blocker-1 behaviour exactly.  4 new
+CLI integration tests; `cli_end_to_end.rs` now at 18 tests
+passing.
+
+### First literal-free challenge
+
+`58cbf44` — bench: file recover-nesting-depth — first literal-
+free L3-target challenge.  Implements `BENCHMARK-DESIGN.md`
+draft 3: the recovery target is the nesting depth of a specific
+statement (a *structural* property L3 transforms), not a
+literal value.  Sibling-fork `baseline_source` (analogous
+statement runs at depth 3 vs the actual depth 4) so an
+adversary that reads only the baseline is wrong.  Predicate:
+`exact-match` on `"4"`; no new infrastructure required.  All
+5 integration tests in `seed_challenges_round_trip.rs` pass on
+the new TOML.
+
+### Status of the three 2026-06-22 morning blockers, post-this-session
+
+| Blocker | State |
+|---|---|
+| 1 — Sandbox eval cwd | **CLOSED**.  Library knob landed in 963d779 (prior session); CLI plumbing landed in ccce370 (this session).  Operators opt in with `--sandbox-parent-dir <DIR>`. |
+| 2 — Baseline-source in prompt | **CLOSED for new challenges**.  Field + prompt section + sandbox baseline.py landed prior sessions; `recover-nesting-depth.toml` (this session) is the first new-corpus challenge that uses it correctly with a sibling-fork.  The deprecated literal challenges are *intentionally* left without `baseline_source` per CORRECTIONS.md (populating it on tautological literal-extraction tests would just hand the answer to grep). |
+| 3 — Operator scramble L2b | **CLOSED**.  Landed in 5122c07 (prior session). |
+
+### Status of the HANDOFF "refreshed next-session priorities"
+### (snapshot from the 2026-06-22 evening block)
+
+| # | Item | Status |
+|---|---|---|
+| 1 | Port layer-7 to production | **module-level CLOSED** (this session, 2716177).  Wiring layer-7 into `apply_layers`/`scramble`/`unscramble`/CLI flag and adding `Response::SecretLiteralCompounds` to the daemon protocol is the natural follow-up.  Filed below. |
+| 2 | Re-run bench at N=5-10 per cell | NOT done this session — needs adversary infrastructure (claude-cli / API), not autonomous-session work. |
+| 3 | Sandbox-execution countermeasure C1 | NOT done — needs operator review of design first per HANDOFF. |
+| 4 | Phase-4 layers 4+5 (chunk reorder, decoys) | NOT done — large work, needs operator review of `docs/v2/chunk-reorder-and-decoys.md` first. |
+| 5 | Wire L2 into daemon protocol | already closed in a prior session. |
+| 6 | Drop `--insecure-stub-secret` | NOT done — operator-reviewed polish. |
+
+### Net commits this session: 3
+
+| # | Hash | Subject |
+|---|---|---|
+| 1 | `2716177` | fix(v2-babbleon-preprocessor): land missing layer-7 modules (build fix) |
+| 2 | `58cbf44` | bench: file recover-nesting-depth — first literal-free L3-target challenge |
+| 3 | `ccce370` | feat(bench): --sandbox-parent-dir CLI flag for run + run-matrix (Blocker 1 CLI) |
+
+### Refreshed next-session priorities
+
+Ordered by leverage; items that need operator review are
+called out so an autonomous-session bot does not silently
+build on a contested design.
+
+1. **Wire production layer-7 into the scramble pipeline.**  The
+   two preprocessor modules landed; what is still missing:
+   - A top-level `apply_layer7(source, secret, wordlist, epoch)
+     -> (String, SecretLiteralWordlist)` entry point that mirrors
+     `apply_layers`-style composition.
+   - `daemon-protocol`: `Request::GetSecretLiteralCompounds` +
+     `Response::SecretLiteralCompounds { epoch, HashMap<String,
+     String> }` (the reverse map — body→compound forward map is
+     reconstructable from it via `from_reverse_map`).  Operator
+     review needed for the wire payload shape: a HashMap on the
+     wire is large; an alternative is `Vec<(String, String)>` for
+     a stable serialised order.  This is the per-epoch-table-
+     storage-design item HANDOFF said needs operator review.
+   - `babbleon` CLI: `--enable-l7` flag on `scramble` /
+     `unscramble`.  Persists the reverse map under
+     `.babbleon/secret-literals/<epoch>.toml` for the unscramble
+     side (the daemon-served path is for trust-tier clients;
+     operators running the CLI standalone need the persistent-
+     mapping fallback).
+2. **Implement remaining literal-free challenges.**  `recover-
+   nesting-depth` (this session) closes 1 of 4 BENCHMARK-DESIGN
+   drafts.  Two more are doable without operator review:
+   - `which-keyword-controls-flow` (L2 target) — needs a new
+     `SuccessPredicate::KeywordMatch { synonyms: Vec<String> }`
+     variant.  Small, self-contained.
+   - `which-function-authenticates` (L1 target) — needs a new
+     `SuccessPredicate::UnscrambleAndMatch` variant that runs the
+     adversary's submission through the inverse mapping and
+     compares against the canonical name.  Slightly bigger;
+     requires the test harness to have access to the per-epoch
+     identifier mapping, which means the bench needs a real
+     secret to derive against.
+   - `which-statement-runs-first` (L4 target) — defer until L4
+     ships.
+3. **Bench-hygiene metadata.**  BENCHMARK-DESIGN §"Bench-hygiene
+   additions" requires `wordlist_size`, `adversary_capability_tier`
+   (text-only / sandboxed / network), and `disclosed: bool` on
+   each `RunRecord`.  Pure additive plumbing; ~50 LOC and a few
+   tests; no design decisions.
+4. **N≥5 CI gate.**  CORRECTIONS.md says N=1 is a smoke test only;
+   `babbleon-bench summary --pass-threshold-pct` should error on
+   any cell with N<5 attempts.  ~20 LOC.
+5. **Re-classify the JSONLs in `runs/2026-06-22-operator-
+   scramble-rerun/` under the now-correct
+   `ScoreOutcome::RefusedByPolicy` path.**  The records were
+   written before the variant landed and are stored as
+   `format-error`.  Low-value because the run is invalidated
+   anyway per CORRECTIONS.md, but if an operator wants to
+   re-render the summary table with separated refusal-vs-fmt-err
+   counts, a small script rewrites the JSONL outcome field.
+
+### Process note for next autonomous session
+
+The 4be15d7 botched-commit was not detectable from `git log`
+alone — the commit body claimed "All 153 preprocessor tests
+green" and the staged diff showed plausible accompanying
+changes to `errors.rs` and `lib.rs`.  The smell test is the
+**file-count line in the commit footer**:
+
+```
+ crates/v2-babbleon-preprocessor/src/errors.rs | 12 ++++++++++++
+ crates/v2-babbleon-preprocessor/src/lib.rs    |  6 ++++++
+```
+
+A commit that adds two new modules referenced from `lib.rs` should
+show four file changes (two new files + the two edits) and the
+file-count line above shows only two.  Future autonomous sessions
+should always run `cargo build -p <touched-crate>` immediately
+after `git checkout` to confirm the working tree compiles, before
+making changes that assume it does.
 
 ---
 
