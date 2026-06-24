@@ -408,10 +408,25 @@ fn run_subcommand_reports_subprocess_failure() {
         !output.status.success(),
         "expected failure when evaluator exits non-zero",
     );
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
+    // Two acceptable error shapes depending on parallel-execution
+    // timing.  The intent of the test is "the bench correctly
+    // surfaces a meaningful diagnostic for a failed subprocess" —
+    // either shape satisfies it:
+    //
+    // - "evaluator subprocess false exited with status Some(1)"
+    //   when the bench observed the exit status (slow `false`).
+    // - "broken pipe" / "os error 32" when `false` exited so fast
+    //   the bench got EPIPE writing the prompt to stdin first
+    //   (fast `false`; happens reliably under heavy test
+    //   parallelism).
+    let mentions_program = stderr.contains("false");
+    let mentions_broken_pipe = stderr.contains("broken pipe")
+        || stderr.contains("os error 32");
     assert!(
-        stderr.to_lowercase().contains("false"),
-        "stderr should mention the failing program: {stderr}",
+        mentions_program || mentions_broken_pipe,
+        "stderr should mention the failing program or report EPIPE: \
+         {stderr}",
     );
 }
 

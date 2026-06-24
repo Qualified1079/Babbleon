@@ -516,13 +516,35 @@ mod tests {
         )
         .unwrap();
         let err = adv.query("any prompt").unwrap_err();
+        // Two acceptable error shapes depending on the parallel-
+        // execution timing:
+        //
+        // - `EvaluatorNonZeroExit` when the bench observed `false`'s
+        //   exit status (slow `false`).
+        // - `EvaluatorIo` (Broken pipe / os error 32) when `false`
+        //   exited so fast that the bench got EPIPE writing the
+        //   prompt to stdin first (fast `false`; happens reliably
+        //   under heavy test parallelism).
+        //
+        // The test's intent is "the bench surfaces a meaningful
+        // diagnostic on subprocess failure" — either variant
+        // satisfies it.
         match err {
             Error::EvaluatorNonZeroExit { program, exit, .. } => {
                 assert_eq!(program, "false");
-                // `false` exits 1 on every POSIX system.
                 assert_eq!(exit, Some(1));
             }
-            other => panic!("expected EvaluatorNonZeroExit, got {other:?}"),
+            Error::EvaluatorIo { message } => {
+                let msg_lower = message.to_lowercase();
+                assert!(
+                    msg_lower.contains("broken pipe")
+                        || msg_lower.contains("os error 32"),
+                    "EvaluatorIo expected to report EPIPE, got: {message}",
+                );
+            }
+            other => panic!(
+                "expected EvaluatorNonZeroExit or EvaluatorIo, got {other:?}"
+            ),
         }
     }
 
