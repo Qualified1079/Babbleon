@@ -1,0 +1,56 @@
+# Literal-free L2-target challenge.  See BENCHMARK-DESIGN.md draft 2.
+#
+# The recovery target is the *Python keyword* that controls flow
+# inside the inner loop body — a property layer 2 (keyword scramble)
+# actively transforms.  Under L2, every Python hard keyword
+# (including `if`, `for`, `def`, ...) is replaced with a per-epoch
+# wordlist compound.  An adversary who recovers the keyword has
+# defeated L2.
+#
+# Pairs with `recover-nesting-depth.toml` (L3-target).  Together
+# they form the first two literal-free cells in the bench corpus.
+
+name = "which-keyword-controls-flow"
+goal_description = """
+The Python source defines a function `f(n)` that iterates from 0 to n and accumulates a `total`.  Inside the loop body, one Python keyword guards whether the addition step runs for a given iteration.  Which Python keyword (the structural one — not a comparison operator or an identifier) controls that decision?  Submit the keyword name (e.g. `if`, `for`, `while`, `try`, `match`).
+"""
+source = """
+def f(n):
+    total = 0
+    for i in range(n):
+        if i % 2 == 0:
+            total += i
+    return total
+"""
+
+# The adversary's cached sibling.  Same outer shape (function over
+# `n`, accumulator, `for` loop over `range`) but the inner control
+# structure differs: a `while`-based variant of the same idea,
+# without the inner conditional gate.  A model that submits the
+# baseline's inner keyword (`while`) without reading the scrambled
+# source is wrong; a model that recovers the actual inner keyword
+# (`if`) from the scrambled bytes wins.
+#
+# Note on L2 surface area: under L2 alone (no L2b operator scramble)
+# a colon glued to a keyword (`else:`, `try:`) defeats the
+# per-keyword match because `else:` is one Token::Word, not the
+# bare `else` the scrambler looks for.  The source above avoids
+# the issue by using a single `if` gate with no `else` clause; the
+# `if` token is on its own (followed by a space) and scrambles
+# cleanly under L2.  When L2b lands as part of the bench floor,
+# additional challenges can exercise `if/else`, `try/except`, etc.
+baseline_source = """
+def g(n):
+    total = 0
+    i = 0
+    while i < n:
+        total += i
+        i += 1
+    return total
+"""
+
+# The inner gate is a plain `if`.  Accept the bare keyword and the
+# two natural verbose forms an operator might write.
+[predicate]
+kind = "keyword-match"
+synonyms = ["if", "if statement", "if-statement"]
