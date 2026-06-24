@@ -1,0 +1,57 @@
+# Literal-free L3-target challenge.  See BENCHMARK-DESIGN.md draft 3.
+#
+# The recovery target is a *structural* property of the source (the
+# nesting depth of a specific statement), not a literal value.  L3
+# replaces every whitespace marker (`\n`, ` `, `\t`, indent-open,
+# indent-close) with a per-epoch wordlist compound, so the
+# indentation that visually signals nesting depth is gone in the
+# scrambled output.  An adversary recovering the answer has done so
+# by re-threading the indent-open / indent-close compounds back into
+# a tree — defeating L3.
+#
+# This is the FIRST literal-free challenge in the bench corpus and
+# the canonical example of what BENCHMARK-DESIGN §"Whitespace-target
+# challenges" asks for.
+
+name = "recover-nesting-depth"
+goal_description = """
+The Python source defines a function `f(grid)` whose body contains nested loops and conditionals.  At what nesting depth (counting from 0 at the function-body level) does the statement `count += cell` execute?  Submit the integer answer (e.g. `0`, `1`, `2`, `3`, `4`).
+"""
+source = """
+def f(grid):
+    count = 0
+    for row in grid:
+        for cell in row:
+            if cell > 0:
+                if cell % 2 == 0:
+                    count += cell
+    return count
+"""
+
+# The adversary's cached sibling.  Structurally similar (same kinds
+# of blocks: outer-loop, inner-loop, two nested conditionals) but the
+# nested-statement depth of the analogous `total += entry` differs
+# (depth 3 here vs depth 4 in `source`).  A model that reads ONLY the
+# baseline and submits the baseline's depth is wrong.  A model that
+# reads the scrambled source and recovers the correct depth wins.
+#
+# The sibling-fork construction matches the v2 threat model
+# (`docs/v2/structure-scrambling.md` §"The problem v2 solves"): the
+# adversary has the public source of a sibling tool; their job is to
+# find WHERE in the scrambled output to read off the per-host value.
+baseline_source = """
+def g(matrix):
+    total = 0
+    for column in matrix:
+        for entry in column:
+            if entry < 0:
+                total += entry
+    return total
+"""
+
+# The `count += cell` statement nests inside: function body (depth 0)
+# → outer for (depth 1) → inner for (depth 2) → outer if (depth 3) →
+# inner if (depth 4).  At depth 4 the statement runs.
+[predicate]
+kind = "exact-match"
+expected = "4"
