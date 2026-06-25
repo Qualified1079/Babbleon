@@ -24,10 +24,12 @@
 //! 2. If `config.layer3_whitespace_as_words`, derive a
 //!    `WhitespaceWordlist` at `config.epoch` from the synthetic
 //!    secret + the embedded English baseline wordlist.
-//! 3. If `config.layer2_keyword_scramble`, derive a
-//!    `KeywordWordlist` similarly.
+//! 3. If `config.layer2_keyword_scramble`, build an `IdentifierMapping`
+//!    via `MappingBuilder` covering every unique word token.
+//!    `layer2b_operator_scramble` is a no-op: operators (`==`, `(`, `:`,
+//!    etc.) are ordinary word tokens already handled by the dynamic L2.
 //! 4. Tokenize the source via `python_tokenizer::tokenize`.
-//! 5. If L2: apply `scramble_keywords` in place.
+//! 5. If L2: apply `scramble_identifiers` in place.
 //! 6. If L3: apply `scrambler::scramble` to produce bytes; otherwise
 //!    re-emit the (possibly L2-mutated) token stream via
 //!    `tokens_to_source` from the preprocessor's unscrambler.
@@ -42,12 +44,10 @@
 //!   version; the bench's `RunRecord` captures the preprocessor
 //!   crate's package version so old results stay attributable.
 
-use babbleon_core_v2::per_host_secret::PerHostSecret;
-use babbleon_core_v2::wordlist::Wordlist;
-use babbleon_preprocessor_v2::keyword_scrambler::scramble_keywords;
-use babbleon_preprocessor_v2::keyword_wordlist::KeywordWordlist;
-use babbleon_preprocessor_v2::operator_scrambler::scramble_operators;
-use babbleon_preprocessor_v2::operator_wordlist::OperatorWordlist;
+use babbleon_core_v2::{per_host_secret::PerHostSecret, wordlist::Wordlist, MappingBuilder};
+use babbleon_preprocessor_v2::identifier_scrambler::{
+    collect_unique_tokens, scramble_identifiers, IdentifierMapping, ALIAS_COUNT,
+};
 use babbleon_preprocessor_v2::python_tokenizer::tokenize;
 use babbleon_preprocessor_v2::scrambler::scramble;
 use babbleon_preprocessor_v2::tokens::Token;
@@ -71,7 +71,6 @@ pub fn apply_layers(source: &str, config: LayerConfig) -> Result<String> {
         .map_err(|e| Error::Scramble {
             message: format!("synthetic per-host secret: {e}"),
         })?;
-    let wordlist = Wordlist::english_baseline();
 
     // Layer 7 is the OUTERMOST pass — it operates on source text
     // before tokenization so L2 and L3 downstream do not need to
@@ -89,33 +88,51 @@ pub fn apply_layers(source: &str, config: LayerConfig) -> Result<String> {
     let mut tokens: Vec<Token> = tokenize(&source_after_l7);
 
     if config.layer2_keyword_scramble {
-        let kwl = KeywordWordlist::build(
-            &synthetic_secret,
-            wordlist,
+        let id_wordlist = Wordlist::english_baseline();
+        let builder = MappingBuilder::new(&synthetic_secret, &id_wordlist);
+        let sorted_tokens = collect_unique_tokens(&tokens);
+        let base = config.epoch.saturating_mul(ALIAS_COUNT as u64);
+        let mut per_alias: Vec<Vec<String>> = Vec::with_capacity(ALIAS_COUNT);
+        for ai in 0..ALIAS_COUNT {
+            let virtual_epoch = base + ai as u64;
+            let epoch_mapping = builder
+                .build(&sorted_tokens, virtual_epoch)
+                .map_err(|e| Error::Scramble {
+                    message: format!("build identifier mapping: {e}"),
+                })?;
+            let compounds: Vec<String> = sorted_tokens
+                .iter()
+                .map(|t| epoch_mapping.scramble(t).unwrap_or(t.as_str()).to_string())
+                .collect();
+            per_alias.push(compounds);
+        }
+        let mut aliases: Vec<Vec<String>> = sorted_tokens
+            .iter()
+            .map(|_| Vec::with_capacity(ALIAS_COUNT))
+            .collect();
+        for alias_compounds in per_alias {
+            for (ti, compound) in alias_compounds.into_iter().enumerate() {
+                aliases[ti].push(compound);
+            }
+        }
+        let mapping = IdentifierMapping::from_tokens_and_aliases(
+            sorted_tokens,
             config.epoch,
+            aliases,
         )
         .map_err(|e| Error::Scramble {
-            message: format!("build keyword wordlist: {e}"),
+            message: format!("identifier mapping collision: {e}"),
         })?;
-        scramble_keywords(&mut tokens, &kwl);
+        scramble_identifiers(&mut tokens, &mapping);
     }
-
-    if config.layer2b_operator_scramble {
-        let owl = OperatorWordlist::build(
-            &synthetic_secret,
-            wordlist,
-            config.epoch,
-        )
-        .map_err(|e| Error::Scramble {
-            message: format!("build operator wordlist: {e}"),
-        })?;
-        tokens = scramble_operators(tokens, &owl);
-    }
+    // layer2b_operator_scramble is a no-op: operators are word tokens
+    // already handled by the dynamic identifier scramble above.
+    let _ = config.layer2b_operator_scramble;
 
     if config.layer3_whitespace_as_words {
         let wl = WhitespaceWordlist::build(
             &synthetic_secret,
-            wordlist,
+            Wordlist::english_baseline(),
             config.epoch,
         )
         .map_err(|e| Error::Scramble {
@@ -221,9 +238,6 @@ mod tests {
             "L2 must rewrite 'return' as a compound: {out}",
         );
         assert!(out.contains('\n'), "L2 alone keeps newlines: {out}");
-        // The secret must still be visible since L2 only touches
-        // keywords.
-        assert!(out.contains("hunter2"));
     }
 
     #[test]
@@ -233,10 +247,6 @@ mod tests {
         assert!(!out.contains("def "));
         assert!(!out.contains(" return "));
         assert!(!out.contains('\n'));
-        // hunter2 is a string literal, not a keyword; it survives.
-        // The bench's point is that the *attacker* still has to find
-        // it inside the wall of text.
-        assert!(out.contains("hunter2"));
     }
 
     #[test]

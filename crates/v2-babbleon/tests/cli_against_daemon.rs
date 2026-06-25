@@ -461,9 +461,18 @@ fn cli_scramble_then_unscramble_round_trips_python_source() {
     let scrambled = std::fs::read(&scr_path).unwrap();
     assert!(!scrambled.is_empty(), "scrambled file is empty");
     // Layer-3 promise: no visible '\n' in the scrambled body.
+    // The file has a 4-line header (magic, epoch, tokens, ---) before
+    // the body; only the body must be newline-free.
+    let sep = b"---\n";
+    let body_start = scrambled
+        .windows(sep.len())
+        .position(|w| w == sep)
+        .map(|i| i + sep.len())
+        .expect("scrambled file must contain '---' separator");
+    let body = &scrambled[body_start..];
     assert!(
-        !scrambled.contains(&b'\n'),
-        "scrambled output contains visible '\\n' byte",
+        !body.contains(&b'\n'),
+        "scrambled body contains visible '\\n' byte",
     );
 
     // Unscramble.
@@ -499,24 +508,20 @@ fn cli_scramble_then_unscramble_round_trips_python_source() {
     shutdown(child);
 }
 
-/// Layer-2 (operator-scramble) wiring proof: scrambled output for
-/// a source containing only Python keywords must NOT contain those
-/// keywords as standalone tokens.  Catches the regression where
-/// the CLI silently drops the `GetKeywordCompounds` round-trip or
-/// fails to apply `scramble_keywords` to the token stream.
+/// Layer-2 (dynamic identifier scramble) wiring proof: scrambled output
+/// for a source whose tokens consist entirely of long, unmistakable
+/// identifiers must NOT contain those identifiers verbatim in the
+/// scrambled body.  Catches the regression where the CLI silently drops
+/// the `GetTokenMapping` round-trip or fails to apply
+/// `scramble_identifiers` to the token stream.
 ///
-/// Method: scramble a source built from long, unmistakable
-/// keywords (`continue`, `finally`, `lambda`, `nonlocal`, `raise`,
-/// `yield`, `import`, `return`).  These have 6+ byte names and are
-/// vanishingly unlikely to appear as a coincidental substring of
-/// any 4-word English wordlist compound; if a single one survives
-/// in the scrambled bytes, the L2 substitution didn't run.
-///
-/// We avoid short keywords (`if`, `or`, `in`, `is`, `as`) for the
-/// byte-substring scan — those legitimately appear inside common
-/// English words like `gift`, `for`, `pin`, `disc`, `mast`.
+/// We use identifiers ≥ 6 bytes (`continue`, `finally`, `lambda`,
+/// `nonlocal`, `raise`, `yield`, `import`, `return`) which are
+/// vanishingly unlikely to appear as a coincidental substring of any
+/// 4-word English wordlist compound; if a single one survives verbatim
+/// in the scrambled body, the L2 substitution didn't run.
 #[test]
-fn cli_scramble_strips_python_keywords_from_output_bytes() {
+fn cli_scramble_strips_identifiers_from_output_body() {
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("daemon.sock");
     let wrapper_dir = dir.path().join("wrappers");
@@ -556,11 +561,20 @@ fn cli_scramble_strips_python_keywords_from_output_bytes() {
     }
 
     let scrambled = std::fs::read(&scr_path).unwrap();
+    // The header stores the original token list verbatim; only the
+    // scrambled body (after ---\n) must not contain the original tokens.
+    let sep = b"---\n";
+    let body_start = scrambled
+        .windows(sep.len())
+        .position(|w| w == sep)
+        .map(|i| i + sep.len())
+        .expect("scrambled file must contain '---' separator");
+    let body = &scrambled[body_start..];
 
     for kw in long_keywords {
         assert!(
-            !contains_subsequence(&scrambled, kw.as_bytes()),
-            "scrambled output still contains keyword {kw:?} verbatim",
+            !contains_subsequence(body, kw.as_bytes()),
+            "scrambled body still contains identifier {kw:?} verbatim",
         );
     }
 
@@ -713,9 +727,16 @@ fn cli_scramble_dir_then_unscramble_dir_round_trip() {
     assert!(scr.join("sub").join("b.py").exists());
     assert!(!scr.join("README").exists(), "README must be skipped");
 
-    // Layer-3 promise: no visible '\n' in any scrambled output.
+    // Layer-3 promise: no visible '\n' in the scrambled body
+    // (header lines are allowed).
     let scrambled_a = std::fs::read(scr.join("a.py")).unwrap();
-    assert!(!scrambled_a.contains(&b'\n'));
+    let sep = b"---\n";
+    let body_start_a = scrambled_a
+        .windows(sep.len())
+        .position(|w| w == sep)
+        .map(|i| i + sep.len())
+        .expect("scrambled file a.py must contain '---' separator");
+    assert!(!scrambled_a[body_start_a..].contains(&b'\n'));
 
     // unscramble-dir
     let out = Command::new(&cli)

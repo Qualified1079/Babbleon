@@ -50,10 +50,13 @@
 use crate::errors::{Error, Result};
 use crate::unlock_secret::{UnlockSecret, UNLOCK_SECRET_HEX_LEN};
 
-/// Hard cap on request size on the wire.  Any legitimate request is
-/// JSON with a small object, well under 1 KiB; the cap exists to
-/// bound parser allocation under an adversarial peer.
-pub const MAX_REQUEST_BYTES: usize = 8 * 1024;
+/// Hard cap on request size on the wire.  Most requests are small
+/// JSON objects under 1 KiB; `GetTokenMapping` can be larger (up to
+/// `MAX_TOKEN_MAPPING_COUNT` tokens × `MAX_TOKEN_BYTES` per token).
+/// 4 MiB bounds allocation under a hostile peer while accommodating
+/// files with up to ~65 k unique tokens at an average of ~50 bytes
+/// per token.
+pub const MAX_REQUEST_BYTES: usize = 4 * 1024 * 1024;
 
 /// Number of whitespace compounds in the `WhitespaceCompounds`
 /// response, mirroring `v2-babbleon-preprocessor`'s
@@ -80,24 +83,31 @@ pub const WHITESPACE_COMPOUND_COUNT_WIRE: usize = 5;
 /// stopped at the protocol parser.
 const WHITESPACE_COMPOUND_MAX_BYTES: usize = 1024;
 
-/// Number of Python keyword compounds in the `KeywordCompounds`
-/// response, mirroring `v2-babbleon-preprocessor`'s
-/// `PYTHON_KEYWORD_COUNT` (Python 3.12 hard keywords).
+/// Number of independent aliases derived per token in `GetTokenMapping`.
 ///
-/// As with [`WHITESPACE_COMPOUND_COUNT_WIRE`], the protocol crate
-/// is independent of `v2-babbleon-preprocessor`; cross-crate
-/// agreement is enforced by tests on both sides — if the
-/// preprocessor's static list grows or shrinks (a hard-keyword set
-/// is a wire-format break for layer 2), this constant updates in
-/// the same commit and a HANDOFF entry records the break.
-pub const PYTHON_KEYWORD_COMPOUND_COUNT_WIRE: usize = 35;
+/// The daemon builds `ALIAS_COUNT_WIRE` separate compound sets using
+/// virtual epochs `epoch * ALIAS_COUNT_WIRE + i`.  Must equal
+/// `v2-babbleon-preprocessor::identifier_scrambler::ALIAS_COUNT`;
+/// both constants are checked by integration tests.
+pub const ALIAS_COUNT_WIRE: usize = 3;
 
-/// Reasonable upper bound on the byte length of a single keyword
-/// compound on the wire.  Same rationale as
-/// [`WHITESPACE_COMPOUND_MAX_BYTES`]; sized to comfortably hold any
-/// 4-word compound from the v2 baseline wordlist while bounding a
-/// hostile-peer allocation.
-const KEYWORD_COMPOUND_MAX_BYTES: usize = 1024;
+/// Maximum number of unique tokens accepted in a `GetTokenMapping`
+/// request.  A file with more than 65 536 unique whitespace-delimited
+/// tokens would be extraordinary; the cap protects the daemon from
+/// pathological allocation under a hostile peer.
+pub const MAX_TOKEN_MAPPING_COUNT: usize = 65_536;
+
+/// Maximum byte length of a single token in a `GetTokenMapping`
+/// request.  Same rationale as [`WHITESPACE_COMPOUND_MAX_BYTES`];
+/// tokens are source-code identifiers / punctuation clusters and
+/// are always well under 1 KiB in practice.
+const MAX_TOKEN_BYTES: usize = 1024;
+
+/// Maximum byte length of a single compound in a `TokenMapping`
+/// response.  Identical bound to the whitespace-compound cap; a
+/// 4-word compound from the v2 baseline wordlist is well under
+/// 256 bytes.
+const TOKEN_COMPOUND_MAX_BYTES: usize = 1024;
 
 /// Inbound request from a peer.
 ///
@@ -138,18 +148,31 @@ pub enum Request {
     /// per-host secret.  Trust-tier-only — caller authentication
     /// (peer-uid check on the socket layer) gates the request.
     GetWhitespaceCompounds,
-    /// Read the per-epoch Python-keyword compounds the daemon is
-    /// currently serving (layer 2 — operator scramble).  Daemon
-    /// answers with [`Response::KeywordCompounds`].  Requires the
+    /// Derive per-epoch scramble compounds for a caller-supplied list
+    /// of tokens (language-agnostic dynamic identifier scramble).
+    ///
+    /// Daemon answers with [`Response::TokenMapping`].  Requires the
     /// vault to be unlocked; the daemon answers `Response::Error
     /// { kind: ErrorKind::Vault, ... }` otherwise.
     ///
+    /// The daemon derives [`crate::ALIAS_COUNT_WIRE`] independent
+    /// compound sets for the same token list (using virtual epochs
+    /// `epoch * ALIAS_COUNT + i`).  The CLI cycles through aliases
+    /// per-occurrence so repeated tokens produce varied output.
+    ///
+    /// The token list must have at most [`MAX_TOKEN_MAPPING_COUNT`]
+    /// entries; each token must be non-empty and under
+    /// [`MAX_TOKEN_BYTES`] bytes.
+    ///
     /// Same trust-boundary as [`Self::GetWhitespaceCompounds`]:
-    /// the daemon retains the per-host secret; only the HKDF-derived
-    /// per-keyword compounds cross the socket.  Trust-tier-only —
+    /// the daemon retains the per-host secret; only HKDF-derived
+    /// per-token compounds cross the socket.  Trust-tier-only —
     /// caller authentication (peer-uid check on the socket layer)
     /// gates the request.
-    GetKeywordCompounds,
+    GetTokenMapping {
+        /// Sorted, deduplicated list of source tokens to map.
+        tokens: Vec<String>,
+    },
 }
 
 /// Outbound response from the daemon.
@@ -215,37 +238,28 @@ pub enum Response {
         /// against tampering on the local-socket path.
         compounds: [String; WHITESPACE_COMPOUND_COUNT_WIRE],
     },
-    /// The daemon's per-epoch Python-keyword compounds (layer 2 —
-    /// operator scramble).
+    /// Per-epoch scramble compounds for a caller-supplied token list
+    /// (language-agnostic dynamic identifier scramble).
     ///
-    /// Indexed by `v2-babbleon-preprocessor::PYTHON_KEYWORDS` static
-    /// order — `compounds[i]` is the per-epoch compound for the
-    /// `i`-th keyword in `PYTHON_KEYWORDS`.  The receiving CLI feeds
-    /// `compounds` directly into
-    /// `v2-babbleon-preprocessor::KeywordWordlist::from_compounds`.
+    /// `aliases[token_idx][alias_idx]` is the compound for the
+    /// `token_idx`-th token in the original `GetTokenMapping` request
+    /// at alias index `alias_idx`.  The number of aliases per token
+    /// equals [`crate::ALIAS_COUNT_WIRE`].
     ///
-    /// Same secret-adjacency note as
-    /// [`Self::WhitespaceCompounds`]: a worm that gets one epoch's
-    /// compounds can scramble keywords against that epoch but cannot
-    /// recover the per-host secret.  Wire-side rotation invalidates
-    /// a leaked compound set.
-    KeywordCompounds {
-        /// Epoch the compounds were derived for.  Mirrors
-        /// [`Self::Status`]'s `epoch` when the daemon is unlocked.
+    /// Same secret-adjacency note as [`Self::WhitespaceCompounds`]:
+    /// a worm that obtains one epoch's compounds can scramble against
+    /// that epoch but cannot recover the per-host secret.
+    TokenMapping {
+        /// Epoch the compounds were derived for.
         epoch: u64,
-        /// 35 compounds in `PYTHON_KEYWORDS` slot order.  Each is
-        /// non-empty ASCII-lowercase; the receiver's
-        /// `KeywordWordlist::from_compounds` enforces the
-        /// invariants against tampering on the local-socket path.
+        /// `aliases[token_idx]` is a `Vec` of
+        /// [`crate::ALIAS_COUNT_WIRE`] compounds for the corresponding
+        /// input token.  Each compound is non-empty ASCII-lowercase.
         ///
-        /// The fixed-size array is heap-boxed so the
-        /// [`Response`] enum stays small (without the box this
-        /// variant alone would inflate every `Response` value to
-        /// ~848 bytes on the stack, dominating the discriminant +
-        /// other variants).  Production paths consume the box
-        /// exactly once via `*compounds` into
-        /// `KeywordWordlist::from_compounds`.
-        compounds: Box<[String; PYTHON_KEYWORD_COMPOUND_COUNT_WIRE]>,
+        /// Heap-allocated (`Vec<Vec<String>>`) because the size is
+        /// request-determined.  Production paths build an
+        /// `IdentifierMapping` from this and then drop it.
+        aliases: Vec<Vec<String>>,
     },
     /// Daemon-side error.  Message does not leak secret material
     /// (security-baseline rule 13).
@@ -342,7 +356,7 @@ impl Request {
             "rotate-mapping" => Ok(Self::RotateMapping),
             "unlock" => parse_unlock(obj),
             "get-whitespace-compounds" => Ok(Self::GetWhitespaceCompounds),
-            "get-keyword-compounds" => Ok(Self::GetKeywordCompounds),
+            "get-token-mapping" => parse_get_token_mapping(obj),
             other => Err(Error::Ipc(format!("request: unknown kind {other:?}"))),
         }
     }
@@ -377,8 +391,11 @@ impl Request {
             Self::GetWhitespaceCompounds => {
                 serde_json::json!({ "kind": "get-whitespace-compounds" })
             }
-            Self::GetKeywordCompounds => {
-                serde_json::json!({ "kind": "get-keyword-compounds" })
+            Self::GetTokenMapping { tokens } => {
+                serde_json::json!({
+                    "kind": "get-token-mapping",
+                    "tokens": tokens,
+                })
             }
         };
         let mut out = serde_json::to_vec(&v)
@@ -480,17 +497,12 @@ impl Response {
                     "compounds": compounds,
                 })
             }
-            Self::KeywordCompounds { epoch, compounds } => {
-                // serde_json's built-in `Serialize` impl for `[T;N]`
-                // only covers `N <= 32`.  Pass a slice view so the
-                // 35-element array serialises through the
-                // slice-Serialize impl instead of the fixed-size-
-                // array one.
+            Self::TokenMapping { epoch, aliases } => {
                 serde_json::json!({
                     "ok": true,
-                    "kind": "keyword-compounds",
+                    "kind": "token-mapping",
                     "epoch": epoch,
-                    "compounds": compounds.as_slice(),
+                    "aliases": aliases,
                 })
             }
             Self::Error { kind, message } => serde_json::json!({
@@ -556,7 +568,7 @@ impl Response {
             "rotated" => parse_rotated(obj),
             "unlocked" => parse_unlocked(obj),
             "whitespace-compounds" => parse_whitespace_compounds(obj),
-            "keyword-compounds" => parse_keyword_compounds(obj),
+            "token-mapping" => parse_token_mapping(obj),
             other => Err(Error::Ipc(format!(
                 "response: unknown kind {other:?}"
             ))),
@@ -739,21 +751,58 @@ fn parse_whitespace_compounds(
 }
 
 /// Parse a `keyword-compounds` response into a typed
-/// [`Response::KeywordCompounds`].
+/// Parse a `get-token-mapping` request's `tokens` array field.
+fn parse_get_token_mapping(
+    obj: &serde_json::Map<String, serde_json::Value>,
+) -> Result<Request> {
+    let arr = obj
+        .get("tokens")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| {
+            Error::Ipc(
+                "get-token-mapping request: missing/non-array tokens".into(),
+            )
+        })?;
+    if arr.len() > MAX_TOKEN_MAPPING_COUNT {
+        return Err(Error::Ipc(format!(
+            "get-token-mapping request: tokens count {} exceeds cap \
+             {MAX_TOKEN_MAPPING_COUNT}",
+            arr.len(),
+        )));
+    }
+    let mut tokens: Vec<String> = Vec::with_capacity(arr.len());
+    for (i, entry) in arr.iter().enumerate() {
+        let s = entry.as_str().ok_or_else(|| {
+            Error::Ipc(format!(
+                "get-token-mapping request: token {i} is not a string"
+            ))
+        })?;
+        if s.is_empty() {
+            return Err(Error::Ipc(format!(
+                "get-token-mapping request: token {i} is empty"
+            )));
+        }
+        if s.len() > MAX_TOKEN_BYTES {
+            return Err(Error::Ipc(format!(
+                "get-token-mapping request: token {i} length {} exceeds \
+                 cap {MAX_TOKEN_BYTES}",
+                s.len(),
+            )));
+        }
+        tokens.push(s.to_owned());
+    }
+    Ok(Request::GetTokenMapping { tokens })
+}
+
+/// Parse a `token-mapping` response's `epoch` and `aliases` fields.
 ///
 /// Strict on:
 /// - `epoch` present + u64.
-/// - `compounds` present + JSON array.
-/// - Exactly [`PYTHON_KEYWORD_COMPOUND_COUNT_WIRE`] entries.
-/// - Each entry a string with length in
-///   `1..=KEYWORD_COMPOUND_MAX_BYTES`.
-///
-/// Leaves structural-invariant checking (ASCII-lowercase, pairwise
-/// distinct) to the consumer's
-/// `KeywordWordlist::from_compounds`.  Keeps the parser focused on
-/// the wire schema; layering responsibility avoids two crates
-/// disagreeing on what counts as valid.
-fn parse_keyword_compounds(
+/// - `aliases` present + JSON array.
+/// - Each element of `aliases` is an array of exactly
+///   [`ALIAS_COUNT_WIRE`] non-empty strings under
+///   [`TOKEN_COMPOUND_MAX_BYTES`].
+fn parse_token_mapping(
     obj: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<Response> {
     let epoch = obj
@@ -761,58 +810,62 @@ fn parse_keyword_compounds(
         .and_then(serde_json::Value::as_u64)
         .ok_or_else(|| {
             Error::Ipc(
-                "keyword-compounds response: missing/non-u64 epoch".into(),
+                "token-mapping response: missing/non-u64 epoch".into(),
             )
         })?;
-    let arr = obj
-        .get("compounds")
+    let outer = obj
+        .get("aliases")
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| {
             Error::Ipc(
-                "keyword-compounds response: missing/non-array compounds"
-                    .into(),
+                "token-mapping response: missing/non-array aliases".into(),
             )
         })?;
-    if arr.len() != PYTHON_KEYWORD_COMPOUND_COUNT_WIRE {
+    if outer.len() > MAX_TOKEN_MAPPING_COUNT {
         return Err(Error::Ipc(format!(
-            "keyword-compounds response: compounds array length {} != \
-             expected {PYTHON_KEYWORD_COMPOUND_COUNT_WIRE}",
-            arr.len(),
+            "token-mapping response: aliases length {} exceeds cap \
+             {MAX_TOKEN_MAPPING_COUNT}",
+            outer.len(),
         )));
     }
-    let mut compounds: Vec<String> = Vec::with_capacity(arr.len());
-    for (i, entry) in arr.iter().enumerate() {
-        let s = entry.as_str().ok_or_else(|| {
+    let mut aliases: Vec<Vec<String>> = Vec::with_capacity(outer.len());
+    for (ti, token_entry) in outer.iter().enumerate() {
+        let inner = token_entry.as_array().ok_or_else(|| {
             Error::Ipc(format!(
-                "keyword-compounds response: entry {i} is not a string"
+                "token-mapping response: aliases[{ti}] is not an array"
             ))
         })?;
-        if s.is_empty() {
+        if inner.len() != ALIAS_COUNT_WIRE {
             return Err(Error::Ipc(format!(
-                "keyword-compounds response: entry {i} is empty"
+                "token-mapping response: aliases[{ti}] length {} != \
+                 expected {ALIAS_COUNT_WIRE}",
+                inner.len(),
             )));
         }
-        if s.len() > KEYWORD_COMPOUND_MAX_BYTES {
-            return Err(Error::Ipc(format!(
-                "keyword-compounds response: entry {i} length {} exceeds \
-                 cap {KEYWORD_COMPOUND_MAX_BYTES}",
-                s.len(),
-            )));
+        let mut per_token: Vec<String> = Vec::with_capacity(inner.len());
+        for (ai, entry) in inner.iter().enumerate() {
+            let s = entry.as_str().ok_or_else(|| {
+                Error::Ipc(format!(
+                    "token-mapping response: aliases[{ti}][{ai}] is not a string"
+                ))
+            })?;
+            if s.is_empty() {
+                return Err(Error::Ipc(format!(
+                    "token-mapping response: aliases[{ti}][{ai}] is empty"
+                )));
+            }
+            if s.len() > TOKEN_COMPOUND_MAX_BYTES {
+                return Err(Error::Ipc(format!(
+                    "token-mapping response: aliases[{ti}][{ai}] length {} \
+                     exceeds cap {TOKEN_COMPOUND_MAX_BYTES}",
+                    s.len(),
+                )));
+            }
+            per_token.push(s.to_owned());
         }
-        compounds.push(s.to_owned());
+        aliases.push(per_token);
     }
-    let compounds: [String; PYTHON_KEYWORD_COMPOUND_COUNT_WIRE] = compounds
-        .try_into()
-        .map_err(|_| {
-            Error::Ipc(
-                "keyword-compounds response: internal length mismatch"
-                    .into(),
-            )
-        })?;
-    Ok(Response::KeywordCompounds {
-        epoch,
-        compounds: Box::new(compounds),
-    })
+    Ok(Response::TokenMapping { epoch, aliases })
 }
 
 #[cfg(test)]
@@ -1322,186 +1375,118 @@ mod tests {
         assert_eq!(*wire.last().unwrap(), b'\n');
     }
 
-    // ----- GetKeywordCompounds request -----
+    // ----- GetTokenMapping request -----
 
     #[test]
-    fn get_keyword_compounds_request_roundtrips() {
-        let wire = Request::GetKeywordCompounds.to_wire();
+    fn get_token_mapping_request_roundtrips_empty_tokens() {
+        let req = Request::GetTokenMapping { tokens: vec![] };
+        let wire = req.to_wire();
         let parsed = Request::parse(&wire).unwrap();
-        assert_eq!(parsed, Request::GetKeywordCompounds);
+        assert_eq!(parsed, req);
     }
 
     #[test]
-    fn get_keyword_compounds_request_wire_form_is_one_line() {
-        let wire = Request::GetKeywordCompounds.to_wire();
+    fn get_token_mapping_request_roundtrips_nonempty_tokens() {
+        let req = Request::GetTokenMapping {
+            tokens: vec!["def".to_string(), "foo".to_string(), "x".to_string()],
+        };
+        let wire = req.to_wire();
+        let parsed = Request::parse(&wire).unwrap();
+        assert_eq!(parsed, req);
+    }
+
+    #[test]
+    fn get_token_mapping_request_wire_form_is_one_line() {
+        let req = Request::GetTokenMapping {
+            tokens: vec!["alpha".to_string()],
+        };
+        let wire = req.to_wire();
         assert_eq!(wire.iter().filter(|b| **b == b'\n').count(), 1);
         assert_eq!(*wire.last().unwrap(), b'\n');
     }
 
-    // ----- KeywordCompounds response -----
+    #[test]
+    fn get_token_mapping_request_rejects_too_many_tokens() {
+        // Build a request manually with MAX_TOKEN_MAPPING_COUNT + 1 tokens.
+        let arr: Vec<String> = (0..=MAX_TOKEN_MAPPING_COUNT)
+            .map(|i| format!("\"tok{i}\""))
+            .collect();
+        let body = format!(
+            r#"{{"kind":"get-token-mapping","tokens":[{}]}}"#,
+            arr.join(",")
+        );
+        let err = Request::parse(body.as_bytes()).unwrap_err();
+        assert!(
+            format!("{err}").contains("exceeds cap"),
+            "expected oversize-cap error, got {err}",
+        );
+    }
 
-    fn sample_keyword_compounds()
-        -> [String; PYTHON_KEYWORD_COMPOUND_COUNT_WIRE]
-    {
-        // 35 deterministic, distinct, all-ASCII-lowercase strings.
-        // Wire-side validators don't require lowercase, but real
-        // payloads from the daemon are; tests using this helper
-        // exercise the realistic case.  Index-encoded so a parser
-        // that scrambles slot order is caught by the "preserves
-        // slot order" test below.
-        std::array::from_fn(|i| {
-            let hi =
-                u8::try_from(i / 26).expect("i/26 < 26") + b'a';
-            let lo =
-                u8::try_from(i % 26).expect("i%26 < 26") + b'a';
-            format!("kw{}{}sample", hi as char, lo as char)
-        })
+    // ----- TokenMapping response -----
+
+    fn sample_token_mapping_aliases(token_count: usize) -> Vec<Vec<String>> {
+        (0..token_count)
+            .map(|ti| {
+                (0..ALIAS_COUNT_WIRE)
+                    .map(|ai| format!("tok{ti}alias{ai}sample"))
+                    .collect()
+            })
+            .collect()
     }
 
     #[test]
-    fn keyword_compounds_response_roundtrips() {
-        let r = Response::KeywordCompounds {
-            epoch: 11,
-            compounds: Box::new(sample_keyword_compounds()),
-        };
+    fn token_mapping_response_roundtrips() {
+        let aliases = sample_token_mapping_aliases(3);
+        let r = Response::TokenMapping { epoch: 7, aliases };
         let wire = r.to_wire().unwrap();
         let parsed = Response::parse(&wire).unwrap();
         assert_eq!(parsed, r);
     }
 
     #[test]
-    fn keyword_compounds_response_preserves_slot_order() {
-        let original = sample_keyword_compounds();
-        let r = Response::KeywordCompounds {
-            epoch: 0,
-            compounds: Box::new(original.clone()),
-        };
+    fn token_mapping_response_preserves_alias_order() {
+        let aliases = sample_token_mapping_aliases(2);
+        let r = Response::TokenMapping { epoch: 0, aliases: aliases.clone() };
         let wire = r.to_wire().unwrap();
         let parsed = Response::parse(&wire).unwrap();
         match parsed {
-            Response::KeywordCompounds { compounds, .. } => {
-                for (i, c) in compounds.iter().enumerate() {
-                    assert_eq!(c, &original[i], "slot {i} mismatch");
-                }
+            Response::TokenMapping { aliases: parsed_aliases, .. } => {
+                assert_eq!(parsed_aliases, aliases);
             }
-            other => {
-                panic!("expected KeywordCompounds, got {other:?}");
-            }
+            other => panic!("expected TokenMapping, got {other:?}"),
         }
     }
 
     #[test]
-    fn keyword_compounds_response_rejects_missing_epoch() {
-        let arr_json: Vec<String> = (0..PYTHON_KEYWORD_COMPOUND_COUNT_WIRE)
-            .map(|i| format!("\"kw{i}\""))
-            .collect();
-        let body = format!(
-            r#"{{"ok":true,"kind":"keyword-compounds","compounds":[{}]}}"#,
-            arr_json.join(",")
-        );
+    fn token_mapping_response_roundtrips_empty_token_list() {
+        let r = Response::TokenMapping { epoch: 0, aliases: vec![] };
+        let wire = r.to_wire().unwrap();
+        let parsed = Response::parse(&wire).unwrap();
+        assert_eq!(parsed, r);
+    }
+
+    #[test]
+    fn token_mapping_response_wire_format_is_one_line() {
+        let r = Response::TokenMapping {
+            epoch: 1,
+            aliases: sample_token_mapping_aliases(1),
+        };
+        let wire = r.to_wire().unwrap();
+        assert_eq!(wire.iter().filter(|b| **b == b'\n').count(), 1);
+        assert_eq!(*wire.last().unwrap(), b'\n');
+    }
+
+    #[test]
+    fn token_mapping_response_rejects_missing_epoch() {
+        let body = r#"{"ok":true,"kind":"token-mapping","aliases":[[]]}"#;
         let err = Response::parse(body.as_bytes()).unwrap_err();
         assert!(format!("{err}").contains("epoch"));
     }
 
     #[test]
-    fn keyword_compounds_response_rejects_missing_compounds() {
-        let bytes = br#"{"ok":true,"kind":"keyword-compounds","epoch":0}"#;
-        let err = Response::parse(bytes).unwrap_err();
-        assert!(format!("{err}").contains("compounds"));
-    }
-
-    #[test]
-    fn keyword_compounds_response_rejects_wrong_array_length() {
-        // Too short (34) and too long (36).  The 35-entry case is
-        // the happy path covered by `roundtrips` above.
-        let short: Vec<String> =
-            (0..(PYTHON_KEYWORD_COMPOUND_COUNT_WIRE - 1))
-                .map(|i| format!("\"kw{i}\""))
-                .collect();
-        let long: Vec<String> =
-            (0..=PYTHON_KEYWORD_COMPOUND_COUNT_WIRE)
-                .map(|i| format!("\"kw{i}\""))
-                .collect();
-        for arr in [short, long] {
-            let body = format!(
-                r#"{{"ok":true,"kind":"keyword-compounds","epoch":0,"compounds":[{}]}}"#,
-                arr.join(",")
-            );
-            let err = Response::parse(body.as_bytes()).unwrap_err();
-            assert!(
-                format!("{err}").contains("length"),
-                "expected length error for {body}, got {err}",
-            );
-        }
-    }
-
-    #[test]
-    fn keyword_compounds_response_rejects_non_array_compounds() {
-        let bytes = br#"{"ok":true,"kind":"keyword-compounds","epoch":0,"compounds":"notarray"}"#;
-        let err = Response::parse(bytes).unwrap_err();
-        assert!(format!("{err}").contains("non-array"));
-    }
-
-    #[test]
-    fn keyword_compounds_response_rejects_non_string_entry() {
-        // 35 entries with a single number at slot 10.
-        let mut arr: Vec<String> =
-            (0..PYTHON_KEYWORD_COMPOUND_COUNT_WIRE)
-                .map(|i| format!("\"kw{i}\""))
-                .collect();
-        arr[10] = "42".to_string();
-        let body = format!(
-            r#"{{"ok":true,"kind":"keyword-compounds","epoch":0,"compounds":[{}]}}"#,
-            arr.join(",")
-        );
+    fn token_mapping_response_rejects_missing_aliases() {
+        let body = r#"{"ok":true,"kind":"token-mapping","epoch":0}"#;
         let err = Response::parse(body.as_bytes()).unwrap_err();
-        assert!(format!("{err}").contains("not a string"));
-    }
-
-    #[test]
-    fn keyword_compounds_response_rejects_empty_entry() {
-        let mut arr: Vec<String> =
-            (0..PYTHON_KEYWORD_COMPOUND_COUNT_WIRE)
-                .map(|i| format!("\"kw{i}\""))
-                .collect();
-        arr[5] = "\"\"".to_string();
-        let body = format!(
-            r#"{{"ok":true,"kind":"keyword-compounds","epoch":0,"compounds":[{}]}}"#,
-            arr.join(",")
-        );
-        let err = Response::parse(body.as_bytes()).unwrap_err();
-        assert!(format!("{err}").contains("empty"));
-    }
-
-    #[test]
-    fn keyword_compounds_response_rejects_oversize_entry() {
-        // An entry above KEYWORD_COMPOUND_MAX_BYTES must be rejected
-        // before reaching the consumer's from_compounds validator.
-        // Total request must stay under MAX_REQUEST_BYTES (8 KiB) so
-        // the size cap doesn't fire first — 35 small entries + one
-        // ~2 KiB blob is ~2.3 KiB total, fits comfortably.
-        let big = "a".repeat(2000);
-        let mut arr: Vec<String> =
-            (0..PYTHON_KEYWORD_COMPOUND_COUNT_WIRE)
-                .map(|i| format!("\"kw{i}\""))
-                .collect();
-        arr[0] = format!("\"{big}\"");
-        let body = format!(
-            r#"{{"ok":true,"kind":"keyword-compounds","epoch":0,"compounds":[{}]}}"#,
-            arr.join(",")
-        );
-        let err = Response::parse(body.as_bytes()).unwrap_err();
-        assert!(format!("{err}").contains("exceeds cap"), "{err}");
-    }
-
-    #[test]
-    fn keyword_compounds_response_wire_format_is_one_line() {
-        let r = Response::KeywordCompounds {
-            epoch: 0,
-            compounds: Box::new(sample_keyword_compounds()),
-        };
-        let wire = r.to_wire().unwrap();
-        assert_eq!(wire.iter().filter(|b| **b == b'\n').count(), 1);
-        assert_eq!(*wire.last().unwrap(), b'\n');
+        assert!(format!("{err}").contains("aliases"));
     }
 }

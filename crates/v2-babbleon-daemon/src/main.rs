@@ -206,15 +206,10 @@ fn one_shot(
                 println!("  [{i}] {c}");
             }
         }
-        Response::KeywordCompounds { epoch, compounds } => {
-            // Same diagnostic-only treatment as the whitespace
-            // variant: the user-CLI is the production consumer; if
-            // a future scripted use of the daemon binary needs
-            // these, the diagnostic shape is the right thing to
-            // print rather than swallowing the response.
-            println!("keyword-compounds for epoch: {epoch}");
-            for (i, c) in compounds.iter().enumerate() {
-                println!("  [{i}] {c}");
+        Response::TokenMapping { epoch, aliases } => {
+            println!("token-mapping for epoch: {epoch} ({} tokens)", aliases.len());
+            for (ti, token_aliases) in aliases.iter().enumerate() {
+                println!("  token[{ti}]: {} aliases", token_aliases.len());
             }
         }
         Response::Error { kind, message } => {

@@ -53,7 +53,10 @@ pub mod unlock_secret;
 
 pub use client::round_trip;
 pub use errors::{Error, Result};
-pub use protocol::{ErrorKind, Request, Response, MAX_REQUEST_BYTES};
+pub use protocol::{
+    ErrorKind, Request, Response, ALIAS_COUNT_WIRE, MAX_REQUEST_BYTES,
+    MAX_TOKEN_MAPPING_COUNT,
+};
 pub use socket_path::default_socket_path;
 pub use unlock_secret::{
     UnlockSecret, UNLOCK_SECRET_HEX_LEN, UNLOCK_SECRET_LEN,

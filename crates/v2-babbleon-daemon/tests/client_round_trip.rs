@@ -137,32 +137,36 @@ fn get_whitespace_compounds_round_trip_against_inline_server() {
 }
 
 #[test]
-fn get_keyword_compounds_round_trip_against_inline_server() {
-    // End-to-end: the bytes the operator CLI receives from the daemon
-    // must satisfy `KeywordWordlist::from_compounds` and round-trip
-    // through every keyword's compound / reverse_lookup.
-    use babbleon_preprocessor_v2::python_keywords::PYTHON_KEYWORDS;
-    use babbleon_preprocessor_v2::KeywordWordlist;
+fn get_token_mapping_round_trip_against_inline_server() {
+    // End-to-end: the daemon returns ALIAS_COUNT_WIRE distinct compounds per
+    // token.  Verify epoch, alias count, and compound format.
+    use babbleon_daemon_protocol_v2::ALIAS_COUNT_WIRE;
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("d.sock");
     let server = serve_one(&path);
 
-    let resp = round_trip(&path, &Request::GetKeywordCompounds).unwrap();
-    let (epoch, compounds) = match resp {
-        Response::KeywordCompounds { epoch, compounds } => {
-            (epoch, *compounds)
+    let tokens = vec!["x".to_string(), "foo".to_string()];
+    let resp = round_trip(&path, &Request::GetTokenMapping { tokens: tokens.clone() }).unwrap();
+    match resp {
+        Response::TokenMapping { epoch, aliases } => {
+            assert_eq!(epoch, 0);
+            assert_eq!(aliases.len(), tokens.len(), "one aliases vec per token");
+            for alias_vec in &aliases {
+                assert_eq!(
+                    alias_vec.len(),
+                    ALIAS_COUNT_WIRE,
+                    "must have ALIAS_COUNT_WIRE compounds per token",
+                );
+                for compound in alias_vec {
+                    assert!(!compound.is_empty(), "compound must be non-empty");
+                    assert!(
+                        compound.bytes().all(|b| b.is_ascii_lowercase()),
+                        "compounds must be lowercase ASCII",
+                    );
+                }
+            }
         }
-        other => panic!("expected KeywordCompounds, got {other:?}"),
-    };
-    assert_eq!(epoch, 0);
-    let reconstructed =
-        KeywordWordlist::from_compounds(epoch, compounds.clone()).unwrap();
-    for (i, kw) in PYTHON_KEYWORDS.iter().enumerate() {
-        assert_eq!(
-            reconstructed.compound_for(kw),
-            Some(compounds[i].as_str()),
-        );
-        assert_eq!(reconstructed.reverse_lookup(&compounds[i]), Some(*kw));
+        other => panic!("expected TokenMapping, got {other:?}"),
     }
     server.join().unwrap();
 }

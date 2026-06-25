@@ -41,27 +41,13 @@ pub enum Error {
         have: usize,
     },
 
-    /// Two keywords were assigned the same per-epoch compound by
-    /// `KeywordWordlist::build`.  Astronomically unlikely with
-    /// the v2 baseline wordlist (369 652 entries × 35 keyword
-    /// slots × 4 words/compound), but checked defensively.  The
-    /// operator's workaround is to rotate the epoch.
-    #[error("keyword compound collision at slot {slot}; rotate epoch and retry")]
-    KeywordCompoundCollision {
-        /// Index in [`crate::python_keywords::PYTHON_KEYWORDS`]
-        /// where the second of the colliding pair lives.
-        slot: usize,
-    },
-
-    /// Two operators were assigned the same per-epoch compound
-    /// by `OperatorWordlist::build`.  Same defensive shape as
-    /// `KeywordCompoundCollision`.
-    #[error("operator compound collision at slot {slot}; rotate epoch and retry")]
-    OperatorCompoundCollision {
-        /// Index in [`crate::python_operators::PYTHON_OPERATORS`]
-        /// where the second of the colliding pair lives.
-        slot: usize,
-    },
+    /// A generic scramble-level failure.  Used by
+    /// `IdentifierMapping::from_tokens_and_aliases` when two tokens
+    /// would map to the same compound across all aliases (i.e. a
+    /// cross-alias collision).  The operator's workaround is to
+    /// rotate the epoch.
+    #[error("scramble error: {0}")]
+    Scramble(String),
 
     /// A v2-core primitive failed.  The wrapped error preserves
     /// the original cause; this variant exists only to bridge the
@@ -136,30 +122,18 @@ pub enum Error {
         reason: &'static str,
     },
 
-    /// A `KeywordWordlist::from_compounds` caller supplied
-    /// compounds that violate the table's invariants — empty
-    /// compound, non-ASCII-lowercase byte, duplicate compound.
+    /// A scrambled-file header could not be parsed.
     ///
-    /// Mirrors `InvalidSuppliedCompounds` for the
-    /// `PYTHON_KEYWORDS`-indexed keyword pool.  Distinct variant so
-    /// operator logs can disambiguate which wire response carried
-    /// the malformed payload and so a future per-pool validator can
-    /// diverge without touching the whitespace path.
-    ///
-    /// Per security-baseline rule 13, carries the offending slot
-    /// index and a structural reason only; never the compound
-    /// bytes themselves.
-    #[error(
-        "supplied keyword compounds invalid at slot {slot}: {reason}"
-    )]
-    InvalidSuppliedKeywordCompounds {
-        /// Index in
-        /// [`crate::python_keywords::PYTHON_KEYWORDS`] where the
-        /// violation was detected.  For duplicate-pair violations,
-        /// the higher of the two slot indices.
-        slot: usize,
-        /// Structural reason without compound bytes.  One of:
-        /// `"empty"`, `"non-ascii-lowercase"`, `"duplicate"`.
-        reason: &'static str,
-    },
+    /// Returned when `scramble_lifecycle` encounters a file that
+    /// does not begin with the `babbleon-v2` magic line or whose
+    /// `epoch:` / `tokens:` / `---` fields are malformed.  The
+    /// message carries structural context (line numbers, field
+    /// names) but never scrambled-compound bytes.
+    #[error("scrambled-file header parse error: {0}")]
+    HeaderParse(String),
 }
+
+// Layer-2 (dynamic identifier scramble) uses the same wordlist minimum as
+// layer 3 — the actual minimum is `max(tracked_tools.len(), 5) * COMPOUND_N`
+// entries; with any non-trivial file the v2 baseline wordlist (369 652
+// entries) satisfies this trivially.

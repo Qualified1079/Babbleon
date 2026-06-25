@@ -88,21 +88,24 @@ code items are phases 1-6.
 
 ### Phase 0 — open research (not blocking phase 1)
 
-- [ ] **Dynamic / language-agnostic keyword extraction** for v2
-      layer 2 (operator scramble).  Goal: Babbleon should be
-      agnostic to Python, Go, C, TypeScript, Rust, shell,
-      etc. — same preprocessor handles every language by
-      consulting a per-language keyword definition fetched at
-      build (or runtime) time.  Candidate sources:
-      Tree-sitter grammars (cover ~100 languages with parser
-      definitions; MIT-licensed), Language Server Protocol
-      introspection (`textDocument/semanticTokens` returns
-      token types but not keyword sets directly), per-language
-      stdlib metadata (Python `keyword` module, Go `go/token`,
-      etc.).  Recommended phase-3 prototype: vendor Tree-sitter
-      query files for the top 6 languages (Python, Go, C,
-      TypeScript, Rust, sh/bash) and extract keyword sets at
-      preprocessor build time.
+- [x] **Dynamic / language-agnostic keyword extraction** for v2
+      layer 2.  DONE: replaced the Python-specific keyword and
+      operator scramblers with a fully dynamic identifier
+      scrambler (`crates/v2-babbleon-preprocessor/src/
+      identifier_scrambler.rs`).  Every whitespace-delimited
+      token in the source (keywords, operators, identifiers,
+      string literals, punctuation — all of it) is collected,
+      assigned per-epoch compound aliases, and replaced.
+      Language-specific keyword/operator lists are gone;
+      `python_keywords.rs`, `python_operators.rs`,
+      `keyword_scrambler.rs`, `operator_scrambler.rs`,
+      `keyword_wordlist.rs`, `operator_wordlist.rs` deleted.
+      Multi-alias (ALIAS_COUNT=3) defeats frequency analysis:
+      each token gets 3 independent compounds cycling across
+      occurrences.  Daemon protocol updated: `GetTokenMapping` /
+      `TokenMapping` replaces `GetKeywordCompounds` /
+      `KeywordCompounds`.  Full round-trip + property tests
+      pass.
 - [ ] **Algorithmic derivation of per-role wordlist pool
       sizes.**  Current provisional sizes (identifier ~370k,
       decoy ~100k, direction marker ~20k, whitespace ~10k,
@@ -144,14 +147,34 @@ code items are phases 1-6.
 
 ### Phase 3 — structural scrambling
 
-- [ ] `crates/babbleon-preprocessor/` — runtime unscrambler
-- [ ] Layer 2: operator scramble (Python keywords first)
-- [ ] Layer 3: whitespace-as-words (the big one)
-- [ ] Layer 4: code-order reorder with execution markers
-- [ ] Layer 5: junk decoy injection
+- [x] `crates/v2-babbleon-preprocessor/` — runtime unscrambler
+      (`unscrambler.rs`, `tokens_to_source`)
+- [x] **Layer 2: dynamic identifier scrambler** — language-agnostic;
+      scrambles every whitespace-delimited token; ALIAS_COUNT=3
+      multi-alias per token.  See `identifier_scrambler.rs` +
+      daemon `state::token_mapping()`.  File header stores token
+      list so unscramble re-derives mapping from daemon without
+      original source.
+- [x] **Layer 3: whitespace-as-words** — `WhitespaceWordlist`,
+      `python_tokenizer::tokenize`, `scrambler::scramble`,
+      `unscrambler::unscramble_to_tokens`.  Output is one
+      continuous wall of compound tokens; no whitespace or
+      newlines visible.
+- [ ] **Layer 4: code-order reorder with execution markers** —
+      permute source block order; preprocessor reorders back via
+      embedded position markers.  Defeats "imports first,
+      helpers next, main last" shape fingerprint.
+- [ ] **Layer 5: junk decoy injection** — sprinkle per-epoch
+      wordlist compounds that the trusted-tier runner strips
+      before execution.  Raises attacker cost to locate live
+      code within the rotation window.
+- [ ] Update `CLAUDE.md` and `README.md` to document the v2
+      preprocessor pipeline (L2 dynamic identifier scrambler +
+      L3 whitespace-as-words, file header format, multi-alias,
+      daemon protocol changes).
 - [ ] Preprocessor seccomp profile (deny socket / mount / ptrace
       family)
-- [ ] Adversarial-LLM re-test: did this fix the v1
+- [ ] Adversarial-LLM re-test: did L2+L3 fix the v1
       shape-fingerprint problem?
 
 ### Phase 4 — additional obfuscation layers (post-research)
@@ -478,23 +501,21 @@ reason about the renamed identifiers.  Testing showed near-frontier
 models cannot crack the scramble blind, but DO trivially defeat it
 when given the original alongside.  Ideas to research and prototype:
 
-- [ ] **Operator scrambling.**  Currently only identifiers are
-      scrambled; keywords (`if`, `return`, `import`, `def`, etc.) are
-      not.  Substituting them with wordlist tokens would lift the
-      attacker's recognition layer from "I see Python control flow"
-      to "I see a soup of unfamiliar tokens, some of which act like
-      control flow."  Open question: which tokens are safe to remap
-      (lexer-level vs parser-level), what the run-time un-substitute
-      cost is, how this composes with the existing `--help`
-      deception.
-- [ ] **Whitespace-as-words.**  Replace literal whitespace (spaces,
-      newlines, indentation) with wordlist tokens that the trusted-tier
-      parser interprets as whitespace.  Source code becomes one
-      continuous wall of words — no line boundaries, no indent
-      structure — defeating the "shape-of-the-program" fingerprint
-      entirely.  Cost: needs a thin runtime preprocessor for any
-      script the user runs.  Useful only for scripts under Babbleon's
-      control (cron, systemd, user-installed); not for binaries.
+- [x] **Operator scrambling.**  DONE — subsumed by the dynamic
+      identifier scrambler (L2).  Every operator (`(`, `)`, `==`,
+      `:`, `**`, `-`, etc.) is a whitespace-delimited word token and
+      gets its own per-epoch compound alias.  No separate operator
+      list or `operator_scrambler.rs` needed.
+- [x] **Whitespace-as-words.**  DONE — `WhitespaceWordlist` +
+      `scrambler::scramble` / `unscrambler::unscramble_to_tokens`.
+      All spaces, tabs, and newlines are replaced by per-epoch
+      compound tokens; output is one continuous wall of words.
+- [x] **Multi-output scramble (multi-alias, ALIAS_COUNT=3).**  DONE —
+      each unique token gets 3 independent HKDF-derived compound
+      aliases (virtual epochs `epoch*3+0 .. epoch*3+2`); the
+      scrambler cycles through them per-occurrence so frequency
+      analysis cannot reconstruct the token set from compound
+      frequencies alone.
 - [ ] **Code-order scrambling with execution markers.**  Permute the
       source order of code blocks; add markers the trusted-tier runner
       uses to reorder back at execution.  Defeats the "line N usually
@@ -516,7 +537,8 @@ when given the original alongside.  Ideas to research and prototype:
       Likely small effect because models reason in semantic space, not
       surface tokens — but cheap and the gain is non-zero.
 
-These four are not for v1.  They reshape the threat model
+The three remaining research items (code-order, junk-injection,
+multi-language) are not for v1.  They reshape the threat model
 substantially and deserve a research write-up of their own
 (adversarial test against frontier models before committing).
 Filed here so the line of thinking is recorded.

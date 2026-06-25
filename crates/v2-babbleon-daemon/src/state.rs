@@ -528,46 +528,70 @@ impl DaemonState {
         Ok((*epoch, wl.all_compounds().clone()))
     }
 
-    /// Derive the 35 per-epoch Python-keyword compounds for layer 2
-    /// (operator scramble).  Sister of [`Self::whitespace_compounds`]
-    /// for the operator-CLI's `babbleon scramble` /
-    /// `babbleon unscramble` path.
+    /// Derive per-epoch scramble aliases for a caller-supplied token
+    /// list (language-agnostic dynamic identifier scramble).
     ///
-    /// Returns the current epoch and the compound array in
-    /// `PYTHON_KEYWORDS` static order.  The daemon's `PerHostSecret`
-    /// stays inside this `DaemonState` for the call; only the
-    /// HKDF-derived output crosses the wire to the trust-tier CLI
-    /// peer (same compartmentalisation as the whitespace path).
+    /// Returns the current epoch and an `aliases[token_idx][alias_idx]`
+    /// matrix where each element is the compound for that token at
+    /// that alias index.  [`babbleon_daemon_protocol_v2::ALIAS_COUNT_WIRE`]
+    /// aliases are derived per token using virtual epochs
+    /// `epoch * ALIAS_COUNT + i`.
+    ///
+    /// The daemon's `PerHostSecret` stays inside this `DaemonState`
+    /// for the call; only the HKDF-derived output crosses the wire.
     ///
     /// # Errors
     ///
-    /// - [`Error::Vault`] when the daemon is Locked (the secret
-    ///   needed to derive the keyword permutation is not in memory).
-    /// - [`Error::Mapping`] if the keyword derivation fails.  In
-    ///   practice unreachable with the v2 baseline wordlist
-    ///   (369 652 entries; 35×4=140-entry minimum); the error path
-    ///   exists so a future smaller-wordlist swap surfaces loudly
-    ///   rather than panicking.
-    pub fn keyword_compounds(
+    /// - [`Error::Vault`] when the daemon is Locked.
+    /// - [`Error::Mapping`] if compound derivation fails (unreachable
+    ///   with the v2 baseline wordlist in practice).
+    pub fn token_mapping(
         &self,
-    ) -> Result<(
-        u64,
-        [String; babbleon_preprocessor_v2::python_keywords::PYTHON_KEYWORD_COUNT],
-    )> {
+        tokens: &[String],
+    ) -> Result<(u64, Vec<Vec<String>>)> {
         let SecretState::Unlocked { secret, epoch, .. } = &self.secret_state else {
             return Err(Error::Vault(
-                "keyword-compounds requires an unlocked vault; \
+                "token-mapping requires an unlocked vault; \
                  send Unlock first"
                     .into(),
             ));
         };
-        let kwl = babbleon_preprocessor_v2::KeywordWordlist::build(
-            secret,
-            self.config.wordlist,
-            *epoch,
-        )
-        .map_err(|e| Error::Mapping(e.to_string()))?;
-        Ok((*epoch, kwl.all_compounds_in_static_order()))
+        use babbleon_core_v2::mapping::MappingBuilder;
+        use babbleon_daemon_protocol_v2::ALIAS_COUNT_WIRE;
+        let wl = self.config.wordlist;
+        let builder = MappingBuilder::new(secret, wl);
+        // ALIAS_COUNT_WIRE aliases per token, using virtual epochs so
+        // each alias is derived independently.
+        let base = epoch.saturating_mul(ALIAS_COUNT_WIRE as u64);
+        // Build each alias mapping and extract compounds per token.
+        let mut per_alias_compounds: Vec<Vec<String>> =
+            Vec::with_capacity(ALIAS_COUNT_WIRE);
+        for ai in 0..ALIAS_COUNT_WIRE {
+            let virtual_epoch = base + ai as u64;
+            let mapping = builder
+                .build(tokens, virtual_epoch)
+                .map_err(|e| Error::Mapping(e.to_string()))?;
+            let compounds: Vec<String> = tokens
+                .iter()
+                .map(|t| {
+                    mapping
+                        .scramble(t)
+                        .map(str::to_owned)
+                        .unwrap_or_default()
+                })
+                .collect();
+            per_alias_compounds.push(compounds);
+        }
+        // Transpose: per_alias_compounds[alias][token] →
+        // aliases[token][alias].
+        let mut aliases: Vec<Vec<String>> =
+            tokens.iter().map(|_| Vec::with_capacity(ALIAS_COUNT_WIRE)).collect();
+        for alias_compounds in per_alias_compounds {
+            for (ti, compound) in alias_compounds.into_iter().enumerate() {
+                aliases[ti].push(compound);
+            }
+        }
+        Ok((*epoch, aliases))
     }
 }
 
@@ -1227,93 +1251,90 @@ mod tests {
         }
     }
 
-    // ----- keyword_compounds (preprocessor-bridge) -----
+    // ----- token_mapping (dynamic identifier scramble) -----
 
     #[test]
-    fn keyword_compounds_returns_thirty_five_distinct_lowercase_strings() {
+    fn token_mapping_returns_aliases_for_each_token() {
+        use babbleon_daemon_protocol_v2::ALIAS_COUNT_WIRE;
         let s = build_state(tracked(), "/wrappers");
-        let (epoch, compounds) = s.keyword_compounds().unwrap();
+        let tokens =
+            vec!["def".to_string(), "foo".to_string(), "return".to_string()];
+        let (epoch, aliases) = s.token_mapping(&tokens).unwrap();
         assert_eq!(epoch, 0);
-        assert_eq!(compounds.len(), 35);
-        for c in &compounds {
-            assert!(!c.is_empty(), "compound is empty");
-            assert!(
-                c.bytes().all(|b| b.is_ascii_lowercase()),
-                "compound contains non-lowercase byte: {c:?}",
-            );
+        assert_eq!(aliases.len(), tokens.len());
+        for token_aliases in &aliases {
+            assert_eq!(token_aliases.len(), ALIAS_COUNT_WIRE);
+            for c in token_aliases {
+                assert!(!c.is_empty(), "alias compound is empty");
+                assert!(
+                    c.bytes().all(|b| b.is_ascii_lowercase()),
+                    "alias compound has non-lowercase byte: {c:?}",
+                );
+            }
         }
-        let mut sorted: Vec<&str> =
-            compounds.iter().map(String::as_str).collect();
-        sorted.sort_unstable();
-        let len = sorted.len();
-        sorted.dedup();
-        assert_eq!(sorted.len(), len, "compounds must be pairwise distinct");
+        // All compounds across all tokens and all aliases must be distinct.
+        let mut all: Vec<&str> = aliases
+            .iter()
+            .flat_map(|v| v.iter().map(String::as_str))
+            .collect();
+        all.sort_unstable();
+        let len = all.len();
+        all.dedup();
+        assert_eq!(all.len(), len, "compounds must be globally distinct");
     }
 
     #[test]
-    fn keyword_compounds_locked_returns_vault_error() {
+    fn token_mapping_locked_returns_vault_error() {
         let s = build_locked(tracked(), "/wrappers");
-        match s.keyword_compounds() {
+        match s.token_mapping(&["x".to_string()]) {
             Err(Error::Vault(m)) => assert!(m.contains("locked"), "{m}"),
             Err(other) => panic!("expected Error::Vault, got {other:?}"),
-            Ok(_) => panic!("locked state must refuse keyword-compounds"),
+            Ok(_) => panic!("locked state must refuse token_mapping"),
         }
     }
 
     #[test]
-    fn keyword_compounds_change_across_rotation() {
+    fn token_mapping_changes_across_rotation() {
+        use babbleon_daemon_protocol_v2::ALIAS_COUNT_WIRE;
         let mut s = build_state(tracked(), "/wrappers");
-        let (e0, c0) = s.keyword_compounds().unwrap();
+        let tokens = vec!["alpha".to_string(), "beta".to_string()];
+        let (e0, a0) = s.token_mapping(&tokens).unwrap();
         assert_eq!(e0, 0);
         s.rotate().unwrap();
-        let (e1, c1) = s.keyword_compounds().unwrap();
+        let (e1, a1) = s.token_mapping(&tokens).unwrap();
         assert_eq!(e1, 1);
-        // Every keyword's compound moves across rotation (HKDF +
-        // Fisher-Yates over 35 slots — a fixed point is
-        // astronomically unlikely, but the assertion allows one for
-        // resilience against future wordlist swaps).
-        let same: usize = c0
-            .iter()
-            .zip(c1.iter())
-            .filter(|(a, b)| a == b)
-            .count();
-        assert!(
-            same <= 1,
-            "rotation left {same}/35 keyword compounds unchanged",
-        );
+        // After rotation, at least one alias changes (almost certainly all).
+        let changed = a0.iter().zip(a1.iter()).any(|(v0, v1)| v0 != v1);
+        assert!(changed, "all aliases unchanged after rotation");
+        let _ = ALIAS_COUNT_WIRE;
     }
 
     #[test]
-    fn keyword_compounds_are_deterministic_for_same_secret_and_epoch() {
+    fn token_mapping_is_deterministic_for_same_secret_and_epoch() {
         let a = build_state(tracked(), "/wrappers");
         let b = build_state(tracked(), "/wrappers");
-        let (_, ca) = a.keyword_compounds().unwrap();
-        let (_, cb) = b.keyword_compounds().unwrap();
-        assert_eq!(ca, cb);
+        let tokens = vec!["x".to_string(), "y".to_string()];
+        let (_, aliases_a) = a.token_mapping(&tokens).unwrap();
+        let (_, aliases_b) = b.token_mapping(&tokens).unwrap();
+        assert_eq!(aliases_a, aliases_b);
     }
 
     #[test]
-    fn keyword_compounds_round_trip_through_preprocessor() {
-        // End-to-end seam: take the daemon's compounds, feed them
-        // into the preprocessor's `KeywordWordlist::from_compounds`,
-        // and confirm reverse_lookup recovers each keyword.
-        use babbleon_preprocessor_v2::python_keywords::PYTHON_KEYWORDS;
-        use babbleon_preprocessor_v2::KeywordWordlist;
+    fn token_mapping_round_trips_through_identifier_mapping() {
+        use babbleon_preprocessor_v2::identifier_scrambler::IdentifierMapping;
         let s = build_state(tracked(), "/wrappers");
-        let (epoch, compounds) = s.keyword_compounds().unwrap();
-        let reconstructed =
-            KeywordWordlist::from_compounds(epoch, compounds.clone())
-                .unwrap();
-        for (i, kw) in PYTHON_KEYWORDS.iter().enumerate() {
-            assert_eq!(
-                reconstructed.compound_for(kw),
-                Some(compounds[i].as_str()),
-                "compound for {kw:?} mismatched",
-            );
-            assert_eq!(
-                reconstructed.reverse_lookup(&compounds[i]),
-                Some(*kw),
-            );
+        let tokens =
+            vec!["def".to_string(), "foo".to_string(), "return".to_string()];
+        let (epoch, aliases) = s.token_mapping(&tokens).unwrap();
+        let mapping =
+            IdentifierMapping::from_tokens_and_aliases(tokens.clone(), epoch, aliases)
+                .expect("daemon-derived aliases must satisfy from_tokens_and_aliases");
+        // Every token can be scrambled and unscrambled back.
+        for (i, tok) in tokens.iter().enumerate() {
+            let compound = mapping.scramble(tok, i).expect("scramble must succeed");
+            let recovered =
+                mapping.unscramble(compound).expect("unscramble must succeed");
+            assert_eq!(recovered, tok.as_str());
         }
     }
 

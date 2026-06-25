@@ -116,12 +116,7 @@
 #![warn(clippy::pedantic)]
 
 pub mod errors;
-pub mod keyword_scrambler;
-pub mod keyword_wordlist;
-pub mod operator_scrambler;
-pub mod operator_wordlist;
-pub mod python_keywords;
-pub mod python_operators;
+pub mod identifier_scrambler;
 pub mod python_tokenizer;
 pub mod scrambler;
 pub mod secret_literal_scrambler;
@@ -131,12 +126,10 @@ pub mod unscrambler;
 pub mod whitespace_wordlist;
 
 pub use errors::{Error, Result};
-pub use keyword_scrambler::{scramble_keywords, unscramble_keywords};
-pub use keyword_wordlist::KeywordWordlist;
-pub use operator_scrambler::{scramble_operators, unscramble_operators};
-pub use operator_wordlist::OperatorWordlist;
-pub use python_keywords::{PYTHON_KEYWORDS, PYTHON_KEYWORD_COUNT};
-pub use python_operators::{PYTHON_OPERATORS, PYTHON_OPERATOR_COUNT};
+pub use identifier_scrambler::{
+    collect_unique_tokens, scramble_identifiers, unscramble_identifiers,
+    IdentifierMapping, ALIAS_COUNT,
+};
 pub use secret_literal_scrambler::{
     scramble_secret_literals, unscramble_secret_literals,
 };
