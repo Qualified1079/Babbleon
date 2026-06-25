@@ -117,6 +117,7 @@
 
 pub mod chunk_reorder;
 pub mod decoy_injection;
+pub mod direction_reversal;
 pub mod errors;
 pub mod identifier_scrambler;
 pub mod python_tokenizer;
@@ -132,6 +133,7 @@ pub use chunk_reorder::{
     has_any_marker as has_any_chunk_marker, scramble_chunks, unscramble_chunks,
 };
 pub use decoy_injection::{has_any_decoy, inject_decoys, strip_decoys};
+pub use direction_reversal::{reverse_chunks, unreverse_chunks};
 pub use errors::{Error, Result};
 pub use identifier_scrambler::{
     collect_unique_tokens, scramble_identifiers, unscramble_identifiers,

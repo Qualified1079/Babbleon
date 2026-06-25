@@ -54,6 +54,7 @@ use anyhow::{anyhow, Context, Result};
 
 use babbleon_preprocessor_v2::chunk_reorder::{scramble_chunks, unscramble_chunks};
 use babbleon_preprocessor_v2::decoy_injection::{inject_decoys, strip_decoys};
+use babbleon_preprocessor_v2::direction_reversal::{reverse_chunks, unreverse_chunks};
 use babbleon_preprocessor_v2::identifier_scrambler::{
     collect_unique_tokens, scramble_identifiers, unscramble_identifiers,
 };
@@ -146,9 +147,12 @@ pub fn run_scramble_dir(opts: CorpusOptions) -> Result<CorpusReport> {
             scramble_identifiers(&mut tokens, &mapping);
             let body =
                 scramble(&tokens, &wl).map_err(|e| anyhow!("scramble: {e}"))?;
+            // L6: direction reversal of variable-length char chunks.
+            let reversed_body = reverse_chunks(&body, mapping.epoch);
             // L12: tokenizer-hostile noise on body bytes.  Applied
-            // after L3 so the header round-trips byte-for-byte.
-            let noisy_body = inject_noise(&body, mapping.epoch);
+            // after L6 so the header round-trips byte-for-byte and
+            // the noise lands on the reversed wall.
+            let noisy_body = inject_noise(&reversed_body, mapping.epoch);
             Ok(encode_scrambled_file(mapping.epoch, &unique_post, &noisy_body))
         },
         &mut report,
@@ -194,6 +198,8 @@ pub fn run_unscramble_dir(opts: CorpusOptions) -> Result<CorpusReport> {
             // L12 inverse: strip noise before L3's greedy prefix
             // match.  Content-based and idempotent.
             let body = strip_noise(&body);
+            // L6 inverse: undo the per-epoch direction reversal.
+            let body = unreverse_chunks(&body, epoch);
             let mut tokens = unscramble_to_tokens(&body, &wl);
             unscramble_identifiers(&mut tokens, &mapping);
             // L5 inverse: strip decoy tokens BEFORE L4 reorder so

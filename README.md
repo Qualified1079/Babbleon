@@ -21,7 +21,7 @@ attacker is an LLM running a generic playbook.
 ## Status
 
 v2 is in active development under `crates/v2-*`. The v2
-preprocessor pipeline currently composes five scramble layers:
+preprocessor pipeline currently composes six scramble layers:
 
 - **L2 — dynamic identifier scramble** (`crates/v2-babbleon-preprocessor/
   src/identifier_scrambler.rs`). Language-agnostic. Every
@@ -44,6 +44,13 @@ preprocessor pipeline currently composes five scramble layers:
   (~25% of the original token count). Raises attacker cost to
   locate the live code within the rotation window. The unscrambler
   recognizes and strips them by prefix.
+- **L6 — direction segment reversal** (`direction_reversal.rs`).
+  The L3 body is split into variable-length char chunks
+  (`[16, 48]` chars) and ~50% are reversed per a per-epoch
+  xorshift PRNG. Wordlist substring matches against the original
+  compound names fail; visual reading order is destroyed. Reversal
+  is involutive so the unscrambler re-applies the same per-epoch
+  pattern to undo it.
 - **L12 — tokenizer-hostile noise** (`tokenizer_noise.rs`). The L3
   body bytes are perturbed with zero-width characters (ZWSP/ZWNJ/
   ZWJ at U+200B/U+200C/U+200D) injected at deterministic per-epoch
@@ -61,8 +68,8 @@ compounds being derived from the per-host secret, not from hiding
 which tokens exist.
 
 Pipeline order:
-- **Scramble**: tokenize → L4 → L5 → L2 → L3 → **L12** → encode header
-- **Unscramble**: decode header → **L12⁻¹** → L3⁻¹ → L2⁻¹ → L5⁻¹ → L4⁻¹ → emit
+- **Scramble**: tokenize → L4 → L5 → L2 → L3 → **L6** → **L12** → encode header
+- **Unscramble**: decode header → **L12⁻¹** → **L6⁻¹** → L3⁻¹ → L2⁻¹ → L5⁻¹ → L4⁻¹ → emit
 
 See **TODO.md** for the ship checklist (open and deferred items with
 rationale inline), **PLAN.md** / **V2_PLAN.md** for architecture,

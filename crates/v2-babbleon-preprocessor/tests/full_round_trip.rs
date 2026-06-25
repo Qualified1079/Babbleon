@@ -208,6 +208,56 @@ fn scrambled_output_is_not_trivially_readable() {
 }
 
 #[test]
+fn l6_reverses_chunks_and_round_trips_executable_python() {
+    use babbleon_preprocessor_v2::{reverse_chunks, unreverse_chunks};
+
+    let source = "def add(a, b):\n    return a + b\n\nprint(add(2, 3))\n";
+
+    // L3 body via the existing helper.
+    let scrambled = scramble_full(source);
+    // Apply L6 to the body.
+    let reversed = reverse_chunks(&scrambled, 0);
+
+    // For a non-trivial body L6 must change at least one chunk.
+    assert_ne!(reversed, scrambled, "L6 should mutate a long body");
+    assert_eq!(
+        reversed.chars().count(),
+        scrambled.chars().count(),
+        "L6 must preserve char count",
+    );
+
+    let undone = unreverse_chunks(&reversed, 0);
+    assert_eq!(undone, scrambled, "L6 must round-trip its body");
+
+    // Full pipeline: L6 strip then L3⁻¹ then upper layers.
+    let unscrambled = unscramble_full(source, &undone);
+    let original_out = python_exec(source).expect("baseline executes");
+    let unscrambled_out = python_exec(&unscrambled)
+        .unwrap_or_else(|| panic!("unscrambled failed:\n{unscrambled}"));
+    assert_eq!(original_out, unscrambled_out);
+}
+
+#[test]
+fn l6_then_l12_compose_and_invert_in_correct_order() {
+    use babbleon_preprocessor_v2::{
+        inject_tokenizer_noise, reverse_chunks, strip_tokenizer_noise,
+        unreverse_chunks,
+    };
+
+    let source = "def greet(name):\n    print(f\"hi {name}\")\n\ngreet(\"world\")\n";
+    let body = scramble_full(source);
+
+    // Compose L6 then L12 as the production lifecycle does.
+    let reversed = reverse_chunks(&body, 0);
+    let noisy = inject_tokenizer_noise(&reversed, 0);
+
+    // Inverse order: L12 strip then L6 unreverse.
+    let stripped = strip_tokenizer_noise(&noisy);
+    let recovered = unreverse_chunks(&stripped, 0);
+    assert_eq!(recovered, body, "L6+L12 must round-trip");
+}
+
+#[test]
 fn l12_noise_survives_full_pipeline_round_trip() {
     use babbleon_preprocessor_v2::{
         has_any_tokenizer_noise, inject_tokenizer_noise, strip_tokenizer_noise,

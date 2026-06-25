@@ -44,8 +44,10 @@
 //! 7. `scramble_identifiers` (L2, in-place).
 //! 8. Round-trip `Request::GetWhitespaceCompounds` (L3).
 //! 9. `scrambler::scramble` (L3, token-stream-to-bytes).
-//! 10. `inject_noise` (L12, tokenizer-hostile noise on body bytes).
-//! 11. Prepend header; write to OUTPUT or stdout.
+//! 10. `reverse_chunks` (L6, per-epoch direction reversal of body
+//!     char-chunks).
+//! 11. `inject_noise` (L12, tokenizer-hostile noise on body bytes).
+//! 12. Prepend header; write to OUTPUT or stdout.
 //!
 //! `unscramble`:
 //!
@@ -55,12 +57,14 @@
 //! 3. Round-trip `Request::GetWhitespaceCompounds`.
 //! 4. `strip_noise` (L12, content-based zero-width + homoglyph
 //!    removal — idempotent for back-compat).
-//! 5. `unscrambler::unscramble_to_tokens` (L3).
-//! 6. `unscramble_identifiers` (L2).
-//! 7. `strip_decoys` (L5).
-//! 8. `unscramble_chunks` (L4).
-//! 9. `unscrambler::tokens_to_source`.
-//! 10. Write to OUTPUT or stdout.
+//! 5. `unreverse_chunks` (L6, re-applies same per-epoch reversal
+//!    pattern since reversal is involutive).
+//! 6. `unscrambler::unscramble_to_tokens` (L3).
+//! 7. `unscramble_identifiers` (L2).
+//! 8. `strip_decoys` (L5).
+//! 9. `unscramble_chunks` (L4).
+//! 10. `unscrambler::tokens_to_source`.
+//! 11. Write to OUTPUT or stdout.
 
 use std::fs;
 use std::io::{self, Read, Write};
@@ -71,6 +75,7 @@ use anyhow::{anyhow, Context, Result};
 use babbleon_daemon_protocol_v2::{round_trip, Request, Response};
 use babbleon_preprocessor_v2::chunk_reorder::{scramble_chunks, unscramble_chunks};
 use babbleon_preprocessor_v2::decoy_injection::{inject_decoys, strip_decoys};
+use babbleon_preprocessor_v2::direction_reversal::{reverse_chunks, unreverse_chunks};
 use babbleon_preprocessor_v2::identifier_scrambler::{
     collect_unique_tokens, scramble_identifiers, unscramble_identifiers,
     IdentifierMapping,
@@ -153,10 +158,16 @@ pub fn run_scramble(opts: ScrambleOptions) -> Result<()> {
     // L3: whitespace markers → compounds.
     let body = scramble(&tokens, &wl).with_context(|| "scramble L3")?;
 
+    // L6: per-epoch direction reversal of variable-length char
+    // chunks.  Runs while the body is still pure ASCII so the
+    // char-based reversal stays simple; the inverse re-applies the
+    // same per-epoch pattern (reversal is involutive).
+    let reversed_body = reverse_chunks(&body, id_mapping.epoch);
+
     // L12: tokenizer-hostile noise injection on the body bytes.
-    // Operates after L3 so the header (which holds the token list,
+    // Operates after L6 so the header (which holds the token list,
     // potentially non-ASCII) round-trips byte-for-byte.
-    let noisy_body = inject_noise(&body, id_mapping.epoch);
+    let noisy_body = inject_noise(&reversed_body, id_mapping.epoch);
 
     // Encode file: header + body.
     let out = encode_scrambled_file(id_mapping.epoch, &unique_tokens, &noisy_body);
@@ -189,6 +200,11 @@ pub fn run_unscramble(opts: ScrambleOptions) -> Result<()> {
     // L3's greedy prefix match.  Content-based — idempotent on a
     // clean body (back-compat for files scrambled before L12 landed).
     let body = strip_noise(&body);
+
+    // L6 inverse: undo the per-epoch direction reversal.  Same
+    // function as the forward pass, since reversal is involutive
+    // and the PRNG is deterministic from epoch.
+    let body = unreverse_chunks(&body, id_mapping.epoch);
 
     // L3 unscramble: body → token stream.
     let mut tokens = unscramble_to_tokens(&body, &wl);
