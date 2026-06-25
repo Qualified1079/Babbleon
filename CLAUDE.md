@@ -87,7 +87,7 @@ Never push to a `claude/*` branch other than the one
 
 ## 4.5 v2 preprocessor pipeline (current state)
 
-The v2 preprocessor composes four scramble layers in
+The v2 preprocessor composes five scramble layers in
 `crates/v2-babbleon-preprocessor/src/`:
 
 - **L2** (`identifier_scrambler.rs`) — dynamic, language-agnostic;
@@ -98,9 +98,19 @@ The v2 preprocessor composes four scramble layers in
   deterministically; inserts `__bbnpos<N>__` markers.
 - **L5** (`decoy_injection.rs`) — injects `__bbndecoy<N>__` tokens
   at depth-0 positions (~25%); the unscrambler strips them by prefix.
+- **L12** (`tokenizer_noise.rs`) — body-bytes-only noise: zero-width
+  characters (ZWSP/ZWNJ/ZWJ at U+200B/200C/200D) injected at
+  deterministic per-epoch positions, plus Cyrillic-homoglyph
+  substitution (`a c e i o p x y` → U+0430/0441/0435/0456/043E/0440/
+  0445/0443) on a ~1/3 PRNG draw.  Strip is content-based; the
+  unscrambler removes every zero-width and reverses every known
+  homoglyph regardless of epoch.
 
-Scramble order: tokenize → L4 → L5 → L2 → L3.
-Unscramble order: L3⁻¹ → L2⁻¹ → L5⁻¹ → L4⁻¹ → emit.
+Scramble order: tokenize → L4 → L5 → L2 → L3 → **L12** (body bytes).
+Unscramble order: **L12⁻¹** → L3⁻¹ → L2⁻¹ → L5⁻¹ → L4⁻¹ → emit.
+
+L12 is idempotent on a clean body, so older pre-L12 files unscramble
+correctly under the new pipeline (back-compat).
 
 File format: `babbleon-v2\nepoch:N\ntokens:T1\tT2\t...\n---\n<L3 body>`.
 The sorted token list is embedded so the unscrambler can ask the

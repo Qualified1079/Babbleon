@@ -123,6 +123,7 @@ pub mod python_tokenizer;
 pub mod scrambler;
 pub mod secret_literal_scrambler;
 pub mod secret_literal_wordlist;
+pub mod tokenizer_noise;
 pub mod tokens;
 pub mod unscrambler;
 pub mod whitespace_wordlist;
@@ -140,5 +141,9 @@ pub use secret_literal_scrambler::{
     scramble_secret_literals, unscramble_secret_literals,
 };
 pub use secret_literal_wordlist::SecretLiteralWordlist;
+pub use tokenizer_noise::{
+    has_any_noise as has_any_tokenizer_noise, inject_noise as inject_tokenizer_noise,
+    strip_noise as strip_tokenizer_noise,
+};
 pub use tokens::{Token, WhitespaceKind};
 pub use whitespace_wordlist::WhitespaceWordlist;

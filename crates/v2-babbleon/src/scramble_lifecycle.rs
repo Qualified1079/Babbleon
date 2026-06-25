@@ -36,13 +36,16 @@
 //!
 //! 1. Read source bytes (UTF-8) from FILE or stdin.
 //! 2. `python_tokenizer::tokenize` → `Vec<Token>`.
-//! 3. `collect_unique_tokens` → sorted unique token list.
-//! 4. Round-trip `Request::GetTokenMapping` against the daemon to
+//! 3. `scramble_chunks` (L4, position markers + per-epoch shuffle).
+//! 4. `inject_decoys` (L5, depth-0 decoy injection).
+//! 5. `collect_unique_tokens` → sorted unique token list.
+//! 6. Round-trip `Request::GetTokenMapping` against the daemon to
 //!    get per-token aliases.
-//! 5. `scramble_identifiers` (L2, in-place).
-//! 6. Also round-trip `Request::GetWhitespaceCompounds` (L3).
-//! 7. `scrambler::scramble` (L3, token-stream-to-bytes).
-//! 8. Prepend header; write to OUTPUT or stdout.
+//! 7. `scramble_identifiers` (L2, in-place).
+//! 8. Round-trip `Request::GetWhitespaceCompounds` (L3).
+//! 9. `scrambler::scramble` (L3, token-stream-to-bytes).
+//! 10. `inject_noise` (L12, tokenizer-hostile noise on body bytes).
+//! 11. Prepend header; write to OUTPUT or stdout.
 //!
 //! `unscramble`:
 //!
@@ -50,10 +53,14 @@
 //! 2. Round-trip `Request::GetTokenMapping` with the header's
 //!    token list → same mapping (deterministic from secret+epoch).
 //! 3. Round-trip `Request::GetWhitespaceCompounds`.
-//! 4. `unscrambler::unscramble_to_tokens` (L3).
-//! 5. `unscramble_identifiers` (L2).
-//! 6. `unscrambler::tokens_to_source`.
-//! 7. Write to OUTPUT or stdout.
+//! 4. `strip_noise` (L12, content-based zero-width + homoglyph
+//!    removal — idempotent for back-compat).
+//! 5. `unscrambler::unscramble_to_tokens` (L3).
+//! 6. `unscramble_identifiers` (L2).
+//! 7. `strip_decoys` (L5).
+//! 8. `unscramble_chunks` (L4).
+//! 9. `unscrambler::tokens_to_source`.
+//! 10. Write to OUTPUT or stdout.
 
 use std::fs;
 use std::io::{self, Read, Write};
@@ -70,6 +77,7 @@ use babbleon_preprocessor_v2::identifier_scrambler::{
 };
 use babbleon_preprocessor_v2::python_tokenizer::tokenize;
 use babbleon_preprocessor_v2::scrambler::scramble;
+use babbleon_preprocessor_v2::tokenizer_noise::{inject_noise, strip_noise};
 use babbleon_preprocessor_v2::unscrambler::{
     tokens_to_source, unscramble_to_tokens,
 };
@@ -145,8 +153,13 @@ pub fn run_scramble(opts: ScrambleOptions) -> Result<()> {
     // L3: whitespace markers → compounds.
     let body = scramble(&tokens, &wl).with_context(|| "scramble L3")?;
 
+    // L12: tokenizer-hostile noise injection on the body bytes.
+    // Operates after L3 so the header (which holds the token list,
+    // potentially non-ASCII) round-trips byte-for-byte.
+    let noisy_body = inject_noise(&body, id_mapping.epoch);
+
     // Encode file: header + body.
-    let out = encode_scrambled_file(id_mapping.epoch, &unique_tokens, &body);
+    let out = encode_scrambled_file(id_mapping.epoch, &unique_tokens, &noisy_body);
     write_output(&output, out.as_bytes())?;
     Ok(())
 }
@@ -171,6 +184,11 @@ pub fn run_unscramble(opts: ScrambleOptions) -> Result<()> {
         epoch,
     )?;
     let wl = fetch_whitespace_wordlist(&socket_path)?;
+
+    // L12 inverse: strip tokenizer-hostile noise from the body BEFORE
+    // L3's greedy prefix match.  Content-based — idempotent on a
+    // clean body (back-compat for files scrambled before L12 landed).
+    let body = strip_noise(&body);
 
     // L3 unscramble: body → token stream.
     let mut tokens = unscramble_to_tokens(&body, &wl);

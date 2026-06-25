@@ -59,6 +59,7 @@ use babbleon_preprocessor_v2::identifier_scrambler::{
 };
 use babbleon_preprocessor_v2::python_tokenizer::tokenize;
 use babbleon_preprocessor_v2::scrambler::scramble;
+use babbleon_preprocessor_v2::tokenizer_noise::{inject_noise, strip_noise};
 use babbleon_preprocessor_v2::unscrambler::{tokens_to_source, unscramble_to_tokens};
 
 use crate::scramble_lifecycle::{
@@ -145,7 +146,10 @@ pub fn run_scramble_dir(opts: CorpusOptions) -> Result<CorpusReport> {
             scramble_identifiers(&mut tokens, &mapping);
             let body =
                 scramble(&tokens, &wl).map_err(|e| anyhow!("scramble: {e}"))?;
-            Ok(encode_scrambled_file(mapping.epoch, &unique_post, &body))
+            // L12: tokenizer-hostile noise on body bytes.  Applied
+            // after L3 so the header round-trips byte-for-byte.
+            let noisy_body = inject_noise(&body, mapping.epoch);
+            Ok(encode_scrambled_file(mapping.epoch, &unique_post, &noisy_body))
         },
         &mut report,
     )?;
@@ -187,6 +191,9 @@ pub fn run_unscramble_dir(opts: CorpusOptions) -> Result<CorpusReport> {
                 &sorted_tokens,
                 epoch,
             )?;
+            // L12 inverse: strip noise before L3's greedy prefix
+            // match.  Content-based and idempotent.
+            let body = strip_noise(&body);
             let mut tokens = unscramble_to_tokens(&body, &wl);
             unscramble_identifiers(&mut tokens, &mapping);
             // L5 inverse: strip decoy tokens BEFORE L4 reorder so

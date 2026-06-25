@@ -208,6 +208,56 @@ fn scrambled_output_is_not_trivially_readable() {
 }
 
 #[test]
+fn l12_noise_survives_full_pipeline_round_trip() {
+    use babbleon_preprocessor_v2::{
+        has_any_tokenizer_noise, inject_tokenizer_noise, strip_tokenizer_noise,
+    };
+
+    let source = "def add(a, b):\n    return a + b\n\nprint(add(2, 3))\n";
+
+    // Scramble through L4/L5/L2/L3 then apply L12 to the body bytes.
+    let scrambled = scramble_full(source);
+    let noisy = inject_tokenizer_noise(&scrambled, 0);
+    assert!(
+        has_any_tokenizer_noise(&noisy),
+        "L12 must add at least one noise character to a non-trivial body",
+    );
+
+    // Strip L12 noise content-based; should byte-recover the original
+    // L3 body.
+    let cleaned = strip_tokenizer_noise(&noisy);
+    assert_eq!(
+        cleaned, scrambled,
+        "strip_noise must reverse inject_noise byte-for-byte",
+    );
+
+    // The full pipeline (with L12 strip up front) must round-trip
+    // back to a Python program that executes identically.
+    let unscrambled = unscramble_full(source, &cleaned);
+    let original_out = python_exec(source).expect("baseline executes");
+    let unscrambled_out = python_exec(&unscrambled)
+        .unwrap_or_else(|| panic!("unscrambled failed:\n{unscrambled}"));
+    assert_eq!(original_out, unscrambled_out);
+}
+
+#[test]
+fn l12_strip_is_back_compat_for_pre_l12_files() {
+    // A file scrambled by an older revision (no L12 noise) must
+    // unscramble correctly when the strip step is added in front.
+    // strip_noise on a clean body must be a no-op.
+    use babbleon_preprocessor_v2::strip_tokenizer_noise;
+
+    let source = "x = 1\nprint(x)\n";
+    let scrambled = scramble_full(source);
+    let stripped = strip_tokenizer_noise(&scrambled);
+    assert_eq!(stripped, scrambled, "strip on clean body must be identity");
+    let unscrambled = unscramble_full(source, &stripped);
+    let original_out = python_exec(source).unwrap();
+    let unscrambled_out = python_exec(&unscrambled).unwrap();
+    assert_eq!(original_out, unscrambled_out);
+}
+
+#[test]
 fn l2_scrambles_every_unique_token() {
     // Use multi-letter tokens so a substring search isn't fooled by
     // an arbitrary single letter appearing inside an L2 compound by
