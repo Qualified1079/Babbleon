@@ -188,18 +188,25 @@ pub fn run_unscramble_dir(opts: CorpusOptions) -> Result<CorpusReport> {
         &input_dir,
         &output_dir,
         &mut |src| {
-            let (epoch, sorted_tokens, body) = decode_scrambled_file(src)
-                .map_err(|e| anyhow!("parse header: {e}"))?;
+            let (version, epoch, sorted_tokens, body) =
+                decode_scrambled_file(src)
+                    .map_err(|e| anyhow!("parse header: {e}"))?;
             let mapping = fetch_identifier_mapping_at_epoch(
                 &socket_path,
                 &sorted_tokens,
                 epoch,
             )?;
             // L12 inverse: strip noise before L3's greedy prefix
-            // match.  Content-based and idempotent.
+            // match.  Content-based and idempotent — safe on v0
+            // files (no-op when body has no noise).
             let body = strip_noise(&body);
-            // L6 inverse: undo the per-epoch direction reversal.
-            let body = unreverse_chunks(&body, epoch);
+            // L6 inverse: undo the per-epoch direction reversal,
+            // gated on format version.  v0 files predate L6.
+            let body = if version >= 1 {
+                unreverse_chunks(&body, epoch)
+            } else {
+                body
+            };
             let mut tokens = unscramble_to_tokens(&body, &wl);
             unscramble_identifiers(&mut tokens, &mapping);
             // L5 inverse: strip decoy tokens BEFORE L4 reorder so
