@@ -20,14 +20,46 @@ attacker is an LLM running a generic playbook.
 
 ## Status
 
-Early development. M1 (Rust sandbox demo) lands; M3 (real Linux
-namespace enforcement with PAM + setuid helper) is the load-bearing
-piece and is next.
+v2 is in active development under `crates/v2-*`. The v2
+preprocessor pipeline currently composes four scramble layers:
+
+- **L2 — dynamic identifier scramble** (`crates/v2-babbleon-preprocessor/
+  src/identifier_scrambler.rs`). Language-agnostic. Every
+  whitespace-delimited token in the source — keywords, operators,
+  identifiers, string literals, punctuation — is collected and
+  assigned per-epoch HKDF-derived compound aliases. `ALIAS_COUNT=3`
+  multi-alias per token: each token gets 3 independent compounds
+  cycling across occurrences to defeat frequency analysis.
+- **L3 — whitespace-as-words** (`scrambler.rs` + `unscrambler.rs`).
+  Every newline, space, tab, indent-open, and indent-close is
+  replaced with a per-epoch compound. The scrambled file is one
+  continuous wall of words — no visible structure.
+- **L4 — chunk reorder with position markers** (`chunk_reorder.rs`).
+  Top-level statements are reordered deterministically per epoch.
+  Each chunk carries a `__bbnpos<N>__` marker the unscrambler reads
+  to restore original order. Defeats "imports first, helpers next,
+  main last" structural fingerprinting.
+- **L5 — decoy injection** (`decoy_injection.rs`). Per-epoch decoy
+  `__bbndecoy<N>__` tokens are injected at depth-0 positions
+  (~25% of the original token count). Raises attacker cost to
+  locate the live code within the rotation window. The unscrambler
+  recognizes and strips them by prefix.
+
+Scrambled-file format: a 4-line header (magic, epoch, sorted token
+list, separator) followed by the L3 body. The token list is embedded
+so the unscrambler can re-derive the L2 mapping from the daemon
+without needing the original source. Security comes from the
+compounds being derived from the per-host secret, not from hiding
+which tokens exist.
+
+Pipeline order:
+- **Scramble**: tokenize → L4 → L5 → L2 → L3 → encode header
+- **Unscramble**: decode header → L3⁻¹ → L2⁻¹ → L5⁻¹ → L4⁻¹ → emit
 
 See **TODO.md** for the ship checklist (open and deferred items with
-rationale inline), **PLAN.md** for architecture, **RUST_PLAN.md** for
-the Rust realization, and **RESEARCH.md** for the threat-model and
-prior-art notes.
+rationale inline), **PLAN.md** / **V2_PLAN.md** for architecture,
+**RUST_PLAN.md** for the Rust realization, and **RESEARCH.md** for the
+threat-model and prior-art notes.
 
 ## Try it
 

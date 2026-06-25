@@ -52,6 +52,8 @@ use std::time::Instant;
 
 use anyhow::{anyhow, Context, Result};
 
+use babbleon_preprocessor_v2::chunk_reorder::{scramble_chunks, unscramble_chunks};
+use babbleon_preprocessor_v2::decoy_injection::{inject_decoys, strip_decoys};
 use babbleon_preprocessor_v2::identifier_scrambler::{
     collect_unique_tokens, scramble_identifiers, unscramble_identifiers,
 };
@@ -122,14 +124,28 @@ pub fn run_scramble_dir(opts: CorpusOptions) -> Result<CorpusReport> {
         &input_dir,
         &output_dir,
         &mut |src| {
-            let mut tokens = tokenize(src);
-            let unique = collect_unique_tokens(&tokens);
+            let raw_tokens = tokenize(src);
+            // Pre-L4 daemon call: just to obtain the live epoch.  The
+            // L4/L5 shuffle seed and the L2 mapping share the same
+            // epoch so unscramble re-derives the same stream shape.
+            let unique = collect_unique_tokens(&raw_tokens);
             let mapping = fetch_identifier_mapping(&socket_path, &unique)
-                .context("GetTokenMapping for file")?;
+                .context("GetTokenMapping for file (pre-L4)")?;
+            // L4: chunk-shuffle + position markers.
+            let l4_tokens = scramble_chunks(raw_tokens, mapping.epoch);
+            // L5: decoy injection at depth-0 positions.
+            let mut tokens = inject_decoys(l4_tokens, mapping.epoch);
+            // Refetch mapping covering the L4+L5 augmented token set.
+            let unique_post = collect_unique_tokens(&tokens);
+            let mapping = fetch_identifier_mapping_at_epoch(
+                &socket_path,
+                &unique_post,
+                mapping.epoch,
+            )?;
             scramble_identifiers(&mut tokens, &mapping);
             let body =
                 scramble(&tokens, &wl).map_err(|e| anyhow!("scramble: {e}"))?;
-            Ok(encode_scrambled_file(mapping.epoch, &unique, &body))
+            Ok(encode_scrambled_file(mapping.epoch, &unique_post, &body))
         },
         &mut report,
     )?;
@@ -173,7 +189,14 @@ pub fn run_unscramble_dir(opts: CorpusOptions) -> Result<CorpusReport> {
             )?;
             let mut tokens = unscramble_to_tokens(&body, &wl);
             unscramble_identifiers(&mut tokens, &mapping);
-            Ok(tokens_to_source(&tokens))
+            // L5 inverse: strip decoy tokens BEFORE L4 reorder so
+            // chunk-boundary detection isn't disturbed by decoys.
+            let dedecoyed = strip_decoys(tokens);
+            // L4 inverse: sort chunks back to original order, strip
+            // markers.  No-op when the file went through the
+            // single-chunk fast path on scramble (no markers present).
+            let reordered = unscramble_chunks(dedecoyed);
+            Ok(tokens_to_source(&reordered))
         },
         &mut report,
     )?;

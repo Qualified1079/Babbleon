@@ -1,18 +1,20 @@
-//! Full L2 + L3 round-trip integration test.
+//! Full L4 + L2 + L3 round-trip integration test.
 //!
 //! Runs the complete scramble + unscramble pipeline on real
 //! Python snippets and asserts the unscrambled output is exec'd
 //! by Python with the same observable behaviour as the original.
-//! This is the load-bearing test that the dynamic identifier scramble
-//! (L2) + whitespace-as-words (L3) lands without corrupting valid
-//! Python (per the round-trip check the operator asked for).
+//! This is the load-bearing test that L4 (chunk reorder) + L2
+//! (dynamic identifier scramble) + L3 (whitespace-as-words) compose
+//! without corrupting valid Python.
 
 use babbleon_core_v2::{
     per_host_secret::PerHostSecret, wordlist::Wordlist, MappingBuilder,
 };
 use babbleon_preprocessor_v2::{
-    collect_unique_tokens, scramble_identifiers, unscramble_identifiers,
-    IdentifierMapping, Token, WhitespaceWordlist, ALIAS_COUNT,
+    collect_unique_tokens, inject_decoys, scramble_chunks,
+    scramble_identifiers, strip_decoys, unscramble_chunks,
+    unscramble_identifiers, IdentifierMapping, Token, WhitespaceWordlist,
+    ALIAS_COUNT,
 };
 
 fn secret() -> PerHostSecret {
@@ -60,10 +62,15 @@ fn build_identifier_mapping(
         .expect("in-proc identifier mapping must not collide")
 }
 
-/// Scramble a Python source string through L2 + L3.
+/// Scramble a Python source string through L4 + L5 + L2 + L3.
 fn scramble_full(source: &str) -> String {
     let wsl = build_whitespace_wordlist();
-    let mut tokens = babbleon_preprocessor_v2::python_tokenizer::tokenize(source);
+    let raw_tokens = babbleon_preprocessor_v2::python_tokenizer::tokenize(source);
+    // L4: chunk-shuffle + position markers.
+    let l4_tokens = scramble_chunks(raw_tokens, 0);
+    // L5: inject decoys among top-level positions.
+    let mut tokens = inject_decoys(l4_tokens, 0);
+    // L2 mapping must cover the post-L5 token set (markers + decoys).
     let mapping = build_identifier_mapping(&tokens, 0);
     scramble_identifiers(&mut tokens, &mapping);
     babbleon_preprocessor_v2::scrambler::scramble(&tokens, &wsl)
@@ -73,15 +80,24 @@ fn scramble_full(source: &str) -> String {
 /// Inverse of `scramble_full`.  Returns the reconstructed source bytes.
 fn unscramble_full(source: &str, scrambled: &str) -> String {
     let wsl = build_whitespace_wordlist();
-    // Rebuild the same mapping from the original source's token stream.
+    // Rebuild the same mapping by repeating the scramble-side L4 +
+    // L5 passes on the original source.  Production paths read the
+    // sorted token list from the scrambled-file header instead; this
+    // test helper reuses the original source for simplicity.
     let original_tokens =
         babbleon_preprocessor_v2::python_tokenizer::tokenize(source);
-    let mapping = build_identifier_mapping(&original_tokens, 0);
+    let marked_tokens = scramble_chunks(original_tokens, 0);
+    let augmented = inject_decoys(marked_tokens, 0);
+    let mapping = build_identifier_mapping(&augmented, 0);
     let mut tokens = babbleon_preprocessor_v2::unscrambler::unscramble_to_tokens(
         scrambled, &wsl,
     );
     unscramble_identifiers(&mut tokens, &mapping);
-    babbleon_preprocessor_v2::unscrambler::tokens_to_source(&tokens)
+    // L5 inverse: strip decoys BEFORE L4 reorder so the chunk
+    // boundary computation isn't disturbed by decoy positions.
+    let dedecoyed = strip_decoys(tokens);
+    let reordered = unscramble_chunks(dedecoyed);
+    babbleon_preprocessor_v2::unscrambler::tokens_to_source(&reordered)
 }
 
 /// Run a Python program and capture stdout.  Returns
@@ -193,11 +209,18 @@ fn scrambled_output_is_not_trivially_readable() {
 
 #[test]
 fn l2_scrambles_every_unique_token() {
-    let source = "def foo(x):\n    return x\n";
+    // Use multi-letter tokens so a substring search isn't fooled by
+    // an arbitrary single letter appearing inside an L2 compound by
+    // chance.  This test asserts L2 actually mutated the body — not
+    // that no compound happens to contain the letter 'x'.
+    let source = "def hello(name):\n    return name\n";
     let tokens = babbleon_preprocessor_v2::python_tokenizer::tokenize(source);
     let unique = collect_unique_tokens(&tokens);
     let scrambled = scramble_full(source);
     for tok in &unique {
+        if tok.len() < 3 {
+            continue; // too short — substring collisions are noise
+        }
         assert!(
             !scrambled.contains(tok.as_str()),
             "token {tok:?} survives in scrambled output — L2 did not run",

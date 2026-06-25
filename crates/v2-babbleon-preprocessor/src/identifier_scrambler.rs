@@ -339,8 +339,13 @@ mod tests {
     }
 
     #[test]
-    fn sorted_tokens_field_reflects_btreeset_order() {
-        let m = make_mapping(&["zoo", "apple", "mango"], 0);
-        assert_eq!(m.sorted_tokens, vec!["apple", "mango", "zoo"]);
+    fn collect_unique_tokens_returns_btreeset_sorted_order() {
+        let tokens = vec![
+            Token::word("zoo"),
+            Token::word("apple"),
+            Token::word("mango"),
+        ];
+        let unique = collect_unique_tokens(&tokens);
+        assert_eq!(unique, vec!["apple", "mango", "zoo"]);
     }
 }

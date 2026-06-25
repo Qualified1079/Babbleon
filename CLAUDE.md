@@ -85,6 +85,42 @@ Never push to a `claude/*` branch other than the one
   `V2_PLAN.md`, `RUST_PLAN.md`, `RESEARCH.md`, `SECURITY.md`,
   `TODO.md`.
 
+## 4.5 v2 preprocessor pipeline (current state)
+
+The v2 preprocessor composes four scramble layers in
+`crates/v2-babbleon-preprocessor/src/`:
+
+- **L2** (`identifier_scrambler.rs`) — dynamic, language-agnostic;
+  scrambles every whitespace-delimited token; `ALIAS_COUNT=3`
+  multi-alias per token defeats frequency analysis.
+- **L3** (`scrambler.rs` + `unscrambler.rs`) — whitespace-as-words.
+- **L4** (`chunk_reorder.rs`) — reorders top-level chunks
+  deterministically; inserts `__bbnpos<N>__` markers.
+- **L5** (`decoy_injection.rs`) — injects `__bbndecoy<N>__` tokens
+  at depth-0 positions (~25%); the unscrambler strips them by prefix.
+
+Scramble order: tokenize → L4 → L5 → L2 → L3.
+Unscramble order: L3⁻¹ → L2⁻¹ → L5⁻¹ → L4⁻¹ → emit.
+
+File format: `babbleon-v2\nepoch:N\ntokens:T1\tT2\t...\n---\n<L3 body>`.
+The sorted token list is embedded so the unscrambler can ask the
+daemon for the same L2 mapping without the original source.
+
+Daemon protocol: `GetWhitespaceCompounds` (one call per session) +
+`GetTokenMapping { tokens }` (per file). Response is
+`TokenMapping { epoch, aliases: Vec<Vec<String>> }` where
+`aliases[token_idx][alias_idx]` is one of `ALIAS_COUNT` compounds.
+
+L4/L5 are seeded by the same epoch as the L2 mapping so the
+unscrambler can re-derive identical shuffle and decoy positions
+deterministically.
+
+Production wiring lives in:
+- `crates/v2-babbleon/src/scramble_lifecycle.rs` (per-file CLI)
+- `crates/v2-babbleon/src/corpus_lifecycle.rs` (batch directory)
+- `crates/v2-babbleon-resilience-bench/src/scramble_pipeline.rs`
+  (bench, in-proc `MappingBuilder`, no daemon round-trip)
+
 ## 5. Reading order for a new session
 
 Minimum-required, in order:

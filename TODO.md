@@ -160,21 +160,27 @@ code items are phases 1-6.
       `unscrambler::unscramble_to_tokens`.  Output is one
       continuous wall of compound tokens; no whitespace or
       newlines visible.
-- [ ] **Layer 4: code-order reorder with execution markers** —
-      permute source block order; preprocessor reorders back via
-      embedded position markers.  Defeats "imports first,
-      helpers next, main last" shape fingerprint.
-- [ ] **Layer 5: junk decoy injection** — sprinkle per-epoch
-      wordlist compounds that the trusted-tier runner strips
-      before execution.  Raises attacker cost to locate live
-      code within the rotation window.
-- [ ] Update `CLAUDE.md` and `README.md` to document the v2
+- [x] **Layer 4: chunk reorder with position markers** —
+      `chunk_reorder.rs`.  Top-level chunks are reordered
+      deterministically per epoch; each chunk carries a
+      `__bbnpos<N>__` marker the unscrambler reads to restore
+      original order.  Defeats "imports first, helpers next,
+      main last" structural fingerprinting.  Wired into
+      `scramble_lifecycle.rs` (per-file CLI) and
+      `corpus_lifecycle.rs` (batch dir).
+- [x] **Layer 5: decoy injection** — `decoy_injection.rs`.
+      Per-epoch `__bbndecoy<N>__` tokens injected at depth-0
+      positions (~25% of original token count).  The unscrambler
+      recognizes and strips them by prefix before L4 reorder.
+      Wired into the same lifecycle modules as L4.
+- [x] Update `CLAUDE.md` and `README.md` to document the v2
       preprocessor pipeline (L2 dynamic identifier scrambler +
-      L3 whitespace-as-words, file header format, multi-alias,
-      daemon protocol changes).
+      L3 whitespace-as-words + L4 chunk reorder + L5 decoy
+      injection, file header format, multi-alias, daemon
+      protocol).
 - [ ] Preprocessor seccomp profile (deny socket / mount / ptrace
       family)
-- [ ] Adversarial-LLM re-test: did L2+L3 fix the v1
+- [ ] Adversarial-LLM re-test: did L2+L3+L4+L5 fix the v1
       shape-fingerprint problem?
 
 ### Phase 4 — additional obfuscation layers (post-research)
@@ -516,19 +522,13 @@ when given the original alongside.  Ideas to research and prototype:
       scrambler cycles through them per-occurrence so frequency
       analysis cannot reconstruct the token set from compound
       frequencies alone.
-- [ ] **Code-order scrambling with execution markers.**  Permute the
-      source order of code blocks; add markers the trusted-tier runner
-      uses to reorder back at execution.  Defeats the "line N usually
-      contains X" fingerprint that follows from idiomatic file
-      ordering (imports first, helpers next, main last).  Composes
-      with whitespace-as-words: the attacker sees neither shape nor
-      sequence.
-- [ ] **Junk-line / decoy-token injection.**  Sprinkle wordlist tokens
-      that the trusted-tier runner strips before execution.  An
-      attacker trying to insert a working exploit inside the
-      ~250 ms rotation window must first locate the live code among
-      the decoy noise.  Cost: increases parse time on the runner
-      side; need to measure.
+- [x] **Code-order scrambling with execution markers.**  DONE — see
+      `chunk_reorder.rs`.  Top-level chunks are reordered
+      deterministically per epoch with `__bbnpos<N>__` markers.
+- [x] **Junk-line / decoy-token injection.**  DONE — see
+      `decoy_injection.rs`.  Per-epoch `__bbndecoy<N>__` tokens
+      injected at ~25% of original token count; stripped by prefix
+      at unscramble.
 - [ ] **Multi-language wordlists.**  Cycle through wordlists from
       multiple natural languages (EN, ES, FR, DE, JA, ZH, AR, ...) per
       rotation, or mixed within a single rotation.  Hypothesis: LLM
@@ -537,11 +537,10 @@ when given the original alongside.  Ideas to research and prototype:
       Likely small effect because models reason in semantic space, not
       surface tokens — but cheap and the gain is non-zero.
 
-The three remaining research items (code-order, junk-injection,
-multi-language) are not for v1.  They reshape the threat model
-substantially and deserve a research write-up of their own
-(adversarial test against frontier models before committing).
-Filed here so the line of thinking is recorded.
+The remaining research item (multi-language wordlists) is not for v1.
+It reshapes the threat model substantially and deserves a research
+write-up of its own (adversarial test against frontier models before
+committing).  Filed here so the line of thinking is recorded.
 
 ## Security practices to land (industry-standard, currently missing)
 

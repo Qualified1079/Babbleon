@@ -62,6 +62,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context, Result};
 
 use babbleon_daemon_protocol_v2::{round_trip, Request, Response};
+use babbleon_preprocessor_v2::chunk_reorder::{scramble_chunks, unscramble_chunks};
+use babbleon_preprocessor_v2::decoy_injection::{inject_decoys, strip_decoys};
 use babbleon_preprocessor_v2::identifier_scrambler::{
     collect_unique_tokens, scramble_identifiers, unscramble_identifiers,
     IdentifierMapping,
@@ -115,13 +117,27 @@ pub fn run_scramble(opts: ScrambleOptions) -> Result<()> {
     let source = read_input(&input)?;
 
     // Tokenize for structure (L3) and collect unique tokens (L2).
-    let mut tokens = tokenize(&source);
+    let raw_tokens = tokenize(&source);
+
+    // Pre-L4 mapping fetch is only needed for its epoch (so the L4
+    // shuffle seed and the L2 mapping share the same epoch).  We
+    // re-fetch after L4 with the marker-augmented token set.
+    let pre_unique = collect_unique_tokens(&raw_tokens);
+    let pre_mapping =
+        fetch_identifier_mapping(&socket_path, &pre_unique)?;
+
+    // L4: insert position markers + shuffle top-level chunks.
+    let l4_tokens = scramble_chunks(raw_tokens, pre_mapping.epoch);
+    // L5: inject decoy tokens at depth-0 positions.
+    let mut tokens = inject_decoys(l4_tokens, pre_mapping.epoch);
     let unique_tokens = collect_unique_tokens(&tokens);
 
-    // Ask daemon for both compound sets.
     let wl = fetch_whitespace_wordlist(&socket_path)?;
-    let id_mapping =
-        fetch_identifier_mapping(&socket_path, &unique_tokens)?;
+    let id_mapping = fetch_identifier_mapping_at_epoch(
+        &socket_path,
+        &unique_tokens,
+        pre_mapping.epoch,
+    )?;
 
     // L2 in-place: replace each token body with its alias compound.
     scramble_identifiers(&mut tokens, &id_mapping);
@@ -162,7 +178,14 @@ pub fn run_unscramble(opts: ScrambleOptions) -> Result<()> {
     // L2 unscramble: replace alias compounds with original tokens.
     unscramble_identifiers(&mut tokens, &id_mapping);
 
-    let source = tokens_to_source(&tokens);
+    // L5 inverse: strip decoy tokens BEFORE L4 reorder so chunk
+    // boundary computation isn't disturbed by decoy positions.
+    let dedecoyed = strip_decoys(tokens);
+    // L4 inverse: sort chunks back to original order, strip markers.
+    // No-op for single-chunk files that didn't get markers on scramble.
+    let reordered = unscramble_chunks(dedecoyed);
+
+    let source = tokens_to_source(&reordered);
     write_output(&output, source.as_bytes())?;
     Ok(())
 }

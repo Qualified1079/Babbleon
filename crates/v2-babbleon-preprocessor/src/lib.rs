@@ -115,6 +115,8 @@
 #![deny(missing_docs)]
 #![warn(clippy::pedantic)]
 
+pub mod chunk_reorder;
+pub mod decoy_injection;
 pub mod errors;
 pub mod identifier_scrambler;
 pub mod python_tokenizer;
@@ -125,6 +127,10 @@ pub mod tokens;
 pub mod unscrambler;
 pub mod whitespace_wordlist;
 
+pub use chunk_reorder::{
+    has_any_marker as has_any_chunk_marker, scramble_chunks, unscramble_chunks,
+};
+pub use decoy_injection::{has_any_decoy, inject_decoys, strip_decoys};
 pub use errors::{Error, Result};
 pub use identifier_scrambler::{
     collect_unique_tokens, scramble_identifiers, unscramble_identifiers,
