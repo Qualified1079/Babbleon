@@ -150,6 +150,11 @@ fn summary_with_threshold_exits_2_on_breach() {
         .arg(&runs)
         .arg("--pass-threshold-pct")
         .arg("50")
+        // Opt out of the N>=5 floor for this fixture — this test
+        // covers the pass-threshold path only; the floor is
+        // exercised in its own test below.
+        .arg("--min-attempts")
+        .arg("1")
         .output()
         .expect("invoke babbleon-bench");
     // Pass-fraction is 100% (2/2); threshold is 50% → breach →
@@ -164,6 +169,10 @@ fn summary_with_threshold_exits_2_on_breach() {
     assert!(
         stderr.contains("CI gate breach"),
         "expected breach diagnostic on stderr: {stderr}",
+    );
+    assert!(
+        stderr.contains("pass-threshold"),
+        "expected pass-threshold-specific diagnostic: {stderr}",
     );
     // The markdown table still lands on stdout.
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -188,6 +197,11 @@ fn summary_with_threshold_exits_0_when_under_threshold() {
         .arg(&runs)
         .arg("--pass-threshold-pct")
         .arg("50")
+        // Opt out of the N>=5 floor — 4 records are still
+        // undersampled by the default; this test only cares about
+        // the pass-rate threshold check.
+        .arg("--min-attempts")
+        .arg("1")
         .output()
         .expect("invoke babbleon-bench");
     // 25% < 50% threshold → no breach → exit code 0.
@@ -195,6 +209,167 @@ fn summary_with_threshold_exits_0_when_under_threshold() {
         output.status.success(),
         "expected exit 0 under threshold, got {:?}",
         output.status.code(),
+    );
+}
+
+#[test]
+fn summary_default_min_attempts_breaches_on_under_5_when_threshold_set() {
+    // 2 attempts is below the default min_attempts=5 floor.  With
+    // --pass-threshold-pct set, summary must exit 2 even though the
+    // pass-fraction (50%) is exactly at threshold (not above).
+    let tmp = tempfile::tempdir().unwrap();
+    let runs = tmp.path().join("runs.jsonl");
+    let body = r#"{"challenge_name":"c","layer_config":{"layer2_keyword_scramble":true,"layer3_whitespace_as_words":true,"layer7_secret_literal":false,"seed_byte":171,"epoch":0},"evaluator_label":"adv","attempt_index":0,"outcome":"pass"}
+{"challenge_name":"c","layer_config":{"layer2_keyword_scramble":true,"layer3_whitespace_as_words":true,"layer7_secret_literal":false,"seed_byte":171,"epoch":0},"evaluator_label":"adv","attempt_index":1,"outcome":"fail"}
+"#;
+    std::fs::write(&runs, body).unwrap();
+
+    let output = Command::new(bench_binary())
+        .arg("summary")
+        .arg("--records")
+        .arg(&runs)
+        .arg("--pass-threshold-pct")
+        .arg("50")
+        .output()
+        .expect("invoke babbleon-bench");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "expected exit 2 for undersampled cell, got {:?}",
+        output.status.code(),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("min_attempts=5"),
+        "expected min_attempts diagnostic on stderr: {stderr}",
+    );
+    assert!(
+        stderr.contains("N=2"),
+        "expected actual-count in diagnostic: {stderr}",
+    );
+}
+
+#[test]
+fn summary_min_attempts_breach_at_5_passes() {
+    // Boundary: exactly 5 attempts is at the floor — must pass.
+    // 0 passes / 5 fails keeps the pass-fraction safely below any
+    // threshold > 0% so the only thing under test is the floor.
+    let tmp = tempfile::tempdir().unwrap();
+    let runs = tmp.path().join("runs.jsonl");
+    let mut body = String::new();
+    for i in 0..5 {
+        body.push_str(&format!(
+            "{{\"challenge_name\":\"c\",\"layer_config\":{{\"layer2_keyword_scramble\":true,\"layer3_whitespace_as_words\":true,\"layer7_secret_literal\":false,\"seed_byte\":171,\"epoch\":0}},\"evaluator_label\":\"adv\",\"attempt_index\":{i},\"outcome\":\"fail\"}}\n"
+        ));
+    }
+    std::fs::write(&runs, body).unwrap();
+
+    let output = Command::new(bench_binary())
+        .arg("summary")
+        .arg("--records")
+        .arg(&runs)
+        .arg("--pass-threshold-pct")
+        .arg("50")
+        .output()
+        .expect("invoke babbleon-bench");
+    assert!(
+        output.status.success(),
+        "expected exit 0 at the 5-attempt floor, got {:?}; stderr={}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+#[test]
+fn summary_min_attempts_counts_total_not_graded() {
+    // 5 attempts total: 1 pass + 1 fail + 3 format-error.  Graded
+    // is only 2, but total is 5 — the floor is on total so this
+    // must pass.  This documents the choice that running the bench
+    // 5 times satisfies the smoke-test floor even if most outputs
+    // were malformed.
+    let tmp = tempfile::tempdir().unwrap();
+    let runs = tmp.path().join("runs.jsonl");
+    let body = r#"{"challenge_name":"c","layer_config":{"layer2_keyword_scramble":true,"layer3_whitespace_as_words":true,"layer7_secret_literal":false,"seed_byte":171,"epoch":0},"evaluator_label":"adv","attempt_index":0,"outcome":"pass"}
+{"challenge_name":"c","layer_config":{"layer2_keyword_scramble":true,"layer3_whitespace_as_words":true,"layer7_secret_literal":false,"seed_byte":171,"epoch":0},"evaluator_label":"adv","attempt_index":1,"outcome":"fail"}
+{"challenge_name":"c","layer_config":{"layer2_keyword_scramble":true,"layer3_whitespace_as_words":true,"layer7_secret_literal":false,"seed_byte":171,"epoch":0},"evaluator_label":"adv","attempt_index":2,"outcome":"format-error"}
+{"challenge_name":"c","layer_config":{"layer2_keyword_scramble":true,"layer3_whitespace_as_words":true,"layer7_secret_literal":false,"seed_byte":171,"epoch":0},"evaluator_label":"adv","attempt_index":3,"outcome":"format-error"}
+{"challenge_name":"c","layer_config":{"layer2_keyword_scramble":true,"layer3_whitespace_as_words":true,"layer7_secret_literal":false,"seed_byte":171,"epoch":0},"evaluator_label":"adv","attempt_index":4,"outcome":"format-error"}
+"#;
+    std::fs::write(&runs, body).unwrap();
+
+    let output = Command::new(bench_binary())
+        .arg("summary")
+        .arg("--records")
+        .arg(&runs)
+        // Threshold is irrelevant here — pass-fraction is 50% (1/2
+        // graded), well above 10%, but the test wants the
+        // floor-only branch to pass.  Use threshold 100 so the
+        // pass-threshold check itself never breaches.
+        .arg("--pass-threshold-pct")
+        .arg("100")
+        .output()
+        .expect("invoke babbleon-bench");
+    assert!(
+        output.status.success(),
+        "expected exit 0 at total=5, got {:?}; stderr={}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+#[test]
+fn summary_without_threshold_ignores_min_attempts() {
+    // Render-only (no --pass-threshold-pct) is a valid use case at
+    // any N — operators paste the table into HANDOFF without
+    // CI-gating.  Even N=1 must not breach.
+    let tmp = tempfile::tempdir().unwrap();
+    let runs = tmp.path().join("runs.jsonl");
+    let body = r#"{"challenge_name":"c","layer_config":{"layer2_keyword_scramble":true,"layer3_whitespace_as_words":true,"layer7_secret_literal":false,"seed_byte":171,"epoch":0},"evaluator_label":"adv","attempt_index":0,"outcome":"pass"}
+"#;
+    std::fs::write(&runs, body).unwrap();
+
+    let output = Command::new(bench_binary())
+        .arg("summary")
+        .arg("--records")
+        .arg(&runs)
+        .output()
+        .expect("invoke babbleon-bench");
+    assert!(
+        output.status.success(),
+        "expected exit 0 without --pass-threshold-pct, got {:?}",
+        output.status.code(),
+    );
+}
+
+#[test]
+fn summary_reports_both_breaches_in_one_pass() {
+    // Two undersampled cells (N=2 each) BOTH 100% pass.  The
+    // operator sees both the min-attempts breach and the
+    // pass-threshold breach in the single stderr block.
+    let tmp = tempfile::tempdir().unwrap();
+    let runs = tmp.path().join("runs.jsonl");
+    let body = r#"{"challenge_name":"c1","layer_config":{"layer2_keyword_scramble":true,"layer3_whitespace_as_words":true,"layer7_secret_literal":false,"seed_byte":171,"epoch":0},"evaluator_label":"adv","attempt_index":0,"outcome":"pass"}
+{"challenge_name":"c1","layer_config":{"layer2_keyword_scramble":true,"layer3_whitespace_as_words":true,"layer7_secret_literal":false,"seed_byte":171,"epoch":0},"evaluator_label":"adv","attempt_index":1,"outcome":"pass"}
+"#;
+    std::fs::write(&runs, body).unwrap();
+
+    let output = Command::new(bench_binary())
+        .arg("summary")
+        .arg("--records")
+        .arg(&runs)
+        .arg("--pass-threshold-pct")
+        .arg("50")
+        .output()
+        .expect("invoke babbleon-bench");
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("min_attempts=5"),
+        "expected min-attempts diagnostic: {stderr}",
+    );
+    assert!(
+        stderr.contains("pass-threshold"),
+        "expected pass-threshold diagnostic: {stderr}",
     );
 }
 

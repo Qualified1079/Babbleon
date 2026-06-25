@@ -122,6 +122,19 @@ enum Command {
         /// refused-by-policy) are ignored.
         #[arg(long, value_name = "PCT")]
         pass_threshold_pct: Option<u32>,
+        /// Statistical-significance floor on attempts-per-cell.  When
+        /// `--pass-threshold-pct` is set, any cell with fewer than
+        /// this many total attempts (pass + fail + format-error +
+        /// refused-by-policy) causes a CI gate breach with exit
+        /// status 2.  Per CORRECTIONS.md, N=1 is a smoke test only;
+        /// concluding "the scramble holds at this threshold" from a
+        /// single attempt is operator hallucination.  Pass
+        /// `--min-attempts 1` to disable (operators driving
+        /// pre-merge smoke runs can opt out explicitly).  Ignored
+        /// when `--pass-threshold-pct` is unset, since "render the
+        /// table" is a valid use case at any N.
+        #[arg(long, value_name = "N", default_value_t = 5)]
+        min_attempts: u32,
     },
 
     /// Drive an external evaluator command across the full
@@ -293,7 +306,8 @@ fn main() -> Result<()> {
         Command::Summary {
             records,
             pass_threshold_pct,
-        } => subcommand_summary(&records, pass_threshold_pct),
+            min_attempts,
+        } => subcommand_summary(&records, pass_threshold_pct, min_attempts),
         Command::RunMatrix {
             challenges_dir,
             layer_config,
@@ -375,6 +389,7 @@ fn subcommand_score(
 fn subcommand_summary(
     record_paths: &[PathBuf],
     pass_threshold_pct: Option<u32>,
+    min_attempts: u32,
 ) -> Result<()> {
     let mut all_records: Vec<RunRecord> = Vec::new();
     for path in record_paths {
@@ -394,18 +409,49 @@ fn subcommand_summary(
     }
 
     if let Some(threshold_pct) = pass_threshold_pct {
-        let breaches = cells_above_threshold(&all_records, threshold_pct);
-        if !breaches.is_empty() {
+        // CI-gate breaches collect to a single stderr block so the
+        // operator sees every reason the gate failed in one pass,
+        // not one-breach-per-run-the-bench-again.
+        let mut breach_block: Vec<String> = Vec::new();
+
+        // N>=min_attempts floor runs FIRST: a cell with too few
+        // attempts cannot give a trustworthy crack-fraction, so
+        // applying the percent threshold to it would be
+        // operator-hallucinated signal.  Per CORRECTIONS.md, N=1 is
+        // smoke-only.
+        let undersampled =
+            cells_below_min_attempts(&all_records, min_attempts);
+        if !undersampled.is_empty() {
+            breach_block.push(format!(
+                "\nCI gate breach: {} cell(s) have fewer than {} \
+                 attempts (N=1 is smoke-test only — \
+                 see CORRECTIONS.md):",
+                undersampled.len(),
+                min_attempts,
+            ));
+            for breach in &undersampled {
+                breach_block.push(format!("  {breach}"));
+            }
+        }
+
+        let above = cells_above_threshold(&all_records, threshold_pct);
+        if !above.is_empty() {
+            breach_block.push(format!(
+                "\nCI gate breach: {} cell(s) exceed pass-threshold {}%:",
+                above.len(),
+                threshold_pct,
+            ));
+            for breach in &above {
+                breach_block.push(format!("  {breach}"));
+            }
+        }
+
+        if !breach_block.is_empty() {
             // Print the breach list to stderr so the markdown
             // table on stdout stays clean for the operator to
             // paste into HANDOFF.
-            eprintln!(
-                "\nCI gate breach: {} cell(s) exceed pass-threshold {}%:",
-                breaches.len(),
-                threshold_pct,
-            );
-            for breach in &breaches {
-                eprintln!("  {breach}");
+            for line in &breach_block {
+                eprintln!("{line}");
             }
             std::process::exit(2);
         }
@@ -435,6 +481,36 @@ fn cells_above_threshold(
                     frac * 100.0,
                 ));
             }
+        }
+    }
+    breaches.sort();
+    breaches
+}
+
+/// Identify `(challenge, layer_config, evaluator)` cells whose
+/// total-attempts count (graded + format-error + refused-by-policy)
+/// is strictly below `min_attempts`.  Returns a list of
+/// operator-friendly breach descriptions.  Total — not graded — is
+/// the right denominator: a cell where the operator ran the bench
+/// only once is undersampled regardless of whether that one attempt
+/// happened to be a format error.
+fn cells_below_min_attempts(
+    records: &[RunRecord],
+    min_attempts: u32,
+) -> Vec<String> {
+    use babbleon_resilience_bench_v2::summary::aggregate;
+    let cells = aggregate(records);
+    let mut breaches = Vec::new();
+    for ((challenge, config_label, evaluator), cell) in &cells {
+        let total = cell.pass_count
+            + cell.fail_count
+            + cell.format_error_count
+            + cell.refused_by_policy_count;
+        if total < min_attempts {
+            breaches.push(format!(
+                "{challenge} / {config_label} / {evaluator}: \
+                 N={total} < min_attempts={min_attempts}",
+            ));
         }
     }
     breaches.sort();
