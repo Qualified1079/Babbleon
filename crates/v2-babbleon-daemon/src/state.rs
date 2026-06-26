@@ -446,8 +446,17 @@ impl DaemonState {
             .iter()
             .map(|t| t.name.clone())
             .collect();
-        let new_mapping =
-            MappingBuilder::new(secret, self.config.wordlist).build(&names, new_epoch)?;
+        // Route through the cache so the resume-after-restart or
+        // double-rotate edge cases (rare but possible operationally)
+        // hit a warm permutation instead of re-doing Fisher-Yates.
+        // First rotation of a fresh epoch is still cold; this is
+        // about idempotency, not steady-state hit rate.
+        let new_mapping = MappingBuilder::with_cache(
+            secret,
+            self.config.wordlist,
+            &self.permutation_cache,
+        )
+        .build(&names, new_epoch)?;
         let stale = stale_names_from(cached_mapping);
         *epoch = new_epoch;
         *cached_mapping = new_mapping;
