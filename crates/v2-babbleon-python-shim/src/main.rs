@@ -32,9 +32,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 
 use babbleon_daemon_protocol_v2::default_socket_path;
-use babbleon_python_shim_v2::pipeline::{
-    fetch_whitespace_wordlist, unscramble_source,
-};
+use babbleon_python_shim_v2::pipeline::unscramble_full;
 use babbleon_python_shim_v2::{exec_python, process_hardening};
 
 /// Babbleon v2 — layer-3 Python shim.
@@ -117,13 +115,20 @@ fn run_shim(
     let scrambled = std::fs::read_to_string(script)
         .with_context(|| format!("read scrambled script {}", script.display()))?;
 
-    // (3) Daemon round-trip for compounds.
-    let wl = fetch_whitespace_wordlist(socket)?;
+    // (3) Drive the full unscramble pipeline.  Internally:
+    //     - parse the scrambled-file header (version, epoch, sorted
+    //       tokens, L3 body),
+    //     - fetch whitespace compounds (`GetWhitespaceCompounds`),
+    //     - fetch identifier mapping (`GetTokenMapping`) pinned to the
+    //       header's epoch,
+    //     - apply L12⁻¹ → L6⁻¹ → L3⁻¹ → L2⁻¹ → L5⁻¹ → L4⁻¹ →
+    //       tokens_to_source.
+    //     The same composition the user CLI and the corpus CLI use;
+    //     all three call sites consume
+    //     `babbleon_preprocessor_v2::pipeline`.
+    let source = unscramble_full(socket, &scrambled)?;
 
-    // (4) Unscramble in-memory.
-    let source = unscramble_source(&scrambled, &wl)?;
-
-    // (5-7) Spawn python3 -, feed source, wait.
+    // (4-6) Spawn python3 -, feed source, wait.
     let status = exec_python::run(python, forward_args, &source)?;
 
     // ExitStatus -> i32.  On Unix, `.code()` returns None for

@@ -314,10 +314,19 @@ fn shim_surfaces_daemon_locked_error() {
     }
     assert!(sock.exists());
 
-    // Write some dummy scrambled file (content doesn't matter; we
-    // fail at the daemon round-trip).
+    // Write a well-formed but minimal scrambled file.  The shim
+    // parses the header FIRST and would otherwise reject "irrelevant"
+    // before reaching the daemon, masking the daemon-locked error
+    // path we mean to exercise.  Empty token list + empty body is the
+    // smallest valid v1 file; parse succeeds, the
+    // GetWhitespaceCompounds round-trip then fails with
+    // Vault::Locked.
     let scr_path = dir.path().join("dummy.scr");
-    std::fs::write(&scr_path, "irrelevant").unwrap();
+    std::fs::write(
+        &scr_path,
+        "babbleon-v2\nversion:1\nepoch:0\ntokens:\n---\n",
+    )
+    .unwrap();
 
     let shim = sibling_binary("babbleon-python");
     let out = Command::new(&shim)
