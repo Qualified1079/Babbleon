@@ -1,4 +1,4 @@
-//! Per-file latency microbenchmark for the v2 layer-3 preprocessor.
+//! Per-file latency microbenchmark for the v2 preprocessor.
 //!
 //! # Why this exists
 //!
@@ -12,28 +12,40 @@
 //!
 //! # What we measure
 //!
-//! For each example puzzle file at
-//! `tools/scrambler/example-puzzles/*.py`:
+//! Selected via `--mode`:
 //!
-//! 1. **Tokenize**: `python_tokenizer::tokenize(source) -> Vec<Token>`.
-//! 2. **Scramble**: `scrambler::scramble(&tokens, &wl) -> String`.
-//! 3. **Unscramble**: `unscrambler::unscramble(&scrambled, &wl) -> String`.
-//! 4. **End-to-end**: the sum of the above, which is what an operator
-//!    wraps with `babbleon scramble` / `babbleon unscramble` on the
-//!    socket-fetch fast path.
+//! - **`l3-only`** (default).  The original phase-3 measurement.
+//!   `python_tokenizer::tokenize` + `scrambler::scramble` +
+//!   `unscrambler::unscramble`.  The L3 path is what
+//!   `docs/v2/structure-scrambling.md` §5 specified the 50 ms budget
+//!   against, so this measurement remains the canonical phase-3
+//!   number even as further layers land.
+//! - **`full`**.  Production composition.
+//!   `pipeline::scramble_pipeline` (L4 + L5 + L2 + L3 + L6 + L12 +
+//!   header encode) + `file_format::decode` +
+//!   `pipeline::unscramble_pipeline` (L12⁻¹ + L6⁻¹ + L3⁻¹ + L2⁻¹ +
+//!   L5⁻¹ + L4⁻¹ + tokens_to_source).  Same layer order the
+//!   operator-facing `babbleon scramble` / `babbleon unscramble`
+//!   CLI runs in production.  **Cold-cache measurement**: every
+//!   iteration rebuilds the L2 permutation via `MappingBuilder`
+//!   (`ALIAS_COUNT * 2` Fisher-Yates passes over the wordlist per
+//!   scramble + unscramble pair).  The production daemon caches
+//!   the permutation per epoch across requests, so steady-state
+//!   per-file cost is much lower than this number reports.  The
+//!   bench number is the worst-case "first file of the epoch"
+//!   latency — useful for understanding rotation-tick blast
+//!   radius, not for sustained-throughput SLAs.
 //!
-//! The per-host-secret + epoch WhitespaceWordlist derivation is
-//! built once before the loop and shared.  In production the daemon
-//! caches the same mapping across requests, so excluding the build
-//! cost matches the steady-state cost the operator sees.
+//! In both modes the per-host-secret + epoch derivation is built
+//! once before the loop and shared.  In production the daemon caches
+//! the same mapping across requests, so excluding the build cost
+//! matches the steady-state cost the operator sees.
 //!
 //! # What we do NOT measure
 //!
-//! - The Unix socket round-trip to the daemon for the whitespace
-//!   compounds.  That's a one-shot 4-KiB JSONL exchange that
-//!   amortises across N scramble calls per session; not the layer-3
-//!   per-file cost.  The phase-3 spec's sub-50ms budget is the
-//!   preprocessor's local compute path.
+//! - The Unix socket round-trip to the daemon.  That's a one-shot
+//!   4-KiB JSONL exchange that amortises across N calls per session;
+//!   not the per-file compute cost.
 //! - File I/O.  Reading the puzzle source from disk once before the
 //!   timing loop is excluded so we measure pure pipeline cost.
 //!
@@ -42,9 +54,9 @@
 //! Per-puzzle table: mean / median / p95 / min / max in microseconds
 //! over `--iterations` runs (default 1000, plus 100 warmup).  A
 //! final aggregate row reports the worst-case median across all
-//! puzzles versus the 50 000-µs phase-3 target.  Exit code 0 if the
-//! target is met for every puzzle; exit code 1 if any puzzle's
-//! median exceeds the target.
+//! puzzles versus the target.  Exit code 0 if the target is met for
+//! every puzzle; exit code 1 if any puzzle's median exceeds the
+//! target.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -54,6 +66,14 @@ use clap::Parser;
 
 use babbleon_core_v2::per_host_secret::PerHostSecret;
 use babbleon_core_v2::wordlist::Wordlist;
+use babbleon_core_v2::MappingBuilder;
+use babbleon_preprocessor_v2::file_format::decode as decode_file;
+use babbleon_preprocessor_v2::identifier_scrambler::{
+    IdentifierMapping, ALIAS_COUNT,
+};
+use babbleon_preprocessor_v2::pipeline::{
+    scramble_pipeline, unscramble_pipeline,
+};
 use babbleon_preprocessor_v2::python_tokenizer::tokenize;
 use babbleon_preprocessor_v2::scrambler::scramble;
 use babbleon_preprocessor_v2::unscrambler::unscramble;
@@ -85,9 +105,12 @@ struct Args {
     #[arg(long, default_value_t = 100)]
     warmup: usize,
 
-    /// Phase-3 target: per-file latency must be at most this many
-    /// microseconds.  Defaults to 50 000 (= 50 ms).  Exit code is 1
-    /// if any puzzle's median exceeds this.
+    /// Per-file latency target in microseconds.  Defaults to 50 000
+    /// (= 50 ms), the phase-3 spec target for L3-only mode.  Full
+    /// mode is a cold-cache measurement and will typically exceed
+    /// this — set `--target-micros 250000` for a 250 ms cold-cache
+    /// budget.  Exit code is 1 if any puzzle's median exceeds the
+    /// target.
     #[arg(long, default_value_t = 50_000)]
     target_micros: u128,
 
@@ -95,6 +118,38 @@ struct Args {
     /// override to confirm latency is epoch-independent.
     #[arg(long, default_value_t = 0)]
     epoch: u64,
+
+    /// Which pipeline to measure.  `l3-only` is the historical
+    /// phase-3 measurement (tokenize + L3 scramble + L3 unscramble);
+    /// `full` measures the production composition (L4 + L5 + L2 +
+    /// L3 + L6 + L12 + header encode/decode).  Default `l3-only`
+    /// preserves backward compatibility with prior RESULTS.md
+    /// numbers; switch to `full` for production-path budget checks.
+    #[arg(long, default_value = "l3-only", value_parser = ["l3-only", "full"])]
+    mode: String,
+}
+
+/// Pipeline mode selected via `--mode`.
+#[derive(Clone, Copy)]
+enum Mode {
+    L3Only,
+    Full,
+}
+
+impl Mode {
+    fn from_str(s: &str) -> Self {
+        match s {
+            "full" => Self::Full,
+            _ => Self::L3Only,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::L3Only => "l3-only",
+            Self::Full => "full",
+        }
+    }
 }
 
 fn main() -> ExitCode {
@@ -119,6 +174,8 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
 
+    let mode = Mode::from_str(&args.mode);
+
     // Fixed secret + wordlist + epoch.  The secret value is
     // arbitrary; benchmarks must be reproducible across runs on the
     // same hardware so we lock the seed.
@@ -131,6 +188,18 @@ fn main() -> ExitCode {
     )
     .expect("baseline wordlist exceeds the 20-entry minimum");
 
+    // Full-mode reuses MappingBuilder across iterations.  The
+    // builder caches HKDF derivation state across `build` calls,
+    // matching the production daemon's behaviour where the same
+    // secret + wordlist are kept warm in memory.
+    let builder = MappingBuilder::new(&secret, &Wordlist::english_baseline());
+
+    println!(
+        "mode: {}    epoch: {}    target: {} µs/file (median)",
+        mode.label(),
+        args.epoch,
+        args.target_micros,
+    );
     println!(
         "{:<28} {:>8} {:>8} {:>8} {:>8} {:>8}  vs {} µs",
         "puzzle", "mean", "median", "p95", "min", "max", args.target_micros,
@@ -142,6 +211,9 @@ fn main() -> ExitCode {
         let stats = measure_puzzle(
             &puzzle.source,
             &wl,
+            mode,
+            &builder,
+            args.epoch,
             args.iterations,
             args.warmup,
         );
@@ -216,6 +288,9 @@ struct Stats {
 fn measure_puzzle(
     source: &str,
     wl: &WhitespaceWordlist,
+    mode: Mode,
+    builder: &MappingBuilder<'_>,
+    epoch: u64,
     iterations: usize,
     warmup: usize,
 ) -> Stats {
@@ -223,13 +298,13 @@ fn measure_puzzle(
     // tokenizer's internal allocations and any branch-predictor
     // state.
     for _ in 0..warmup {
-        run_once(source, wl);
+        run_once(source, wl, mode, builder, epoch);
     }
 
     let mut times = Vec::with_capacity(iterations);
     for _ in 0..iterations {
         let start = Instant::now();
-        run_once(source, wl);
+        run_once(source, wl, mode, builder, epoch);
         times.push(start.elapsed());
     }
     times.sort_unstable();
@@ -251,15 +326,94 @@ fn measure_puzzle(
     }
 }
 
-/// One end-to-end pipeline pass: tokenize -> scramble -> unscramble.
+/// One end-to-end pipeline pass.  Mode-dispatched.
 ///
 /// `#[inline(never)]` keeps the compiler from hoisting any of the
 /// stages out of the timer when the loop body is short.  Without
 /// this, the optimiser was inlining `tokenize` and observing the
 /// result was unused, which collapsed the measurement.
 #[inline(never)]
-fn run_once(source: &str, wl: &WhitespaceWordlist) -> String {
+fn run_once(
+    source: &str,
+    wl: &WhitespaceWordlist,
+    mode: Mode,
+    builder: &MappingBuilder<'_>,
+    epoch: u64,
+) -> String {
+    match mode {
+        Mode::L3Only => run_once_l3_only(source, wl),
+        Mode::Full => run_once_full(source, wl, builder, epoch),
+    }
+}
+
+/// Historical phase-3 path: tokenize + L3 scramble + L3 unscramble.
+fn run_once_l3_only(source: &str, wl: &WhitespaceWordlist) -> String {
     let tokens = tokenize(source);
-    let scrambled = scramble(&tokens, wl).expect("scramble must succeed on MVP corpus");
+    let scrambled =
+        scramble(&tokens, wl).expect("scramble must succeed on MVP corpus");
     unscramble(&scrambled, wl).expect("unscramble is infallible in MVP")
+}
+
+/// Production-path: full layer composition + header encode/decode.
+///
+/// Drives the same `scramble_pipeline` + `unscramble_pipeline`
+/// modules the operator-facing CLI uses.  The L2 mapping is built
+/// in-proc via `MappingBuilder` so the daemon socket round-trip is
+/// excluded — same scope rule as the L3-only path's whitespace-
+/// wordlist exclusion.
+fn run_once_full(
+    source: &str,
+    wl: &WhitespaceWordlist,
+    builder: &MappingBuilder<'_>,
+    epoch: u64,
+) -> String {
+    let scrambled = scramble_pipeline(source, epoch, wl, |toks, e| {
+        build_mapping(builder, toks, e)
+    })
+    .expect("scramble_pipeline must succeed on MVP corpus");
+
+    let decoded = decode_file(&scrambled.file).expect("decode header");
+    let mapping = build_mapping(builder, &decoded.sorted_tokens, epoch)
+        .expect("identifier mapping rebuild must succeed");
+    unscramble_pipeline(
+        decoded.version,
+        decoded.epoch,
+        &decoded.body,
+        wl,
+        &mapping,
+    )
+}
+
+/// Build an `IdentifierMapping` for `tokens` at `epoch` using the
+/// production virtual-epoch scheme (`epoch * ALIAS_COUNT + alias_idx`).
+fn build_mapping(
+    builder: &MappingBuilder<'_>,
+    tokens: &[String],
+    epoch: u64,
+) -> babbleon_preprocessor_v2::errors::Result<IdentifierMapping> {
+    let base = epoch.saturating_mul(ALIAS_COUNT as u64);
+    let mut per_alias: Vec<Vec<String>> = Vec::with_capacity(ALIAS_COUNT);
+    for ai in 0..ALIAS_COUNT {
+        let virtual_epoch = base + ai as u64;
+        let mapping = builder
+            .build(tokens, virtual_epoch)
+            .expect("MappingBuilder::build should not fail for the test corpus");
+        let compounds: Vec<String> = tokens
+            .iter()
+            .map(|t| mapping.scramble(t).unwrap_or(t.as_str()).to_string())
+            .collect();
+        per_alias.push(compounds);
+    }
+    let mut aliases: Vec<Vec<String>> =
+        tokens.iter().map(|_| Vec::with_capacity(ALIAS_COUNT)).collect();
+    for one_alias_set in per_alias {
+        for (ti, compound) in one_alias_set.into_iter().enumerate() {
+            aliases[ti].push(compound);
+        }
+    }
+    IdentifierMapping::from_tokens_and_aliases(
+        tokens.to_vec(),
+        epoch,
+        aliases,
+    )
 }
