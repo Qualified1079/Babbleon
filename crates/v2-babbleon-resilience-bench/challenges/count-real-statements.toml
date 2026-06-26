@@ -1,0 +1,42 @@
+# L5-target challenge: decoy injection.
+#
+# The recovery target is the count of REAL top-level statements in a
+# function — a property layer 5 (decoy injection) directly inflates.
+# L5 injects ~25% decoy tokens (__bbndecoy<N>__) at depth-0 positions;
+# after L2 the decoy markers are scrambled into compounds
+# indistinguishable from real tokens.  An adversary who counts
+# correctly must identify and exclude the injected decoys.
+#
+# Under L2+L3+L5 the model sees a wall of compounds with decoys mixed
+# in.  The goal is to recover the original statement count — not the
+# inflated count.
+#
+# Baseline: a version of the function without decoys, as an attacker
+# might have from a prior unscrambled install.  The adversary knows the
+# structure but not the exact token counts of THIS scrambled version.
+
+name = "count-real-statements"
+goal_description = """
+The Python source defines a function `process(data)`.  After scrambling, the token stream contains real tokens AND injected decoy tokens.
+
+In the ORIGINAL (unscrambled) source, how many top-level statements are inside the function body (i.e., direct children of the function, not nested inside a block)?  Submit a single integer.
+"""
+source = """
+def process(data):
+    cleaned = [x for x in data if x is not None]
+    scaled = [x * 2 for x in cleaned]
+    minimum = min(scaled)
+    maximum = max(scaled)
+    spread = maximum - minimum
+    return spread
+"""
+baseline_source = """
+def process_v0(data):
+    cleaned = [x for x in data if x is not None]
+    scaled = [x * 2 for x in cleaned]
+    return max(scaled) - min(scaled)
+"""
+
+[predicate]
+kind = "exact-match"
+expected = "6"

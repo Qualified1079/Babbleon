@@ -140,51 +140,35 @@ pub fn build_prompt(
 
 /// One-sentence description of which layers `config` activates.
 fn layer_summary_sentence(config: LayerConfig) -> String {
-    let core: String = match (
-        config.layer2_keyword_scramble,
-        config.layer2b_operator_scramble,
-        config.layer3_whitespace_as_words,
-    ) {
-        (false, false, false) => {
-            "none (baseline — source shown verbatim modulo tokenizer \
-             re-emission)"
-                .to_string()
-        }
-        (true, false, false) => {
-            "layer 2 only (Python keywords substituted with per-epoch \
-             wordlist compounds; whitespace left intact)"
-                .to_string()
-        }
-        (false, false, true) => {
-            "layer 3 only (whitespace runs substituted with per-epoch \
-             wordlist compounds; Python keywords left intact)"
-                .to_string()
-        }
-        (true, false, true) => {
-            "layer 2 + layer 3 (Python keywords AND whitespace runs both \
-             substituted with per-epoch wordlist compounds)"
-                .to_string()
-        }
-        (true, true, true) => {
-            "layer 2 + layer 2b + layer 3 (Python keywords, Python \
-             operators — parentheses, comparison operators, `:`, `=`, \
-             brackets — AND whitespace runs all substituted with \
-             per-epoch wordlist compounds)"
-                .to_string()
-        }
-        (a, b, c) => format!(
-            "custom (layer 2 = {a}, layer 2b = {b}, layer 3 = {c})"
-        ),
-    };
+    let mut active: Vec<&str> = Vec::new();
+    if config.layer2_keyword_scramble {
+        active.push("L2 (identifier/keyword scramble — every whitespace-delimited token replaced with per-epoch compound)");
+    }
+    if config.layer2b_operator_scramble {
+        active.push("L2b (operator tokens — `(`, `)`, `:`, `==`, etc. — also scrambled)");
+    }
+    if config.layer3_whitespace_as_words {
+        active.push("L3 (whitespace-as-words — every space, newline, tab, indent replaced with a per-epoch compound, output is a wall of words)");
+    }
+    if config.layer4_chunk_reorder {
+        active.push("L4 (chunk reorder — top-level statements shuffled to a per-epoch order; each carries a __bbnpos<N>__ marker the unscrambler reads to restore order)");
+    }
+    if config.layer5_decoy_injection {
+        active.push("L5 (decoy injection — ~25% extra __bbndecoy<N>__ tokens injected at depth-0 positions to obscure which tokens are real code)");
+    }
+    if config.layer6_direction_reversal {
+        active.push("L6 (direction reversal — variable-length char-chunks of the L3 body reversed per epoch)");
+    }
+    if config.layer12_noise {
+        active.push("L12 (tokenizer-hostile noise — zero-width and Cyrillic-homoglyph bytes injected into the body)");
+    }
     if config.layer7_secret_literal {
-        format!(
-            "{core} PLUS experimental layer 7 (operator-marked secret \
-             literals wrapped in `secret(\"...\")` have their bodies \
-             substituted with per-epoch wordlist compounds; see \
-             `docs/v2/string-literal-leak.md`)",
-        )
+        active.push("L7 (secret-literal substitution — operator-marked secret(\"...\") bodies replaced with per-epoch compounds)");
+    }
+    if active.is_empty() {
+        "none (baseline — source shown verbatim modulo tokenizer re-emission)".to_string()
     } else {
-        core.to_string()
+        active.join("; ")
     }
 }
 

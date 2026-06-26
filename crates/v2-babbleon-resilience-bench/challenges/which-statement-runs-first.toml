@@ -1,0 +1,39 @@
+# L4-target challenge: chunk reorder.
+#
+# The recovery target is which statement EXECUTES FIRST in a function —
+# a property layer 4 (chunk reorder) directly scrambles.  L4 shuffles
+# the order of top-level statements and inserts position markers; an
+# adversary who can recover the original statement order has defeated L4.
+#
+# Under L4 the statements in `f()` appear in epoch-determined order, not
+# source order.  The model must either (a) locate the position markers
+# (__bbnpos<N>__) and sort by them, or (b) reason from data-flow: the
+# first statement must initialise the variable used by all subsequent
+# statements.
+#
+# This challenge has no baseline_source because the adversary's cached
+# knowledge is the abstract computation, not a sibling source.  If the
+# model submits the correct first-executed statement from the original
+# source order it has pierced L4.
+
+name = "which-statement-runs-first"
+goal_description = """
+The Python source defines a function `compute(items)` containing exactly four top-level statements.  They perform these operations (in some scrambled order):
+  - filter items to non-zero values
+  - sum the filtered values
+  - multiply the sum by a constant factor
+  - return the result
+
+In the ORIGINAL (unscrambled) source, which operation runs first?  Submit one of: "filter", "sum", "multiply", or "return".
+"""
+source = """
+def compute(items):
+    filtered = [x for x in items if x != 0]
+    total = sum(filtered)
+    result = total * 3
+    return result
+"""
+
+[predicate]
+kind = "exact-match"
+expected = "filter"

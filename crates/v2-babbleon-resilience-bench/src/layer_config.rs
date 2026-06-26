@@ -54,6 +54,27 @@ pub struct LayerConfig {
     pub layer2b_operator_scramble: bool,
     /// Apply layer-3 (whitespace-as-words).
     pub layer3_whitespace_as_words: bool,
+    /// Apply layer-4 (chunk reorder with position markers).
+    /// Top-level statements are permuted per epoch via xorshift;
+    /// each chunk carries a `__bbnpos<N>__` marker the unscrambler
+    /// reads to restore original order.
+    #[serde(default)]
+    pub layer4_chunk_reorder: bool,
+    /// Apply layer-5 (decoy injection).  ~25% of the original token
+    /// count of `__bbndecoy<N>__` tokens are injected at depth-0
+    /// positions to raise the cost of locating live code in the wall.
+    #[serde(default)]
+    pub layer5_decoy_injection: bool,
+    /// Apply layer-6 (direction segment reversal).  Per-epoch
+    /// variable-length char-chunks of the L3 body are reversed to
+    /// defeat left-to-right parsing heuristics.
+    #[serde(default)]
+    pub layer6_direction_reversal: bool,
+    /// Apply layer-12 (tokenizer-hostile noise).  Zero-width and
+    /// Cyrillic-homoglyph bytes are injected into the L3 body to
+    /// defeat naïve tokenizer-based extraction.
+    #[serde(default)]
+    pub layer12_noise: bool,
     /// Apply experimental layer-7 secret-literal substitution
     /// (bench-only prototype; see
     /// `crates/v2-babbleon-resilience-bench/src/secret_literal_layer.rs`).
@@ -85,6 +106,10 @@ impl LayerConfig {
             layer2_keyword_scramble,
             layer2b_operator_scramble: false,
             layer3_whitespace_as_words,
+            layer4_chunk_reorder: false,
+            layer5_decoy_injection: false,
+            layer6_direction_reversal: false,
+            layer12_noise: false,
             layer7_secret_literal: false,
             seed_byte,
             epoch,
@@ -117,6 +142,10 @@ impl LayerConfig {
             layer2_keyword_scramble: true,
             layer2b_operator_scramble: true,
             layer3_whitespace_as_words: true,
+            layer4_chunk_reorder: false,
+            layer5_decoy_injection: false,
+            layer6_direction_reversal: false,
+            layer12_noise: false,
             layer7_secret_literal: false,
             seed_byte: 0xAB,
             epoch: 0,
@@ -139,6 +168,25 @@ impl LayerConfig {
         Self::new(false, false, 0xAB, 0)
     }
 
+    /// Full stack: L2 + L3 + L4 + L5 + L6 + L12.  All shipped
+    /// production layers active.  The bench cell that most closely
+    /// matches what a real host serves.
+    #[must_use]
+    pub fn full_stack() -> Self {
+        Self {
+            layer2_keyword_scramble: true,
+            layer2b_operator_scramble: false,
+            layer3_whitespace_as_words: true,
+            layer4_chunk_reorder: true,
+            layer5_decoy_injection: true,
+            layer6_direction_reversal: true,
+            layer12_noise: true,
+            layer7_secret_literal: false,
+            seed_byte: 0xAB,
+            epoch: 0,
+        }
+    }
+
     /// L2 + L3 + L7 (experimental).  L2+L3 floor PLUS bench-only
     /// secret-literal substitution.  Measures whether operator-
     /// marked secret literals defeat the literal-leak finding.
@@ -148,6 +196,10 @@ impl LayerConfig {
             layer2_keyword_scramble: true,
             layer2b_operator_scramble: false,
             layer3_whitespace_as_words: true,
+            layer4_chunk_reorder: false,
+            layer5_decoy_injection: false,
+            layer6_direction_reversal: false,
+            layer12_noise: false,
             layer7_secret_literal: true,
             seed_byte: 0xAB,
             epoch: 0,
@@ -163,6 +215,10 @@ impl LayerConfig {
             layer2_keyword_scramble: true,
             layer2b_operator_scramble: true,
             layer3_whitespace_as_words: true,
+            layer4_chunk_reorder: false,
+            layer5_decoy_injection: false,
+            layer6_direction_reversal: false,
+            layer12_noise: false,
             layer7_secret_literal: true,
             seed_byte: 0xAB,
             epoch: 0,
@@ -177,14 +233,31 @@ impl LayerConfig {
             self.layer2_keyword_scramble,
             self.layer2b_operator_scramble,
             self.layer3_whitespace_as_words,
+            self.layer4_chunk_reorder,
+            self.layer5_decoy_injection,
+            self.layer6_direction_reversal,
+            self.layer12_noise,
         ) {
-            (false, false, false) => "baseline".to_string(),
-            (true, false, false) => "l2-only".to_string(),
-            (false, false, true) => "l3-only".to_string(),
-            (true, false, true) => "l2-plus-l3".to_string(),
-            (true, true, true) => "l2-plus-l2b-plus-l3".to_string(),
-            (a, b, c) => format!(
-                "custom-l2={a}-l2b={b}-l3={c}"
+            (false, false, false, false, false, false, false) => {
+                "baseline".to_string()
+            }
+            (true, false, false, false, false, false, false) => {
+                "l2-only".to_string()
+            }
+            (false, false, true, false, false, false, false) => {
+                "l3-only".to_string()
+            }
+            (true, false, true, false, false, false, false) => {
+                "l2-plus-l3".to_string()
+            }
+            (true, true, true, false, false, false, false) => {
+                "l2-plus-l2b-plus-l3".to_string()
+            }
+            (true, false, true, true, true, true, true) => {
+                "full-stack".to_string()
+            }
+            (l2, l2b, l3, l4, l5, l6, l12) => format!(
+                "custom-l2={l2}-l2b={l2b}-l3={l3}-l4={l4}-l5={l5}-l6={l6}-l12={l12}"
             ),
         };
         if self.layer7_secret_literal {

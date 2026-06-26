@@ -45,11 +45,15 @@
 //!   crate's package version so old results stay attributable.
 
 use babbleon_core_v2::{per_host_secret::PerHostSecret, wordlist::Wordlist, MappingBuilder};
+use babbleon_preprocessor_v2::chunk_reorder::scramble_chunks;
+use babbleon_preprocessor_v2::decoy_injection::inject_decoys;
+use babbleon_preprocessor_v2::direction_reversal::reverse_chunks;
 use babbleon_preprocessor_v2::identifier_scrambler::{
     collect_unique_tokens, scramble_identifiers, IdentifierMapping, ALIAS_COUNT,
 };
 use babbleon_preprocessor_v2::python_tokenizer::tokenize;
 use babbleon_preprocessor_v2::scrambler::scramble;
+use babbleon_preprocessor_v2::tokenizer_noise::inject_noise as inject_tokenizer_noise;
 use babbleon_preprocessor_v2::tokens::Token;
 use babbleon_preprocessor_v2::whitespace_wordlist::WhitespaceWordlist;
 
@@ -86,6 +90,18 @@ pub fn apply_layers(source: &str, config: LayerConfig) -> Result<String> {
     };
 
     let mut tokens: Vec<Token> = tokenize(&source_after_l7);
+
+    // L4: chunk reorder + position markers.  Runs before L5 so decoys
+    // land into the already-shuffled stream.
+    if config.layer4_chunk_reorder {
+        tokens = scramble_chunks(tokens, config.epoch);
+    }
+
+    // L5: decoy injection at depth-0 positions.  Runs before L2 so
+    // decoy marker bodies go through the identifier scramble.
+    if config.layer5_decoy_injection {
+        tokens = inject_decoys(tokens, config.epoch);
+    }
 
     if config.layer2_keyword_scramble {
         let id_wordlist = Wordlist::english_baseline();
@@ -129,7 +145,7 @@ pub fn apply_layers(source: &str, config: LayerConfig) -> Result<String> {
     // already handled by the dynamic identifier scramble above.
     let _ = config.layer2b_operator_scramble;
 
-    if config.layer3_whitespace_as_words {
+    let body = if config.layer3_whitespace_as_words {
         let wl = WhitespaceWordlist::build(
             &synthetic_secret,
             Wordlist::english_baseline(),
@@ -140,12 +156,30 @@ pub fn apply_layers(source: &str, config: LayerConfig) -> Result<String> {
         })?;
         scramble(&tokens, &wl).map_err(|e| Error::Scramble {
             message: format!("layer-3 scramble: {e}"),
-        })
+        })?
     } else {
         // No L3: re-emit the token stream as plain source.  Useful
         // for L2-only and baseline configurations.
-        Ok(reemit_tokens(&tokens))
-    }
+        reemit_tokens(&tokens)
+    };
+
+    // L6: direction segment reversal on the body bytes.  Only
+    // meaningful after L3 produces a compact byte sequence.
+    let body = if config.layer6_direction_reversal {
+        reverse_chunks(&body, config.epoch)
+    } else {
+        body
+    };
+
+    // L12: tokenizer-hostile noise on body bytes.  Applied last so it
+    // lands on the already-reversed wall.
+    let body = if config.layer12_noise {
+        inject_tokenizer_noise(&body, config.epoch)
+    } else {
+        body
+    };
+
+    Ok(body)
 }
 
 /// Re-emit a token stream as a plain source string.  Used by the

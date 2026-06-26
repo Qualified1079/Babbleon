@@ -261,6 +261,8 @@ enum LayerConfigPreset {
     L2PlusL3PlusL7,
     /// Layer 2 + Layer 2b + Layer 3 + experimental Layer 7.
     L2PlusL2bPlusL3PlusL7,
+    /// Full production stack: L2 + L3 + L4 + L5 + L6 + L12.
+    FullStack,
 }
 
 impl LayerConfigPreset {
@@ -279,6 +281,7 @@ impl LayerConfigPreset {
             LayerConfigPreset::L2PlusL2bPlusL3PlusL7 => {
                 LayerConfig::l2_plus_l2b_plus_l3_plus_l7()
             }
+            LayerConfigPreset::FullStack => LayerConfig::full_stack(),
         }
     }
 }
