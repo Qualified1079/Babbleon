@@ -98,6 +98,7 @@ use babbleon_core_v2::{
     build_activated_table_from_mapping, EpochMapping, MappingBuilder,
     PerHostSecret, PermutationCache, Wordlist,
 };
+use babbleon_daemon_protocol_v2::ALIAS_COUNT_WIRE;
 
 use crate::errors::{Error, Result};
 use crate::materialization::{
@@ -568,8 +569,6 @@ impl DaemonState {
                     .into(),
             ));
         };
-        use babbleon_core_v2::mapping::MappingBuilder;
-        use babbleon_daemon_protocol_v2::ALIAS_COUNT_WIRE;
         let wl = self.config.wordlist;
         // Cache-backed builder: each (virtual_epoch, purpose) pair
         // is built once per daemon lifetime; subsequent requests at
