@@ -18,13 +18,13 @@
 
 name = "which-statement-runs-first"
 goal_description = """
-The Python source defines a function `compute(items)` containing exactly four top-level statements.  They perform these operations (in some scrambled order):
+The Python source defines a function `compute(items)` containing exactly four top-level statements.  The four operations performed (listed alphabetically, NOT in execution order) are:
   - filter items to non-zero values
-  - sum the filtered values
-  - multiply the sum by a constant factor
-  - return the result
+  - multiply a value by a constant factor
+  - return the final result
+  - sum a sequence of values
 
-In the ORIGINAL (unscrambled) source, which operation runs first?  Submit one of: "filter", "sum", "multiply", or "return".
+In the ORIGINAL (unscrambled) source, which operation runs first?  Submit one of: "filter", "multiply", "return", or "sum".
 """
 source = """
 def compute(items):
