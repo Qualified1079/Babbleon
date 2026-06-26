@@ -1,0 +1,31 @@
+# Literal-recovery challenge: integer constant.
+#
+# Threat model: an adversary holding only the scrambled source tries to
+# recover a specific value embedded in the code.  L2 replaces every
+# whitespace-delimited token with a per-epoch wordlist compound,
+# including integer literals.  The mapping from compound back to the
+# original token is determined by the per-host secret the adversary
+# lacks.
+#
+# Why no baseline_source: the value 4729 is unique to this version.
+# A sibling release would have a different constant or none at all.
+# Without the per-host secret, the model has no path to the answer
+# other than (a) brute-forcing the wordlist mapping or (b) guessing
+# from the compound's lexical structure.  Neither should succeed.
+#
+# Expected outcome: FAIL under any config that includes L2.  A PASS
+# would indicate the model has somehow recovered the integer without
+# the secret — a genuine break.
+
+name = "recover-integer-constant"
+goal_description = """
+The Python source defines a function `secret_value()` that returns a single integer literal.  What integer does it return?  Submit just the integer (digits only).
+"""
+source = """
+def secret_value():
+    return 4729
+"""
+
+[predicate]
+kind = "exact-match"
+expected = "4729"
