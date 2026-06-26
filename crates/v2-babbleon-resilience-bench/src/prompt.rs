@@ -101,12 +101,20 @@ pub fn build_prompt(
          Tools the evaluation environment provides:\n\
          \n\
          - A `notepad/` directory you may read and write.  Any file you \
-         create there persists across calls within this run.  Use it to \
-         record partial decodings, hypothesised compound→keyword mappings, \
-         candidate answers, intermediate computations — anything you would \
-         otherwise need to keep in working memory.  Writing to the notepad \
-         is the supported way to think across many tool calls without \
-         re-deriving previous work.\n\
+         create there persists across calls within this run.  You are \
+         expected to USE the notepad heavily; it is the difference \
+         between a model that does single-pass guessing and an \
+         adversary that actually works the problem.  A real attacker \
+         decoding a scrambled source would: (a) write down every \
+         hypothesised compound→token mapping as it accrues evidence; \
+         (b) corroborate each candidate by checking it against \
+         multiple occurrences and against the surrounding structure; \
+         (c) maintain a worklist of unresolved compounds and revisit \
+         them as more context becomes known; (d) record dead-end \
+         hypotheses so they are not re-explored.  Do the same.  Write \
+         freely.  Re-read the notepad before deciding you have an \
+         answer.  Do not try to keep the decoding state in working \
+         memory; that is what loses the attacker the engagement.\n\
          - (If this challenge enables it) a shell to run small scripts \
          against the inputs.  The challenge config controls whether shell \
          is available; not every challenge enables it.\n\
