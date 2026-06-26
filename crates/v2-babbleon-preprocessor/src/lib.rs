@@ -12,54 +12,71 @@
 //! `docs/v2/structure-scrambling.md` for the operator-confirmed
 //! attack story this crate addresses.
 //!
-//! The preprocessor implements **layer 3** of the v2 structural
-//! scramble: whitespace as words.  Every `\n`, ` `, `\t`,
-//! indent-block-open, and indent-block-close is replaced with a
-//! wordlist compound drawn from a per-epoch whitespace wordlist.
-//! Source code becomes one continuous text wall with no visible
-//! structure.  Any tool that reads the file by `read()` — `cat`,
+//! The preprocessor implements **six composable layers** of the v2
+//! structural scramble.  Source code is reduced to a noisy wall of
+//! random words with no visible language, structure, or identifier
+//! fingerprint.  Any tool that reads the file by `read()` — `cat`,
 //! `less`, `grep`, `rg`, every editor without the v2 plugin — sees
-//! a soup of unfamiliar tokens with no line, indent, or block
-//! boundaries to position-match against.
+//! a token soup with no line, indent, or block boundaries to
+//! position-match against.
 //!
 //! # Mechanism
 //!
-//! 1. **`whitespace_wordlist`** — per-epoch derivation of 5
-//!    wordlist compounds (one per `WhitespaceKind`) via the v2-core
-//!    HKDF + Fisher-Yates permutation primitives.  HKDF info label
-//!    `b"v2-whitespace-mapping"` so the whitespace permutation is
-//!    statistically independent of the identifier and honey
-//!    permutations.
-//! 2. **`tokens`** — the abstract `Token` IR.  A `Token` is either
-//!    a `Whitespace(WhitespaceKind)` marker or a `Word(String)`
-//!    holding a contiguous non-whitespace byte run.  Scramble /
-//!    unscramble operate on `Token` streams, so the Python tokenizer
-//!    is independently replaceable.
-//! 3. **`python_tokenizer`** — minimal Python tokenizer for the
-//!    phase-3 MVP.  Walks bytes; classifies whitespace runs; emits
-//!    `Token::Word` for non-whitespace runs.  Does NOT understand
-//!    Python expressions (no operator splitting, no string-literal
-//!    awareness beyond the byte level).  Sufficient for valid Python
-//!    that uses normal spacing; documented MVP limitations live at
-//!    `python_tokenizer::MVP_LIMITATIONS`.
-//! 4. **`scrambler`** — `Token` stream → scrambled byte string.
-//!    Concatenates non-whitespace `Word` bytes verbatim and emits
-//!    the per-epoch compound for each `Whitespace(kind)`.
-//! 5. **`unscrambler`** — scrambled byte string → reconstructed
-//!    source.  Greedy longest-prefix match against the 5 per-epoch
-//!    whitespace compounds; everything between two whitespace
-//!    compounds is one `Token::Word`.  Re-emits source with
-//!    canonicalised whitespace and indent-width = 4 spaces.
+//! Layer modules, in the order they apply on scramble:
+//!
+//! - **L4** ([`chunk_reorder`]) — top-level chunks reordered by a
+//!   per-epoch shuffle; each chunk carries a `__bbnpos<N>__` marker
+//!   the unscrambler reads to restore original order.
+//! - **L5** ([`decoy_injection`]) — depth-0 `__bbndecoy<N>__` tokens
+//!   injected at ~25% of original token count.  Stripped by prefix
+//!   on unscramble.
+//! - **L2** ([`identifier_scrambler`]) — every whitespace-delimited
+//!   token replaced with one of [`ALIAS_COUNT`] per-epoch HKDF-
+//!   derived compound aliases.  Multi-alias cycling defeats
+//!   frequency analysis.
+//! - **L3** ([`scrambler`] + [`unscrambler`]) — whitespace markers
+//!   replaced by per-epoch wordlist compounds.  Greedy
+//!   longest-prefix match drives the inverse.
+//! - **L6** ([`direction_reversal`]) — variable-length char chunks
+//!   of the body reversed per a per-epoch xorshift PRNG (involutive).
+//! - **L12** ([`tokenizer_noise`]) — zero-width characters (ZWSP /
+//!   ZWNJ / ZWJ) injected at deterministic per-epoch positions;
+//!   Cyrillic-homoglyph substitution for `a c e i o p x y` on a
+//!   ~1/3 PRNG draw.  Strip is content-based and idempotent.
+//!
+//! Cross-cutting modules:
+//!
+//! - [`tokens`] — the abstract `Token` IR.  A `Token` is either a
+//!   `Whitespace(WhitespaceKind)` marker or a `Word(String)`.
+//! - [`python_tokenizer`] — minimal Python tokenizer.  Walks bytes;
+//!   classifies whitespace runs; emits `Token::Word` for non-
+//!   whitespace runs.  MVP limitations documented at
+//!   `python_tokenizer::MVP_LIMITATIONS`.
+//! - [`whitespace_wordlist`] — per-epoch 5-compound table (one per
+//!   `WhitespaceKind`) via HKDF + Fisher-Yates; info label
+//!   `b"v2-whitespace-mapping"` for statistical independence from
+//!   the identifier + honey permutations.
+//! - [`file_format`] — `babbleon-v2` header encode + decode; format
+//!   version 0 (legacy, pre-L6 + pre-L12) and version 1 (current).
+//! - [`pipeline`] — full composition of the six layers + the file
+//!   format.  `scramble_pipeline` and `unscramble_pipeline` are the
+//!   canonical entry points; the user CLI, the corpus CLI, and the
+//!   python-shim all consume them.
+//! - [`secret_literal_scrambler`] + [`secret_literal_wordlist`] —
+//!   optional pre-pass for `secret("body")` literals; gated on
+//!   operator opt-in.
 //!
 //! # Trust placement (load-bearing)
 //!
 //! The preprocessor runs **only in the trusted tier** — never in an
 //! untrusted-tier process.  See `docs/v2/structure-scrambling.md`
 //! §"Trust placement" and §"Same hardening as the daemon" for the
-//! full attack surface.  This crate is the library; the binary
-//! (with `mlockall`, `PR_SET_DUMPABLE=0`, `RLIMIT_CORE=0`, and its
-//! own seccomp profile) lives elsewhere (forthcoming phase-3
-//! commits).
+//! full attack surface.  This crate is the library; the binaries
+//! (with `mlockall`, `PR_SET_DUMPABLE=0`, `RLIMIT_CORE=0`, and a
+//! seccomp profile) live in `crates/v2-babbleon` (the `babbleon
+//! scramble` / `babbleon unscramble` CLI) and
+//! `crates/v2-babbleon-python-shim` (the `babbleon-python` runtime
+//! entry point).
 //!
 //! # No-disk guarantee (load-bearing for the binary, not this crate)
 //!
@@ -85,31 +102,36 @@
 //!   compounds.  Process-level hardening (mlockall + dumpable=0)
 //!   protects the in-memory mapping; that's a binary concern.
 //!
-//! # MVP scope (this commit)
+//! # Current scope (post-2026-06-26)
 //!
-//! - Whitespace wordlist derivation.
-//! - Token IR.
-//! - Minimal Python tokenizer.
-//! - Scrambler.
-//! - Unscrambler.
-//! - Round-trip property tests.
+//! - Whitespace wordlist derivation ([`whitespace_wordlist`]).
+//! - Token IR ([`tokens`]) + minimal Python tokenizer
+//!   ([`python_tokenizer`]).
+//! - All six production layers (L2 / L3 / L4 / L5 / L6 / L12).
+//! - File-format encode + decode ([`file_format`]) including the
+//!   legacy v0 layout for back-compat.
+//! - Full pipeline composition ([`pipeline`]) consumed by the
+//!   `babbleon scramble`/`unscramble` CLI, the `scramble-dir`/
+//!   `unscramble-dir` batch CLI, and the `babbleon-python` runtime
+//!   shim.
+//! - Optional secret-literal pre-pass
+//!   ([`secret_literal_scrambler`] + [`secret_literal_wordlist`]).
+//! - Round-trip property tests + Python-execution integration tests.
 //!
-//! # Out of scope for the MVP (filed for future commits)
+//! # Out of scope (filed for future commits)
 //!
-//! - The standalone binary (`babbleon-preprocessor` / `babbleon
-//!   scramble` / `babbleon unscramble`).
-//! - The `pipe(2)` plumbing to wire unscrambled bytes into a child
-//!   interpreter without a disk round-trip.
 //! - Full Python tokenization (f-strings, multi-line strings, the
 //!   walrus-operator boundary, etc.) — the MVP tokenizer documents
-//!   its limitations and the next commit can swap in a richer
-//!   backend.
-//! - Layer-2 (operator scramble) and layer-4 (chunk reorder), which
-//!   compose on top of this crate.
+//!   its limitations and the next revision can swap in a richer
+//!   backend without changing the layer modules.
+//! - Layers 7-11 (control-flow flattening, opaque predicates,
+//!   constant unfolding, path-string obfuscation, defensive prompt
+//!   injection) per `docs/v2/obfuscation-landscape.md`.  Each
+//!   composes on top of the six existing layers.
 //! - Collision detection for the rare case where a non-whitespace
 //!   byte run contains a whitespace compound as a substring.  See
 //!   `unscrambler::COLLISION_NOTE` for the threat model and the
-//!   reserved-pool design that addresses it in a future commit.
+//!   reserved-pool design.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
