@@ -115,14 +115,20 @@ Scramble order: tokenize → L4 → L5 → L2 → L3 → **L6** → **L12**.
 Unscramble order: **L12⁻¹** → **L6⁻¹** → L3⁻¹ → L2⁻¹ → L5⁻¹ → L4⁻¹ → emit.
 
 L12 is idempotent on a clean body, so older pre-L12 files unscramble
-correctly under the new pipeline (back-compat).  L6 is involutive
-and PRNG-deterministic from epoch; pre-L6 files are NOT back-compat
-under the post-L6 unscrambler — operators must re-scramble or pin
-the unscrambler version.
+correctly under the new pipeline (back-compat via content-based
+strip).  L6 is involutive and PRNG-deterministic from epoch; the
+**format-version field** (landed in `7ed409b`) gates the L6 inverse
+on `version >= 1`, so pre-L6 files (version 0, inferred from
+absent `version:` line) unscramble correctly without operator
+intervention.
 
-File format: `babbleon-v2\nepoch:N\ntokens:T1\tT2\t...\n---\n<L3 body>`.
-The sorted token list is embedded so the unscrambler can ask the
-daemon for the same L2 mapping without the original source.
+File format (version 1, current):
+`babbleon-v2\nversion:1\nepoch:N\ntokens:T1\tT2\t...\n---\n<L3+L6+L12 body>`.
+Legacy version 0 layout (pre-L6 + pre-L12):
+`babbleon-v2\nepoch:N\ntokens:T1\tT2\t...\n---\n<L3 body>` (no
+`version:` line; the reader infers v0).  The sorted token list is
+embedded so the unscrambler can ask the daemon for the same L2
+mapping without the original source.
 
 Daemon protocol: `GetWhitespaceCompounds` (one call per session) +
 `GetTokenMapping { tokens }` (per file). Response is
@@ -134,10 +140,21 @@ unscrambler can re-derive identical shuffle and decoy positions
 deterministically.
 
 Production wiring lives in:
-- `crates/v2-babbleon/src/scramble_lifecycle.rs` (per-file CLI)
-- `crates/v2-babbleon/src/corpus_lifecycle.rs` (batch directory)
+- `crates/v2-babbleon-preprocessor/src/pipeline.rs` — canonical
+  layer composition (`scramble_pipeline` /
+  `unscramble_pipeline`); the three call sites below all consume it.
+- `crates/v2-babbleon-preprocessor/src/file_format.rs` — canonical
+  scrambled-file header encode/decode.
+- `crates/v2-babbleon/src/scramble_lifecycle.rs` (per-file CLI;
+  thin wrapper around the preprocessor pipeline).
+- `crates/v2-babbleon/src/corpus_lifecycle.rs` (batch directory;
+  same).
+- `crates/v2-babbleon-python-shim/src/pipeline.rs` (runtime shim
+  for `babbleon-python`; same).
 - `crates/v2-babbleon-resilience-bench/src/scramble_pipeline.rs`
-  (bench, in-proc `MappingBuilder`, no daemon round-trip)
+  (bench, in-proc `MappingBuilder`, no daemon round-trip).
+  Intentionally NOT routed through the shared pipeline module
+  because the bench needs per-layer toggles via `LayerConfig`.
 
 ## 5. Reading order for a new session
 
