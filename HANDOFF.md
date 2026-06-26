@@ -24,8 +24,8 @@ lands, push here)
 
 Date: 2026-06-26 (user-asleep session — claude-opus-4-7)
 
-Last commit before this handoff section: `6d16fe2` —
-test(v2-preprocessor): add edge-case coverage to the real-mapping round-trip.
+Last commit before this handoff section: `c7d2f7a` —
+feat(preprocessor-benchmark): --mode full for production-pipeline cost.
 
 ---
 
@@ -62,7 +62,7 @@ session entry (`7ed409b`, `64b16d0`, `318b8ae`).  Priorities 3
 (adversarial-LLM re-test) and 5 (L11 defensive prompt injection)
 are operator-gated — out of scope for an autonomous session.
 
-### Net commits this session: 8
+### Net commits this session: 11 (+1 follow-up handoff entry)
 
 | # | Hash | Subject |
 |---|---|---|
@@ -75,6 +75,8 @@ are operator-gated — out of scope for an autonomous session.
 | 7 | `043f6a9` | docs(v2-python-shim): correct stale mechanism docs to match shared pipeline |
 | 8 | `02e0dc7` | docs(README): correct stale 4-line-header claim — current format is 5 lines |
 | 9 | `6d16fe2` | test(v2-preprocessor): add edge-case coverage to the real-mapping round-trip |
+| 10 | `d989459` | docs(HANDOFF): extend 2026-06-26 session log through commit 9 |
+| 11 | `c7d2f7a` | feat(preprocessor-benchmark): --mode full for production-pipeline cost |
 
 ### Commit 1 — Shared file_format + pipeline modules
 
@@ -233,6 +235,42 @@ three more integration tests:
 
 10/10 tests in this file now pass.
 
+### Commit 11 — Preprocessor benchmark `--mode full`
+
+`tools/preprocessor-benchmark/src/main.rs` was measuring the
+L3-only path (tokenize + scramble + unscramble) — the historical
+phase-3 number from `docs/v2/structure-scrambling.md` §5.  Four
+more layers (L4, L5, L2, L6, L12) plus the file-format header
+have landed since.  Operators need a production-path number, not
+just the historical L3 number.
+
+Added `--mode l3-only|full` (default `l3-only`, preserving the
+prior measurement + 50ms target verbatim).  `--mode full` drives
+the same `scramble_pipeline` + `unscramble_pipeline` modules the
+operator-facing CLI uses, with the L2 mapping built in-proc via
+`MappingBuilder` (matching the L3-only mode's scope rule that
+excludes the daemon socket cost).
+
+**Measured cold-cache cost on this machine, release profile, 20
+iterations:**
+
+| Mode | Median µs/file | Notes |
+|---|---|---|
+| `l3-only` | 17–30 | Matches prior `RESULTS.md` numbers. |
+| `full` | 70 000–72 000 | ~3500× slower than L3-only.  **Dominated by L2 permutation rebuild per call**. |
+
+The `full` number is a **cold-cache** measurement: every iteration
+rebuilds `ALIAS_COUNT * 2 = 6` Fisher-Yates passes over the 370k
+wordlist per scramble+unscramble pair.  The production daemon
+caches the permutation per epoch across requests, so steady-state
+per-file cost is much lower than the bench reports.  The bench
+number is the **first-file-of-epoch latency** — useful for
+rotation-tick blast radius, not sustained throughput.
+
+This is a real architectural finding: the v2 cold-cache cost is
+70ms × N files per rotation tick.  For a 1000-file install, that's
+70 seconds.  Filed below as a v2.1 priority.
+
 ### Architectural property landed
 
 There is now **one** canonical implementation of the v2
@@ -248,35 +286,40 @@ Ordered by leverage.  Items requiring operator review are called
 out so an autonomous-session bot does not silently build on a
 contested design.
 
-1. **Format-version helper on `DecodedFile`** (~30 LOC).  Currently
-   callers check `version >= 1` inline; an enum
-   `FormatGeneration::Legacy | Current(NonZeroU32)` returned by a
-   `DecodedFile::generation()` accessor would let the version gate
-   be expressed once instead of three times.  Pure hygiene; no
-   operator review.
-2. **Preprocessor pipeline benchmarks.**
-   `tools/preprocessor-benchmark/` (referenced in module docs but
-   absent on disk) for end-to-end timing of `scramble_pipeline` +
-   `unscramble_pipeline` on a multi-file corpus.  Wires existing
-   `criterion` infrastructure; would surface any throughput
-   regression from the refactor.  Autonomous-safe.
-3. **Adversarial-LLM re-test of L2+L3+L4+L5+L6+L12.**  Carried over
-   from 2026-06-25 (TODO.md phase-3 open item).  Needs adversary
-   infrastructure (claude-cli or API).  NOT autonomous — operator
-   must supply API keys and approve the run.  In flight per the
-   2026-06-26 02:55 TODO note.
-4. **Layer 11 — defensive prompt injection.**  Carried over from
+1. **L2 permutation cache in `MappingBuilder` (load-bearing).**
+   The preprocessor-benchmark's `--mode full` surfaced a 70 ms
+   cold-cache cost dominated by the Fisher-Yates rebuild per call.
+   Production daemon's first file in a fresh epoch pays this
+   cost; subsequent files reuse the in-process mapping.  For a
+   1000-file `scramble-dir` run this is ~70 seconds of avoidable
+   rebuilds.  Design: add a `MappingBuilder::with_permutation_cache`
+   constructor that holds two `OnceCell<Permutation>` (identifier
+   + honey) keyed by `(epoch, purpose)`; expose a `build_cached`
+   method that reuses the cached permutations if `epoch` matches.
+   ~150 LOC; touches v2-babbleon-core's mapping.rs.  Autonomous-
+   safe — no protocol change, no operator-facing semantic shift.
+2. **Adversarial-LLM re-test of L2+L3+L4+L5+L6+L12.**  Carried
+   over from 2026-06-25 (TODO.md phase-3 open item).  Needs
+   adversary infrastructure (claude-cli or API).  NOT autonomous —
+   operator must supply API keys and approve the run.  In flight
+   per the 2026-06-26 02:55 TODO note.
+3. **Layer 11 — defensive prompt injection.**  Carried over from
    2026-06-25.  Operator opt-in default ON per `docs/v2/
    obfuscation-landscape.md §4`.  Vendoring + license check +
    disclaimer copy require operator review.
-5. **Corpus-lifecycle seccomp.**  `CorpusOptions.no_seccomp` is
+4. **Corpus-lifecycle seccomp.**  `CorpusOptions.no_seccomp` is
    currently `#[allow(dead_code)]` because corpus-dir subcommands
    need socket/connect inside the per-file loop, blocking the
    filter install before the walk.  v2.1 batch-prefetch design:
-   walk the input dir up-front, fetch the union of every
-   per-file token set in one round-trip, install seccomp, then
-   process.  ~250 LOC; operator review recommended for the
-   batched daemon call's correctness boundary.
+   walk the input dir up-front, fetch the union of every per-file
+   token set in one round-trip, install seccomp, then process.
+   ~250 LOC; operator review recommended for the batched daemon
+   call's correctness boundary.
+5. **`tools/preprocessor-benchmark/RESULTS.md` refresh.**  The
+   results file likely shows pre-`--mode full` numbers only.
+   After landing priority 1 (L2 perm cache) run the bench again
+   in full mode against the cached path and document both numbers
+   for operator reference.  Autonomous-safe after priority 1.
 
 ### Process notes for next autonomous session
 
