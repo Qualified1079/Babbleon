@@ -221,6 +221,92 @@ contested design.
 - `cargo test --workspace` is still forbidden per `CLAUDE.md §4`.
   Pass each `v2-` crate explicitly with `-p`.
 
+### Research note — corpus-lifecycle seccomp install design (2026-06-26 night)
+
+Filed during this session as autonomous-bot research; **operator
+review required before any implementation**.
+
+**Problem.** `CorpusOptions.no_seccomp` is currently
+`#[allow(dead_code)]` because the per-file walk closure in
+`run_scramble_dir` / `run_unscramble_dir`
+(`crates/v2-babbleon/src/corpus_lifecycle.rs`) issues a
+`GetTokenMapping` socket round-trip per file.  Installing seccomp
+before the walk would deny `socket`+`connect`, blocking those
+round-trips.  The 2026-06-25 HANDOFF block filed a v2.1
+"batch-prefetch design": walk once collecting union of every
+per-file token set, install seccomp, then process.
+
+**Three implementation paths considered.**
+
+1. **Union-batch prefetch + new daemon endpoint.** Daemon accepts
+   `GetTokenMappingBatch { sets: Vec<Vec<String>> }` and returns
+   `Vec<TokenMapping>`.  CLI walks, collects every file's
+   `sorted_unique_tokens`, sends one batch, installs seccomp,
+   walks again.
+   - **Pro:** one socket round-trip total; minimal daemon-state
+     overhead (each batch element is independent).
+   - **Con:** protocol change.  The batch can be huge (union of
+     1000 files at ~300 unique tokens each = up to 300k tokens
+     before dedup; ~50 KB after dedup with English baseline
+     overlap).  Daemon worker must hold the union in memory long
+     enough to serve the response — bounded but real.
+   - **Con:** message-size limit on the daemon socket
+     (`MAX_PAYLOAD_BYTES` in the protocol crate; need to confirm
+     the v2.1 limit covers worst case).
+
+2. **Sequential-prefetch + lazy seccomp.** CLI walks the tree
+   collecting `(path, src, sorted_tokens)`.  Then loops
+   sequentially over each `sorted_tokens`, calling
+   `fetch_identifier_mapping_at_epoch` per file, storing
+   `(path, src, mapping)` in memory.  After every round-trip
+   completes, install seccomp.  Then process.
+   - **Pro:** no protocol change.  Drops in cleanly behind the
+     existing `fetch_identifier_mapping_at_epoch`.
+   - **Con:** N round-trips, same as today — but they all happen
+     before seccomp lands, so the install is correct.  The daemon's
+     `PermutationCache` (landed this session) means the per-call
+     compute cost is low; latency is socket overhead × N.
+   - **Con:** memory.  Holding every file's source + mapping
+     in-memory through prefetch + scramble can OOM on a huge
+     corpus.  Worst case 1000 files × 100 KB src × 100 KB mapping =
+     ~200 MB.  Bounded but tight on edge devices.
+   - **Tradeoff vs path 1:** trades protocol simplicity for memory
+     pressure and round-trip overhead.
+
+3. **No corpus-side seccomp; document the gap.** Keep
+   `no_seccomp = true` as the default; document that the corpus
+   CLI runs without the syscall hardening that the per-file CLI
+   gets.  The per-file CLI (`scramble_lifecycle`) DOES install
+   seccomp because it only calls the daemon once.  Operator
+   guidance: invoke the per-file CLI per file in a shell loop if
+   seccomp-on-corpus matters.
+   - **Pro:** zero code change.  Explicit honest trade-off.
+   - **Con:** per-file CLI's fork+exec cost (~3 ms per process per
+     `tools/preprocessor-benchmark/RESULTS.md`'s prior estimate)
+     dominates the per-file scramble cost, defeating the corpus
+     CLI's reason to exist for large trees.
+
+**Recommendation for the operator-review session.**  Path 2
+(sequential prefetch) is the lowest-risk: no protocol changes, no
+daemon-side state work, just a CLI refactor.  Path 1 is the
+correct long-term shape but should wait until
+`tools/rotation-benchmark` measures the daemon-side overhead of
+serving a 300k-token batch — that data point doesn't exist yet.
+Path 3 is the no-ship fallback if neither lands in the v2.1 window.
+
+**Open questions for a session that picks this up.**
+
+- What does the v2.1 `MAX_PAYLOAD_BYTES` accept?  Check
+  `crates/v2-babbleon-daemon-protocol/src/` for the current limit
+  and confirm whether a 300k-token request would clear it.
+- Does path 2's memory ceiling matter in practice?  Pre-prefetch
+  measurement on a synthetic 1000-file corpus (PyPI-style
+  `pip install --target` output) would confirm or refute.
+- Should the prefetch hash already-seen `(epoch, sorted_tokens)`
+  tuples to dedup identical token sets across files?  Likely yes
+  — corpora often have many `__init__.py`-shaped files with
+  identical or near-identical token sets.
+
 ---
 
 ## 2026-06-26 — sleeping-operator: shared file_format + pipeline modules; python-shim fix
