@@ -24,8 +24,202 @@ lands, push here)
 
 Date: 2026-06-26 (user-asleep session — claude-opus-4-7)
 
-Last commit before this handoff section: `86f4ad8` —
-chore(lint): fix clippy doc_markdown + doc list warnings on new code.
+Last commit before this handoff section: `5fd96ba` —
+docs(preprocessor-benchmark): record cached vs uncached `--mode full`
+numbers.  (See immediately-below 2026-06-26 night block.)
+
+---
+
+## 2026-06-26 (night) — sleeping-operator: L2 PermutationCache + production wiring
+
+Author: Claude Opus 4.7 (autonomous overnight continuation).
+Branch: `claude/magical-turing-mele8c`.  4 commits, all green tests,
+no new workspace deps.
+
+### Entry state
+
+Branch tip on entry was `68aaba1` — "bench prompt: push the model to
+use the notepad as an adversary would".  Workspace built clean; no
+red tests.
+
+The 2026-06-26 (day) HANDOFF priorities had item 1 — **L2 permutation
+cache in `MappingBuilder` (load-bearing)** — open.  The
+preprocessor-benchmark `--mode full` had surfaced a ~70 ms cold-cache
+cost dominated by the Fisher-Yates rebuild per `MappingBuilder::build`.
+This session closes that priority.
+
+### Net commits this session: 4
+
+| # | Hash | Subject |
+|---|---|---|
+| 1 | `31135f6` | feat(v2-babbleon-core): add PermutationCache for hot MappingBuilder paths |
+| 2 | `ea08844` | feat(preprocessor-benchmark): wire PermutationCache into --mode full |
+| 3 | `4335536` | feat(v2-babbleon-daemon): wire PermutationCache into state.token_mapping |
+| 4 | `5fd96ba` | docs(preprocessor-benchmark): record cached vs uncached --mode full numbers |
+
+### Commit 1 — `PermutationCache` core module
+
+`crates/v2-babbleon-core/src/permutation_cache.rs` — bounded LRU
+keyed by `(epoch, purpose_id)`.  Permutations held behind `Arc` so a
+cache hit is a refcount bump, not a Fisher-Yates copy.  `Send + Sync`
+via `Mutex<VecDeque<Entry>>`; uncontended the lock is
+sub-microsecond, so single-thread callers (corpus walk, bench, daemon
+socket handler) pay nothing.
+
+API surface added to `babbleon_core_v2::`:
+
+- `PermutationCache::new(capacity)` / `::with_default_capacity()` /
+  `::default()`.
+- `PermutationCache::clear()` / `::len()` / `::is_empty()` /
+  `::capacity()`.
+- `DEFAULT_CAPACITY = 8` (sizes for `ALIAS_COUNT_WIRE = 3` virtual
+  epochs × identifier + honey = six entries plus two slack).
+- Re-exported as `PermutationCache` + `PERMUTATION_CACHE_DEFAULT_CAPACITY`.
+- `MappingBuilder::with_cache(secret, wordlist, &cache)` — opt-in
+  constructor; `MappingBuilder::new` legacy path unchanged
+  (cacheless, builds fresh every call).
+
+Internal: `PURPOSE_ID_IDENTIFIER = 0` / `PURPOSE_ID_HONEY = 1` are
+`pub(crate)` discriminators (chosen `u8` so the cache key is `Copy +
+Eq` and the linear scan stays a register comparison).  Stable
+contract between the cache and the mapping module.
+
+Tests: +17.  10 in `permutation_cache::tests` (empty cache misses,
+insert→get hit, purpose/epoch partition, LRU eviction, dup-insert
+replace, zero-capacity clamp, clear, default, Send+Sync compile
+assertion, concurrent inserts).  7 in `mapping::tests`
+(cached-matches-uncached, populate-after-first-build,
+repeated-builds-same-epoch, distinct-epochs-grow,
+eviction-no-corruption, shareable-across-builders).
+
+90 v2-babbleon-core tests green (was 73).  Clippy pedantic clean.
+No new workspace deps.
+
+### Commit 2 — bench wiring
+
+`tools/preprocessor-benchmark/src/main.rs` accepts
+`--cache-capacity N` (default = `PERMUTATION_CACHE_DEFAULT_CAPACITY`
+= 8); `0` disables.  Mode-`full` header line now reports the cache
+state so captured logs carry the configuration.
+
+Measured this machine, release profile, 50 iterations, 5 warmup:
+
+| Mode | Median µs/file | Notes |
+|---|---|---|
+| `full` --cache-capacity 0 | 85 000-90 000 | Matches pre-cache numbers. |
+| `full` --cache-capacity 8 |  1 000- 2 000 | ~85x speedup. |
+
+Within one `run_once_full` iteration the bench builds six
+permutations (`ALIAS_COUNT=3` virtual epochs × identifier + honey,
+both on scramble and on unscramble); after iteration 1 they all hit.
+
+### Commit 3 — daemon wiring (production path)
+
+`crates/v2-babbleon-daemon/src/state.rs`: `DaemonState` now owns a
+`permutation_cache: PermutationCache` field.  `token_mapping`
+constructs the `MappingBuilder` via `with_cache` so:
+
+- First `GetTokenMapping` request at a fresh host-epoch: pays the
+  full Fisher-Yates cost (~200 ms for six builds — six permutations
+  at ~35 ms each).
+- Subsequent requests at the same host-epoch: cache hits; cost falls
+  to compound-emission only (microseconds).
+
+Lifecycle: cache constructed fresh in every constructor.  The unlock
+path refuses re-unlock with a different secret, so the cache cannot
+serve permutations derived under a stale secret — the daemon's
+lifetime is one-secret.  Documented in the field doc comment.
+
+Tests (+2): `token_mapping_repeats_warm_the_permutation_cache`
+asserts the cache fills to `ALIAS_COUNT_WIRE * 2` entries after the
+first call and stays at that size across repeats with identical
+outputs.  `token_mapping_after_rotation_keeps_results_correct`
+exercises rotation under the cache so a regression that served stale
+permutations after rotation would fail.
+
+124 daemon lib tests green (was 122).  Pre-existing
+`items_after_statements` warnings on the `use` imports inside
+`token_mapping` are out of scope.
+
+### Commit 4 — RESULTS.md refresh
+
+`tools/preprocessor-benchmark/RESULTS.md`: new top section captures
+both cached + uncached `--mode full` numbers, recomputes per-file
+interactive and 1000-file corpus budgets, and pointer-links to the
+daemon's wiring.  Prior section's "Caveat: cold-cache vs steady
+state" augmented with an "Update (2026-06-26 night)" note pointing
+to the new measurements.
+
+### Stats
+
+| Metric | Before | After | Δ |
+|---|---|---|---|
+| v2-babbleon-core lib tests | 73 | 90 | +17 |
+| v2-babbleon-daemon lib tests | 122 | 124 | +2 |
+| New core source modules | 0 | 1 | +1 (permutation_cache) |
+| Workspace deps | unchanged | unchanged | 0 |
+| `forbid(unsafe_code)` violations | 0 | 0 | 0 |
+| `--mode full` median (cached) | n/a | 1-2 ms | ~85x faster |
+| `--mode full` median (uncached) | 85-90 ms | 85-90 ms | unchanged |
+
+### Architectural property landed
+
+The L2 mapping construction has a steady-state cost again.  Before
+this session, every `MappingBuilder::build` call was cold —
+producing a ~70 ms first-file penalty per daemon request that the
+RESULTS.md acknowledged but had no fix for.  The cache makes the
+hot path mostly Fisher-Yates-free: the daemon pays its
+ALIAS_COUNT_WIRE rebuilds once per host-epoch rotation and serves
+from cache afterwards.
+
+### Refreshed next-session priorities
+
+Ordered by leverage.  Items requiring operator review are called
+out so an autonomous-session bot does not silently build on a
+contested design.
+
+1. **Adversarial-LLM re-test of L2+L3+L4+L5+L6+L12.**  Carried over
+   from 2026-06-26 (day).  Needs adversary infrastructure
+   (claude-cli or API).  NOT autonomous — operator must supply API
+   keys and approve the run.
+2. **Layer 11 — defensive prompt injection.**  Carried over from
+   2026-06-26 (day).  Operator opt-in default ON per
+   `docs/v2/obfuscation-landscape.md §4`.  Vendoring + license
+   check + disclaimer copy require operator review.
+3. **Corpus-lifecycle seccomp.**  `CorpusOptions.no_seccomp` is
+   still `#[allow(dead_code)]`.  The 2026-06-26 (day) v2.1 design
+   sketch (batch-prefetch all token mappings before the walk,
+   install seccomp, then process) is unchanged; the new
+   `PermutationCache` does not change the analysis because the
+   daemon is the cache owner, not the CLI.  Operator review
+   recommended.
+4. **`MappingBuilder::clear_cache_on_lock` hook (defensive).**  If
+   the lock state machine ever gains a re-Lock transition (filed
+   for phase 4+ in `state.rs`), the daemon should `clear()` the
+   `permutation_cache` on entering Locked so derived bytes don't
+   linger past zeroize.  Today's daemon refuses re-unlock-after-
+   unlock, so the cache is consistent for the daemon's lifetime;
+   this is a defensive note, not an in-scope task.
+5. **`MappingBuilder` rebuild-on-rotate.**  `rotate()` currently
+   calls `MappingBuilder::new` (cacheless).  The new epoch's
+   permutations would also benefit if rotate used `with_cache` —
+   but the rotate path is per-host-epoch (not per-request), so the
+   savings are marginal.  Filed at the bottom because it's low
+   leverage.
+
+### Process notes for next autonomous session
+
+- The cache is **opt-in**.  Existing call sites pay zero overhead
+  until they migrate.  Adding a layer L13 follows the same shape:
+  layer modules + composition in `v2-babbleon-preprocessor`;
+  daemon I/O + operator I/O in the calling crate.  Cache plumbing
+  is a daemon concern, not a preprocessor concern.
+- When measuring future perf changes, run `--mode full
+  --cache-capacity 8` for the production-path number and
+  `--cache-capacity 0` for the cold-rebuild number so deltas are
+  bisectable to the layer doing the work.
+- `cargo test --workspace` is still forbidden per `CLAUDE.md §4`.
+  Pass each `v2-` crate explicitly with `-p`.
 
 ---
 

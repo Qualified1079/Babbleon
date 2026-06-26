@@ -135,6 +135,18 @@ Daemon protocol: `GetWhitespaceCompounds` (one call per session) +
 `TokenMapping { epoch, aliases: Vec<Vec<String>> }` where
 `aliases[token_idx][alias_idx]` is one of `ALIAS_COUNT` compounds.
 
+L2 permutation cache:
+`crates/v2-babbleon-core/src/permutation_cache.rs` provides a small
+LRU keyed by `(epoch, purpose)`.  `MappingBuilder::with_cache`
+opts in; cache hits skip the ~35 ms Fisher-Yates pass per
+`Permutation`.  `DaemonState` owns one cache (default capacity 8 =
+`ALIAS_COUNT_WIRE * 2 + slack`) and consumes it from
+`token_mapping`; the preprocessor-benchmark `--mode full` accepts
+`--cache-capacity` (`0` disables).  Without the cache, a 1000-file
+corpus scramble paid ~70 s of avoidable rebuilds; with it, ~1.2 s.
+See `tools/preprocessor-benchmark/RESULTS.md` (2026-06-26 night
+section) for the cached vs uncached numbers.
+
 L4/L5 are seeded by the same epoch as the L2 mapping so the
 unscrambler can re-derive identical shuffle and decoy positions
 deterministically.
