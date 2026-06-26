@@ -96,7 +96,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use babbleon_core_v2::{
     build_activated_table_from_mapping, EpochMapping, MappingBuilder,
-    PerHostSecret, Wordlist,
+    PerHostSecret, PermutationCache, Wordlist,
 };
 
 use crate::errors::{Error, Result};
@@ -139,6 +139,15 @@ enum SecretState {
 pub struct DaemonState {
     config: DaemonConfig,
     secret_state: SecretState,
+    /// LRU cache for [`Permutation`]s consumed by the
+    /// `MappingBuilder` hot path ([`Self::token_mapping`]).  Sized
+    /// to the production daemon's worst-case fan-out
+    /// (`ALIAS_COUNT_WIRE` virtual epochs x identifier + honey).
+    /// Cleared on any state transition that could change the
+    /// per-host secret; today only `unlock` does that, and it
+    /// refuses re-unlock without a daemon restart so a fresh cache
+    /// at construction is always consistent.
+    permutation_cache: PermutationCache,
 }
 
 impl DaemonState {
@@ -168,6 +177,7 @@ impl DaemonState {
         Ok(Self {
             config,
             secret_state: SecretState::Locked,
+            permutation_cache: PermutationCache::with_default_capacity(),
         })
     }
 
@@ -200,6 +210,7 @@ impl DaemonState {
         Ok(Self {
             config,
             secret_state: unlocked,
+            permutation_cache: PermutationCache::with_default_capacity(),
         })
     }
 
@@ -226,6 +237,7 @@ impl DaemonState {
         Ok(Self {
             config,
             secret_state: unlocked,
+            permutation_cache: PermutationCache::with_default_capacity(),
         })
     }
 
@@ -559,7 +571,12 @@ impl DaemonState {
         use babbleon_core_v2::mapping::MappingBuilder;
         use babbleon_daemon_protocol_v2::ALIAS_COUNT_WIRE;
         let wl = self.config.wordlist;
-        let builder = MappingBuilder::new(secret, wl);
+        // Cache-backed builder: each (virtual_epoch, purpose) pair
+        // is built once per daemon lifetime; subsequent requests at
+        // the same epoch hit the cache and skip the ~35 ms Fisher-
+        // Yates pass.  See `DaemonState::permutation_cache`.
+        let builder =
+            MappingBuilder::with_cache(secret, wl, &self.permutation_cache);
         // ALIAS_COUNT_WIRE aliases per token, using virtual epochs so
         // each alias is derived independently.
         let base = epoch.saturating_mul(ALIAS_COUNT_WIRE as u64);
@@ -1044,6 +1061,7 @@ mod tests {
             Ok(Self {
                 config,
                 secret_state: SecretState::Locked,
+                permutation_cache: PermutationCache::with_default_capacity(),
             })
         }
     }
@@ -1336,6 +1354,61 @@ mod tests {
                 mapping.unscramble(compound).expect("unscramble must succeed");
             assert_eq!(recovered, tok.as_str());
         }
+    }
+
+    #[test]
+    fn token_mapping_repeats_warm_the_permutation_cache() {
+        // Property: the daemon's `permutation_cache` field is
+        // exercised by `token_mapping`.  After the first call the
+        // cache holds ALIAS_COUNT_WIRE * 2 entries (identifier +
+        // honey per virtual epoch); a second call at the same
+        // host-epoch hits without growing the cache.
+        use babbleon_daemon_protocol_v2::ALIAS_COUNT_WIRE;
+        let s = build_state(tracked(), "/wrappers");
+        assert!(s.permutation_cache.is_empty());
+        let tokens = vec!["alpha".to_string(), "beta".to_string()];
+        let (_, first) = s.token_mapping(&tokens).unwrap();
+        // ALIAS_COUNT_WIRE distinct virtual epochs * (identifier + honey).
+        assert_eq!(s.permutation_cache.len(), ALIAS_COUNT_WIRE * 2);
+
+        let (_, second) = s.token_mapping(&tokens).unwrap();
+        // Repeat call: cache stays the same size; outputs identical.
+        assert_eq!(s.permutation_cache.len(), ALIAS_COUNT_WIRE * 2);
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn token_mapping_after_rotation_keeps_results_correct() {
+        // Property: rotation changes the host-epoch and therefore
+        // the virtual epochs used by `token_mapping`.  The cache
+        // happily co-exists with old + new entries (LRU eviction
+        // under the DEFAULT_CAPACITY limit), and every call still
+        // returns the correct fresh mapping (no stale-data
+        // bleed-through).
+        use babbleon_preprocessor_v2::identifier_scrambler::IdentifierMapping;
+        let mut s = build_state(tracked(), "/wrappers");
+        let tokens = vec!["gamma".to_string()];
+
+        let (_, a0) = s.token_mapping(&tokens).unwrap();
+        s.rotate().unwrap();
+        let (e1, a1) = s.token_mapping(&tokens).unwrap();
+        s.rotate().unwrap();
+        let (e2, a2) = s.token_mapping(&tokens).unwrap();
+
+        assert_ne!(a0, a1, "rotation must change the alias set");
+        assert_ne!(a1, a2, "rotation must change the alias set");
+
+        // Cached-mapping outputs are still recoverable round-trip.
+        let m1 =
+            IdentifierMapping::from_tokens_and_aliases(tokens.clone(), e1, a1)
+                .unwrap();
+        let m2 =
+            IdentifierMapping::from_tokens_and_aliases(tokens.clone(), e2, a2)
+                .unwrap();
+        let c1 = m1.scramble("gamma", 0).unwrap();
+        assert_eq!(m1.unscramble(c1).unwrap(), "gamma");
+        let c2 = m2.scramble("gamma", 0).unwrap();
+        assert_eq!(m2.unscramble(c2).unwrap(), "gamma");
     }
 
     // -----------------------------------------------------------
