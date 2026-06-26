@@ -39,19 +39,30 @@
 //! 2. **Read scrambled bytes** from the script path (argv[1]).  No
 //!    daemon traffic yet; if the file does not exist the shim fails
 //!    here without bothering the daemon.
-//! 3. **Fetch compounds** via `Request::GetWhitespaceCompounds`
-//!    round-trip against the daemon's Unix socket.
-//! 4. **Unscramble** in-memory via
-//!    `babbleon_preprocessor_v2::unscrambler::unscramble`.
-//! 5. **Spawn `python3 -`** with stdin piped, stdout/stderr inherited
+//! 3. **Drive the full unscramble pipeline** via
+//!    `pipeline::unscramble_full`.  Internally:
+//!    - parse the scrambled-file header
+//!      (`babbleon_preprocessor_v2::file_format::decode`) for
+//!      version / epoch / sorted-token list / body,
+//!    - round-trip `Request::GetWhitespaceCompounds` for L3,
+//!    - round-trip `Request::GetTokenMapping` (pinned to the
+//!      header's epoch) for L2,
+//!    - apply L12⁻¹ → L6⁻¹ → L3⁻¹ → L2⁻¹ → L5⁻¹ → L4⁻¹ →
+//!      `tokens_to_source` via
+//!      `babbleon_preprocessor_v2::pipeline::unscramble_pipeline`.
+//!    The same composition the `babbleon scramble`/`unscramble` CLI
+//!    and the `scramble-dir`/`unscramble-dir` batch CLI use; all
+//!    three consumers share the layer order via the preprocessor's
+//!    pipeline module.
+//! 4. **Spawn `python3 -`** with stdin piped, stdout/stderr inherited
 //!    so script output passes through to the operator's terminal.
-//! 6. **Feed the source** to the child's stdin, close stdin so
+//! 5. **Feed the source** to the child's stdin, close stdin so
 //!    Python sees EOF.
-//! 7. **Wait** and exit with the child's exit status.
+//! 6. **Wait** and exit with the child's exit status.
 //!
-//! Steps 4-7 keep the unscrambled source in a `Vec<u8>` on the
-//! shim's stack and on the pipe buffer; no `tmpfile`, no `/dev/shm`,
-//! no `memfd_create`.
+//! Steps 3-6 keep the unscrambled source in a `String` on the shim's
+//! stack and on the pipe buffer; no `tmpfile`, no `/dev/shm`, no
+//! `memfd_create`.
 //!
 //! # Security baseline
 //!
