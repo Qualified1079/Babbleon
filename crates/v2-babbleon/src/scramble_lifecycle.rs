@@ -89,6 +89,10 @@ pub struct ScrambleOptions {
     pub output: OutputSink,
     /// Daemon socket path.
     pub socket_path: PathBuf,
+    /// If true, skip installing the seccomp allowlist after the daemon
+    /// round-trip.  Default (false) is to install; only skip for
+    /// debugging with `--no-seccomp`.
+    pub no_seccomp: bool,
 }
 
 /// Where the operator's source bytes come from.
@@ -113,7 +117,7 @@ pub enum OutputSink {
 ///
 /// I/O, daemon, or scramble failures wrapped in `anyhow::Error`.
 pub fn run_scramble(opts: ScrambleOptions) -> Result<()> {
-    let ScrambleOptions { input, output, socket_path } = opts;
+    let ScrambleOptions { input, output, socket_path, no_seccomp } = opts;
     let source = read_input(&input)?;
 
     // Tokenize for structure (L3) and collect unique tokens (L2).
@@ -139,6 +143,10 @@ pub fn run_scramble(opts: ScrambleOptions) -> Result<()> {
         pre_mapping.epoch,
     )?;
 
+    // All daemon socket calls are done.  Install the seccomp filter
+    // now — the computation below is pure CPU + file I/O.
+    install_seccomp(no_seccomp)?;
+
     // L2 in-place: replace each token body with its alias compound.
     scramble_identifiers(&mut tokens, &id_mapping);
 
@@ -157,7 +165,7 @@ pub fn run_scramble(opts: ScrambleOptions) -> Result<()> {
 ///
 /// I/O, daemon, header-parse, or unscramble failures.
 pub fn run_unscramble(opts: ScrambleOptions) -> Result<()> {
-    let ScrambleOptions { input, output, socket_path } = opts;
+    let ScrambleOptions { input, output, socket_path, no_seccomp } = opts;
     let raw = read_input(&input)?;
 
     // Parse header to recover epoch + token list.
@@ -171,6 +179,10 @@ pub fn run_unscramble(opts: ScrambleOptions) -> Result<()> {
         epoch,
     )?;
     let wl = fetch_whitespace_wordlist(&socket_path)?;
+
+    // All daemon socket calls are done.  Install the seccomp filter
+    // before the computation begins.
+    install_seccomp(no_seccomp)?;
 
     // L3 unscramble: body → token stream.
     let mut tokens = unscramble_to_tokens(&body, &wl);
@@ -386,6 +398,30 @@ fn fetch_identifier_mapping_at_epoch(
         ));
     }
     Ok(mapping)
+}
+
+/// Install the seccomp filter unless `no_seccomp` is true.
+///
+/// On non-Linux targets the filter is unavailable; the function
+/// succeeds silently (no filter installed).  On Linux this calls
+/// `seccomp_profile::apply()` and returns any error.
+///
+/// When `no_seccomp` is true the function prints a warning to stderr
+/// and returns `Ok(())` — the caller continues unfiltered.
+fn install_seccomp(no_seccomp: bool) -> Result<()> {
+    if no_seccomp {
+        eprintln!(
+            "babbleon: WARNING: seccomp filter NOT installed (--no-seccomp). \
+             Do NOT use in production.",
+        );
+        return Ok(());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        crate::seccomp_profile::apply()
+            .context("seccomp filter install failed")?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

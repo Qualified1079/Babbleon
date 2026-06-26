@@ -51,3 +51,10 @@ rpassword = { workspace = true }
 zeroize = { workspace = true }
 # RNG for fresh-secret generation during `babbleon init`.
 rand = { workspace = true }
+# Seccomp filter for the scramble/unscramble path (Linux only).
+# Only linked on Linux; the #[cfg(target_os = "linux")] gate in
+# seccomp_profile.rs keeps the dependency inert on other targets.
+[target.'cfg(target_os = "linux")'.dependencies]
+nix = { workspace = true }
+libc = { workspace = true }
+seccompiler = { workspace = true }

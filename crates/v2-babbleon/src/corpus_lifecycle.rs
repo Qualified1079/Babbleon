@@ -81,6 +81,16 @@ pub struct CorpusOptions {
     pub allow_overwrite: bool,
     /// Daemon socket path.
     pub socket_path: PathBuf,
+    /// Reserved.  seccomp is NOT currently installed by the corpus
+    /// dir subcommands because `GetTokenMapping` is called per-file
+    /// inside the walk closure, and installing seccomp before the
+    /// walk would deny the `socket`+`connect` calls those round-trips
+    /// need.  v2.1 will restructure to batch-fetch all token mappings
+    /// before the walk, enabling seccomp install before computation.
+    /// The field is present so call sites have a consistent API with
+    /// `ScrambleOptions`.
+    #[allow(dead_code)]
+    pub no_seccomp: bool,
 }
 
 /// Result counters reported on stdout.
@@ -111,6 +121,7 @@ pub fn run_scramble_dir(opts: CorpusOptions) -> Result<CorpusReport> {
         output_dir,
         allow_overwrite,
         socket_path,
+        no_seccomp: _,
     } = opts;
     validate_input_dir(&input_dir)?;
     prepare_output_dir(&output_dir, allow_overwrite)?;
@@ -167,6 +178,7 @@ pub fn run_unscramble_dir(opts: CorpusOptions) -> Result<CorpusReport> {
         output_dir,
         allow_overwrite,
         socket_path,
+        no_seccomp: _,
     } = opts;
     validate_input_dir(&input_dir)?;
     prepare_output_dir(&output_dir, allow_overwrite)?;

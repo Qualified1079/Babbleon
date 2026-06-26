@@ -34,6 +34,8 @@ mod corpus_lifecycle;
 mod enroll;
 mod passphrase;
 mod scramble_lifecycle;
+#[cfg(target_os = "linux")]
+mod seccomp_profile;
 mod vault_lifecycle;
 
 use std::path::PathBuf;
@@ -91,6 +93,15 @@ struct Cli {
     /// passphrase would echo).
     #[arg(long = "passphrase-stdin", global = true)]
     passphrase_stdin: bool,
+
+    /// Skip the seccomp syscall filter on the scramble / unscramble
+    /// path.  Default is ON (filter installs after the daemon socket
+    /// round-trip, before computation).  Pass this flag when
+    /// iterating on a code path that emits a syscall not yet on the
+    /// allowlist — the CLI prints a warning to stderr and continues
+    /// unfiltered.  Do NOT use in production.
+    #[arg(long = "no-seccomp", global = true)]
+    no_seccomp: bool,
 
     #[command(subcommand)]
     cmd: Cmd,
@@ -273,11 +284,13 @@ fn main() -> ExitCode {
             input: input_source_from(input),
             output: output_sink_from(output),
             socket_path: socket_path.clone(),
+            no_seccomp: cli.no_seccomp,
         }),
         Cmd::Unscramble { input, output } => run_unscramble(ScrambleOptions {
             input: input_source_from(input),
             output: output_sink_from(output),
             socket_path: socket_path.clone(),
+            no_seccomp: cli.no_seccomp,
         }),
         Cmd::ScrambleDir {
             input_dir,
@@ -288,6 +301,7 @@ fn main() -> ExitCode {
             output_dir,
             allow_overwrite: force,
             socket_path: socket_path.clone(),
+            no_seccomp: cli.no_seccomp,
         })
         .map(print_corpus_report),
         Cmd::UnscrambleDir {
@@ -299,6 +313,7 @@ fn main() -> ExitCode {
             output_dir,
             allow_overwrite: force,
             socket_path: socket_path.clone(),
+            no_seccomp: cli.no_seccomp,
         })
         .map(print_corpus_report),
     };
