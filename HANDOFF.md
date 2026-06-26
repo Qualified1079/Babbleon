@@ -22,11 +22,202 @@ Branch (push target): `claude/magical-turing-mele8c` (operator
 intends to rename to `v1-maintenance` out-of-band; until that
 lands, push here)
 
-Date: 2026-06-24 (user-asleep session — claude-opus-4-7)
+Date: 2026-06-25 (user-asleep session — claude-opus-4-7)
 
-Last commit before this handoff section: `ccce370` —
-feat(bench): --sandbox-parent-dir CLI flag for run + run-matrix
-(Blocker 1 CLI).
+Last commit before this handoff section: `ec7b215` —
+feat(v2-preprocessor): land layer 6 — direction segment reversal.
+
+---
+
+## 2026-06-25 — sleeping-operator: L6 (direction reversal) + L12 (tokenizer noise) land
+
+Author: Claude Opus 4.7 (autonomous overnight continuation).
+Branch: `claude/magical-turing-mele8c`.  2 commits, both
+green-tests + clippy-clean, no new workspace deps.
+
+### Entry state
+
+Branch tip on entry was `b6b988b` — "feat(v2-preprocessor): add
+L4 chunk reorder + L5 decoy injection", from the previous
+sleeping-operator block.  Workspace built clean; full v2 test
+suite (142 + 23 + 5 + 1 + 6 + 5 = 182 tests across preprocessor,
+bench, daemon, v2-babbleon) passed.
+
+The 2026-06-24 HANDOFF priorities had been advanced in the
+intervening session:
+
+| 2026-06-24 priority | State at entry |
+|---|---|
+| 1. Wire production layer-7 into scramble pipeline | Superseded by `f5d5bfb` — the Python-specific L2/L7 collapsed into the dynamic L2 identifier scrambler.  Layer-7 module shape is preserved for secret-literal substitution if operators ever re-enable a Python-specific path. |
+| 2. Implement remaining literal-free challenges | 1 of 3 closed: `which-keyword-controls-flow` landed in `49f117c` + `32f2a48` (SuccessPredicate::KeywordMatch).  `which-function-authenticates` still owed. |
+| 3. Bench-hygiene metadata | CLOSED in `25eeda4` (RunRecord fields). |
+| 4. N≥5 CI gate | CLOSED in `c35b7c8` (--min-attempts on summary). |
+| 5. Re-classify the operator-scramble-rerun JSONLs | NOT done — low value per CORRECTIONS.md. |
+
+### Net commits this session: 2
+
+| # | Hash | Subject |
+|---|---|---|
+| 1 | `cdcf853` | feat(v2-preprocessor): land layer 12 — tokenizer-hostile noise |
+| 2 | `ec7b215` | feat(v2-preprocessor): land layer 6 — direction segment reversal |
+
+### Commit 1 — Layer 12 (tokenizer-hostile noise)
+
+`crates/v2-babbleon-preprocessor/src/tokenizer_noise.rs` —
+body-bytes-only perturbation that runs LAST on scramble and FIRST
+on unscramble.  Two passes share one per-epoch xorshift64 PRNG
+seeded with constants statistically independent from L4/L5/L6:
+
+- **Zero-width injection.**  ZWSP (U+200B), ZWNJ (U+200C), ZWJ
+  (U+200D) inserted at ~1 per `ZERO_WIDTH_PERIOD=4` body chars.
+  Each codepoint is 3 UTF-8 bytes; every mainstream BPE tokenizer
+  (cl100k, o200k, Llama-3, Qwen) segments them as their own
+  one-token unit — multi-x prompt-token inflation in the limit.
+- **Cyrillic homoglyph substitution.**  Latin `a c e i o p x y`
+  swapped for U+0430/0441/0435/0456/043E/0440/0445/0443 on a
+  ~1/`HOMOGLYPH_PERIOD=3` PRNG draw.  Same visual glyph, two UTF-8
+  bytes each, breaks every BPE merge spanning the substituted
+  position.
+
+`strip_noise` is **content-based** — no epoch needed.  Walks
+chars, drops zero-widths, reverses every known homoglyph back to
+ASCII.  Idempotent on a clean body, so older pre-L12 files
+unscramble correctly under the new pipeline (back-compat).
+
+Wired into `scramble_lifecycle.rs` (per-file CLI) and
+`corpus_lifecycle.rs` (batch dir).  L12 operates on the L3 body
+bytes only — the header (potentially-non-ASCII original token
+list) round-trips byte-for-byte.
+
+Tests: 16 unit tests + 2 integration tests
+(`l12_noise_survives_full_pipeline_round_trip`,
+`l12_strip_is_back_compat_for_pre_l12_files`).
+
+### Commit 2 — Layer 6 (direction segment reversal)
+
+`crates/v2-babbleon-preprocessor/src/direction_reversal.rs` —
+per-epoch reversal of variable-length char chunks of the body.
+
+Algorithm (single xorshift64 PRNG seeded with L6-specific
+constants):
+
+1. Sample chunk size uniformly in `[16, 48]` chars.
+2. Sample reverse decision as a fair coin.
+3. Reverse the chunk or leave it; append to output.
+4. Loop until body exhausted.
+
+Inverse — `unreverse_chunks` is **literally `reverse_chunks` with
+the same epoch**.  Reversal is involutive; the PRNG reproduces
+the same `(chunk_size, reverse_decision)` sequence on both passes.
+
+Operates on chars (not bytes) so it is UTF-8-safe.  In scramble
+direction L6 runs between L3 and L12 so its input is pure ASCII;
+in unscramble direction L6 runs after L12 strip so its input is
+again pure ASCII.
+
+Wired into `scramble_lifecycle.rs` and `corpus_lifecycle.rs`
+between L3 and L12.
+
+Marker-wordlist variant from the original
+`docs/v2/obfuscation-landscape.md` §"Logical direction scramble"
+is deferred: the deterministic-PRNG variant requires no in-stream
+markers, so the marker-as-target attack surface is moot.  An
+attacker who knows the epoch trivially undoes L6 (same threat
+boundary as L12); epoch secrecy comes from the daemon never
+leaving the trusted tier.
+
+Tests: 10 unit tests + 2 integration tests
+(`l6_reverses_chunks_and_round_trips_executable_python`,
+`l6_then_l12_compose_and_invert_in_correct_order`).
+
+### Updated v2 preprocessor pipeline state
+
+Per `CLAUDE.md §4.5` and `README.md`:
+
+- Scramble: tokenize → L4 → L5 → L2 → L3 → **L6** → **L12** → write
+- Unscramble: read → **L12⁻¹** → **L6⁻¹** → L3⁻¹ → L2⁻¹ → L5⁻¹ → L4⁻¹ → emit
+
+Six layers now compose in the production lifecycle.
+
+### Stats
+
+| Metric | Before this session | After | Δ |
+|---|---|---|---|
+| v2-babbleon-preprocessor lib tests | 126 | 152 | +26 |
+| v2-babbleon-preprocessor integ tests | 7 | 9 | +2 |
+| New preprocessor source modules | 0 | 2 | +2 |
+| New workspace deps | 0 | 0 | 0 |
+| `forbid(unsafe_code)` violations | 0 | 0 | 0 |
+
+### Back-compat caveat
+
+L6 is NOT back-compat for files scrambled before this session.
+Operators have two options:
+
+1. Re-scramble: `babbleon scramble-dir --force <new>` over the
+   existing tree.
+2. Pin the unscrambler to a pre-L6 binary (commit `cdcf853` or
+   earlier) for the legacy tree.
+
+CLAUDE.md §4.5 documents this explicitly.  L12 alone is
+back-compat (content-based strip is idempotent on clean ASCII).
+
+### Refreshed next-session priorities
+
+Ordered by leverage; items that need operator review are called
+out so an autonomous-session bot does not silently build on a
+contested design.
+
+1. **Header version field (~50 LOC).** Add a `layers: l4,l5,l2,l3,l6,l12`
+   or `format-version: 3` field to the scrambled-file header so
+   the unscrambler can detect pre-L6 files and skip the L6
+   inverse.  This restores back-compat without forcing a
+   re-scramble.  Touches `scramble_lifecycle.rs::encode_scrambled_file`
+   + `decode_scrambled_file` + a version constant.  Pure
+   hygiene; no operator review needed.
+2. **Bench coverage for L6 + L12.**
+   `v2-babbleon-resilience-bench::LayerConfig` does not yet have
+   `layer6_direction_reversal` / `layer12_tokenizer_noise` flags.
+   Without those, the bench's crack-fraction numbers cannot
+   attribute changes to L6 vs L12 vs the rest of the pipeline.
+   Touches `layer_config.rs` (two bool fields + two presets),
+   `scramble_pipeline.rs` (apply L6 + L12 when set), the CLI
+   variant enum, and the seed challenges.  ~200 LOC.
+3. **Adversarial-LLM re-test of L2+L3+L4+L5+L6+L12.**  TODO.md
+   phase-3 open item.  Needs adversary infrastructure (claude-cli
+   or API).  NOT an autonomous-session task — the operator has
+   to supply API keys and approve the run.
+4. **Preprocessor seccomp profile.**  TODO.md phase-3 open item.
+   The preprocessor binary needs a seccomp filter that denies
+   socket / mount / ptrace family per the security baseline.
+   Pure-Rust pattern is already established by the daemon
+   binary; copy with the preprocessor's syscall list.  Operator
+   review recommended for the syscall allow-list.
+5. **Layer 11 — defensive prompt injection.**  Operator opt-in
+   default ON per `docs/v2/obfuscation-landscape.md §4`.
+   Requires vendoring the garak prompt-injection payload corpus
+   (Apache 2.0; license-check OK), a per-epoch random selection
+   strategy, and a clear disclaimer that source files now
+   contain adversarial prompts that may upset CI lint / AI code
+   review tooling.  ~400 LOC.  Operator review needed on the
+   default-ON decision and the disclaimer copy.
+
+### Process notes for next autonomous session
+
+The 2026-06-24 process note ("always run `cargo build -p
+<touched-crate>` immediately after `git checkout` to confirm the
+working tree compiles") was followed in this session and caught
+nothing — the entry tip built clean.  Keep the habit.
+
+The dynamic identifier scrambler from `f5d5bfb` is a significant
+architectural change since the 2026-06-22 design docs.  Future
+sessions reading the older Python-specific tokenizer docs
+(`docs/v2/dynamic-keywords.md`, etc.) should note that the
+"keyword" and "operator" wordlists are GONE in production —
+every whitespace-delimited token is now a single L2 entry with
+`ALIAS_COUNT=3` aliases.  The design docs have NOT been updated
+to reflect this; that's a doc-debt item for an operator-reviewed
+session.
 
 ---
 

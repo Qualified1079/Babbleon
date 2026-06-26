@@ -36,13 +36,18 @@
 //!
 //! 1. Read source bytes (UTF-8) from FILE or stdin.
 //! 2. `python_tokenizer::tokenize` → `Vec<Token>`.
-//! 3. `collect_unique_tokens` → sorted unique token list.
-//! 4. Round-trip `Request::GetTokenMapping` against the daemon to
+//! 3. `scramble_chunks` (L4, position markers + per-epoch shuffle).
+//! 4. `inject_decoys` (L5, depth-0 decoy injection).
+//! 5. `collect_unique_tokens` → sorted unique token list.
+//! 6. Round-trip `Request::GetTokenMapping` against the daemon to
 //!    get per-token aliases.
-//! 5. `scramble_identifiers` (L2, in-place).
-//! 6. Also round-trip `Request::GetWhitespaceCompounds` (L3).
-//! 7. `scrambler::scramble` (L3, token-stream-to-bytes).
-//! 8. Prepend header; write to OUTPUT or stdout.
+//! 7. `scramble_identifiers` (L2, in-place).
+//! 8. Round-trip `Request::GetWhitespaceCompounds` (L3).
+//! 9. `scrambler::scramble` (L3, token-stream-to-bytes).
+//! 10. `reverse_chunks` (L6, per-epoch direction reversal of body
+//!     char-chunks).
+//! 11. `inject_noise` (L12, tokenizer-hostile noise on body bytes).
+//! 12. Prepend header; write to OUTPUT or stdout.
 //!
 //! `unscramble`:
 //!
@@ -50,10 +55,16 @@
 //! 2. Round-trip `Request::GetTokenMapping` with the header's
 //!    token list → same mapping (deterministic from secret+epoch).
 //! 3. Round-trip `Request::GetWhitespaceCompounds`.
-//! 4. `unscrambler::unscramble_to_tokens` (L3).
-//! 5. `unscramble_identifiers` (L2).
-//! 6. `unscrambler::tokens_to_source`.
-//! 7. Write to OUTPUT or stdout.
+//! 4. `strip_noise` (L12, content-based zero-width + homoglyph
+//!    removal — idempotent for back-compat).
+//! 5. `unreverse_chunks` (L6, re-applies same per-epoch reversal
+//!    pattern since reversal is involutive).
+//! 6. `unscrambler::unscramble_to_tokens` (L3).
+//! 7. `unscramble_identifiers` (L2).
+//! 8. `strip_decoys` (L5).
+//! 9. `unscramble_chunks` (L4).
+//! 10. `unscrambler::tokens_to_source`.
+//! 11. Write to OUTPUT or stdout.
 
 use std::fs;
 use std::io::{self, Read, Write};
@@ -64,12 +75,14 @@ use anyhow::{anyhow, Context, Result};
 use babbleon_daemon_protocol_v2::{round_trip, Request, Response};
 use babbleon_preprocessor_v2::chunk_reorder::{scramble_chunks, unscramble_chunks};
 use babbleon_preprocessor_v2::decoy_injection::{inject_decoys, strip_decoys};
+use babbleon_preprocessor_v2::direction_reversal::{reverse_chunks, unreverse_chunks};
 use babbleon_preprocessor_v2::identifier_scrambler::{
     collect_unique_tokens, scramble_identifiers, unscramble_identifiers,
     IdentifierMapping,
 };
 use babbleon_preprocessor_v2::python_tokenizer::tokenize;
 use babbleon_preprocessor_v2::scrambler::scramble;
+use babbleon_preprocessor_v2::tokenizer_noise::{inject_noise, strip_noise};
 use babbleon_preprocessor_v2::unscrambler::{
     tokens_to_source, unscramble_to_tokens,
 };
@@ -79,6 +92,29 @@ use babbleon_preprocessor_v2::WhitespaceWordlist;
 const HEADER_MAGIC: &str = "babbleon-v2";
 /// Separator between the header and the L3 scrambled body.
 const HEADER_SEP: &str = "---";
+
+/// Scrambled-file format version the current scrambler emits.
+///
+/// Stamped into the header as `version:<N>`.  The unscrambler reads
+/// this to know which optional layers to apply on the inverse side.
+///
+/// History:
+///
+/// - **0** — legacy.  L4 (chunk reorder) + L5 (decoy injection) +
+///   L2 (identifier scramble) + L3 (whitespace-as-words).  Pre-L6
+///   and pre-L12 files lacked an explicit `version` line; the
+///   reader infers version 0 from the missing line.
+/// - **1** — current.  Adds **L6** (direction segment reversal,
+///   per-epoch xorshift) and **L12** (zero-width + Cyrillic-
+///   homoglyph noise on body bytes).  Files at version 1 carry the
+///   explicit `version:1` header line; unscramble applies L6
+///   inverse and L12 strip in addition to the legacy inverses.
+pub const FORMAT_VERSION_LATEST: u32 = 1;
+
+/// Legacy format version (pre-L6, pre-L12).  The scrambler never
+/// emits this; the reader infers it when the `version` header line
+/// is absent.
+pub const FORMAT_VERSION_LEGACY: u32 = 0;
 
 /// Operator-supplied options for the `scramble` and `unscramble`
 /// subcommands.
@@ -153,8 +189,19 @@ pub fn run_scramble(opts: ScrambleOptions) -> Result<()> {
     // L3: whitespace markers → compounds.
     let body = scramble(&tokens, &wl).with_context(|| "scramble L3")?;
 
+    // L6: per-epoch direction reversal of variable-length char
+    // chunks.  Runs while the body is still pure ASCII so the
+    // char-based reversal stays simple; the inverse re-applies the
+    // same per-epoch pattern (reversal is involutive).
+    let reversed_body = reverse_chunks(&body, id_mapping.epoch);
+
+    // L12: tokenizer-hostile noise injection on the body bytes.
+    // Operates after L6 so the header (which holds the token list,
+    // potentially non-ASCII) round-trips byte-for-byte.
+    let noisy_body = inject_noise(&reversed_body, id_mapping.epoch);
+
     // Encode file: header + body.
-    let out = encode_scrambled_file(id_mapping.epoch, &unique_tokens, &body);
+    let out = encode_scrambled_file(id_mapping.epoch, &unique_tokens, &noisy_body);
     write_output(&output, out.as_bytes())?;
     Ok(())
 }
@@ -168,8 +215,8 @@ pub fn run_unscramble(opts: ScrambleOptions) -> Result<()> {
     let ScrambleOptions { input, output, socket_path, no_seccomp } = opts;
     let raw = read_input(&input)?;
 
-    // Parse header to recover epoch + token list.
-    let (epoch, sorted_tokens, body) = decode_scrambled_file(&raw)
+    // Parse header to recover (version, epoch, token list).
+    let (version, epoch, sorted_tokens, body) = decode_scrambled_file(&raw)
         .with_context(|| "parse scrambled-file header")?;
 
     // Re-derive the identifier mapping from the same inputs.
@@ -183,6 +230,22 @@ pub fn run_unscramble(opts: ScrambleOptions) -> Result<()> {
     // All daemon socket calls are done.  Install the seccomp filter
     // before the computation begins.
     install_seccomp(no_seccomp)?;
+
+    // L12 inverse: strip tokenizer-hostile noise from the body BEFORE
+    // L3's greedy prefix match.  Content-based and idempotent on a
+    // clean body — safe to run unconditionally (v0 files have no
+    // noise; the strip is a no-op).
+    let body = strip_noise(&body);
+
+    // L6 inverse: undo the per-epoch direction reversal.  GATED on
+    // version: v0 files were scrambled before L6 landed and never
+    // had their chunks reversed, so applying the inverse would
+    // corrupt them.  v1+ files get the inverse applied.
+    let body = if version >= 1 {
+        unreverse_chunks(&body, id_mapping.epoch)
+    } else {
+        body
+    };
 
     // L3 unscramble: body → token stream.
     let mut tokens = unscramble_to_tokens(&body, &wl);
@@ -202,32 +265,76 @@ pub fn run_unscramble(opts: ScrambleOptions) -> Result<()> {
     Ok(())
 }
 
-/// Encode a scrambled file: 4-line header followed by the body.
+/// Encode a scrambled file using the latest format version.
+///
+/// The header is five lines:
+///
+/// ```text
+/// babbleon-v2
+/// version:1
+/// epoch:<N>
+/// tokens:<tab-separated sorted unique tokens>
+/// ---
+/// <body bytes>
+/// ```
+///
+/// The reader accepts either this layout or the legacy 4-line
+/// layout (no `version` line); see [`decode_scrambled_file`].
 pub(crate) fn encode_scrambled_file(
     epoch: u64,
     sorted_tokens: &[String],
     body: &str,
 ) -> String {
+    encode_scrambled_file_versioned(FORMAT_VERSION_LATEST, epoch, sorted_tokens, body)
+}
+
+/// Encode at an explicit format version.  Test-friendly entry point;
+/// production callers use [`encode_scrambled_file`].
+pub(crate) fn encode_scrambled_file_versioned(
+    version: u32,
+    epoch: u64,
+    sorted_tokens: &[String],
+    body: &str,
+) -> String {
     let tokens_line = sorted_tokens.join("\t");
-    format!("{HEADER_MAGIC}\nepoch:{epoch}\ntokens:{tokens_line}\n{HEADER_SEP}\n{body}")
+    if version == FORMAT_VERSION_LEGACY {
+        // The legacy reader expects no `version` line; emit the
+        // 4-line layout so a v0 file round-trips byte-identical.
+        format!("{HEADER_MAGIC}\nepoch:{epoch}\ntokens:{tokens_line}\n{HEADER_SEP}\n{body}")
+    } else {
+        format!(
+            "{HEADER_MAGIC}\nversion:{version}\nepoch:{epoch}\ntokens:{tokens_line}\n{HEADER_SEP}\n{body}"
+        )
+    }
 }
 
 /// Parse the header from a scrambled file, returning
-/// `(epoch, sorted_tokens, body)`.
+/// `(version, epoch, sorted_tokens, body)`.
+///
+/// Forward- and back-compatible: if line 2 starts with `version:`
+/// the rest of the file is the v1+ layout (`version`, `epoch`,
+/// `tokens`, sep, body); if line 2 starts with `epoch:` the file is
+/// the legacy v0 layout (`epoch`, `tokens`, sep, body) and the
+/// reader returns version = [`FORMAT_VERSION_LEGACY`] so the
+/// unscrambler knows to skip L6 + L12 inverses.
 ///
 /// # Errors
 ///
-/// `Error::HeaderParse` (wrapped in anyhow) if any header field is
-/// missing or malformed.
+/// `Error::HeaderParse` (wrapped in anyhow at the call site) if
+/// any header field is missing or malformed.
 pub(crate) fn decode_scrambled_file(
     content: &str,
 ) -> std::result::Result<
-    (u64, Vec<String>, String),
+    (u32, u64, Vec<String>, String),
     babbleon_preprocessor_v2::Error,
 > {
     use babbleon_preprocessor_v2::Error;
 
-    let mut lines = content.splitn(5, '\n');
+    // Reserve enough split positions for the v1+ layout (5 lines +
+    // body).  splitn caps the chunk count, so requesting 6 chunks
+    // means line 6 is "everything after line 5's newline" — the
+    // body, which may itself contain non-newline content.
+    let mut lines = content.splitn(6, '\n');
 
     let magic = lines.next().unwrap_or("");
     if magic != HEADER_MAGIC {
@@ -236,10 +343,23 @@ pub(crate) fn decode_scrambled_file(
         )));
     }
 
-    let epoch_line = lines.next().unwrap_or("");
+    // Line 2 is either `version:<N>` (v1+) or `epoch:<N>` (legacy).
+    let second_line = lines.next().unwrap_or("");
+    let (version, epoch_line) =
+        if let Some(version_str) = second_line.strip_prefix("version:") {
+            let version: u32 = version_str.parse().map_err(|_| {
+                Error::HeaderParse(format!(
+                    "version value {version_str:?} is not a valid u32"
+                ))
+            })?;
+            (version, lines.next().unwrap_or(""))
+        } else {
+            (FORMAT_VERSION_LEGACY, second_line)
+        };
+
     let epoch_str = epoch_line.strip_prefix("epoch:").ok_or_else(|| {
         Error::HeaderParse(format!(
-            "expected 'epoch:<N>' on line 2, got {epoch_line:?}"
+            "expected 'epoch:<N>' after magic/version, got {epoch_line:?}"
         ))
     })?;
     let epoch: u64 = epoch_str.parse().map_err(|_| {
@@ -252,7 +372,7 @@ pub(crate) fn decode_scrambled_file(
     let tokens_str =
         tokens_line.strip_prefix("tokens:").ok_or_else(|| {
             Error::HeaderParse(format!(
-                "expected 'tokens:...' on line 3, got {tokens_line:?}"
+                "expected 'tokens:...' line, got {tokens_line:?}"
             ))
         })?;
     let sorted_tokens: Vec<String> = if tokens_str.is_empty() {
@@ -264,12 +384,12 @@ pub(crate) fn decode_scrambled_file(
     let sep = lines.next().unwrap_or("");
     if sep != HEADER_SEP {
         return Err(Error::HeaderParse(format!(
-            "expected {HEADER_SEP:?} separator on line 4, got {sep:?}"
+            "expected {HEADER_SEP:?} separator line, got {sep:?}"
         )));
     }
 
     let body = lines.next().unwrap_or("").to_owned();
-    Ok((epoch, sorted_tokens, body))
+    Ok((version, epoch, sorted_tokens, body))
 }
 
 fn read_input(source: &InputSource) -> Result<String> {
@@ -426,14 +546,19 @@ fn install_seccomp(no_seccomp: bool) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_scrambled_file, encode_scrambled_file};
+    use super::{
+        decode_scrambled_file, encode_scrambled_file,
+        encode_scrambled_file_versioned, FORMAT_VERSION_LATEST,
+        FORMAT_VERSION_LEGACY,
+    };
 
     #[test]
     fn header_round_trips_empty_token_list() {
         let encoded =
             encode_scrambled_file(7, &[], "thequickbrownfox");
-        let (epoch, tokens, body) =
+        let (version, epoch, tokens, body) =
             decode_scrambled_file(&encoded).unwrap();
+        assert_eq!(version, FORMAT_VERSION_LATEST);
         assert_eq!(epoch, 7);
         assert!(tokens.is_empty());
         assert_eq!(body, "thequickbrownfox");
@@ -443,7 +568,8 @@ mod tests {
     fn header_round_trips_nonempty_token_list() {
         let toks = vec!["apple".to_string(), "def".to_string(), "zoo".to_string()];
         let encoded = encode_scrambled_file(42, &toks, "body_here");
-        let (epoch, tokens, body) = decode_scrambled_file(&encoded).unwrap();
+        let (version, epoch, tokens, body) = decode_scrambled_file(&encoded).unwrap();
+        assert_eq!(version, FORMAT_VERSION_LATEST);
         assert_eq!(epoch, 42);
         assert_eq!(tokens, toks);
         assert_eq!(body, "body_here");
@@ -465,6 +591,73 @@ mod tests {
     fn decode_rejects_non_numeric_epoch() {
         let bad = "babbleon-v2\nepoch:abc\ntokens:\n---\nbody";
         assert!(decode_scrambled_file(bad).is_err());
+    }
+
+    #[test]
+    fn decode_legacy_v0_layout_without_version_line() {
+        // The 4-line legacy layout: no `version:` line; line 2 is
+        // straight to `epoch:`.  Reader must accept this and report
+        // version = FORMAT_VERSION_LEGACY so the unscrambler skips
+        // L6 inverse on the body.
+        let legacy = "babbleon-v2\nepoch:5\ntokens:foo\tbar\n---\nlegacybody";
+        let (version, epoch, tokens, body) =
+            decode_scrambled_file(legacy).unwrap();
+        assert_eq!(version, FORMAT_VERSION_LEGACY);
+        assert_eq!(epoch, 5);
+        assert_eq!(tokens, vec!["foo".to_string(), "bar".to_string()]);
+        assert_eq!(body, "legacybody");
+    }
+
+    #[test]
+    fn encode_at_legacy_version_emits_4_line_layout() {
+        let encoded =
+            encode_scrambled_file_versioned(FORMAT_VERSION_LEGACY, 9, &[], "b");
+        assert!(
+            !encoded.contains("version:"),
+            "legacy encoder must NOT emit a version line: {encoded:?}"
+        );
+        let (version, epoch, tokens, body) =
+            decode_scrambled_file(&encoded).unwrap();
+        assert_eq!(version, FORMAT_VERSION_LEGACY);
+        assert_eq!(epoch, 9);
+        assert!(tokens.is_empty());
+        assert_eq!(body, "b");
+    }
+
+    #[test]
+    fn decode_rejects_non_numeric_version() {
+        let bad = "babbleon-v2\nversion:abc\nepoch:0\ntokens:\n---\nbody";
+        assert!(decode_scrambled_file(bad).is_err());
+    }
+
+    #[test]
+    fn decode_accepts_future_version_field() {
+        // An unscrambler should not panic on a higher version
+        // string; the layer-application logic gates on `version >=
+        // 1`, so any version >= 1 follows the same code path.
+        let future = "babbleon-v2\nversion:99\nepoch:1\ntokens:foo\n---\nbody";
+        let (version, epoch, tokens, body) =
+            decode_scrambled_file(future).unwrap();
+        assert_eq!(version, 99);
+        assert_eq!(epoch, 1);
+        assert_eq!(tokens, vec!["foo".to_string()]);
+        assert_eq!(body, "body");
+    }
+
+    #[test]
+    fn current_encode_round_trips_through_decode_byte_identical() {
+        // The default encoder + decoder pair must produce the same
+        // logical fields back.  Body containing odd ASCII (no \n,
+        // no \t) round-trips byte-for-byte.
+        let toks = vec!["alpha".to_string(), "beta".to_string()];
+        let body = "abcdefghijklmnopqrstuvwxyz";
+        let encoded = encode_scrambled_file(12345, &toks, body);
+        let (version, epoch, decoded_tokens, decoded_body) =
+            decode_scrambled_file(&encoded).unwrap();
+        assert_eq!(version, FORMAT_VERSION_LATEST);
+        assert_eq!(epoch, 12345);
+        assert_eq!(decoded_tokens, toks);
+        assert_eq!(decoded_body, body);
     }
 
     #[test]

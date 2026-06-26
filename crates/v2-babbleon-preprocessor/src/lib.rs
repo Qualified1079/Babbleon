@@ -117,12 +117,14 @@
 
 pub mod chunk_reorder;
 pub mod decoy_injection;
+pub mod direction_reversal;
 pub mod errors;
 pub mod identifier_scrambler;
 pub mod python_tokenizer;
 pub mod scrambler;
 pub mod secret_literal_scrambler;
 pub mod secret_literal_wordlist;
+pub mod tokenizer_noise;
 pub mod tokens;
 pub mod unscrambler;
 pub mod whitespace_wordlist;
@@ -131,6 +133,7 @@ pub use chunk_reorder::{
     has_any_marker as has_any_chunk_marker, scramble_chunks, unscramble_chunks,
 };
 pub use decoy_injection::{has_any_decoy, inject_decoys, strip_decoys};
+pub use direction_reversal::{reverse_chunks, unreverse_chunks};
 pub use errors::{Error, Result};
 pub use identifier_scrambler::{
     collect_unique_tokens, scramble_identifiers, unscramble_identifiers,
@@ -140,5 +143,9 @@ pub use secret_literal_scrambler::{
     scramble_secret_literals, unscramble_secret_literals,
 };
 pub use secret_literal_wordlist::SecretLiteralWordlist;
+pub use tokenizer_noise::{
+    has_any_noise as has_any_tokenizer_noise, inject_noise as inject_tokenizer_noise,
+    strip_noise as strip_tokenizer_noise,
+};
 pub use tokens::{Token, WhitespaceKind};
 pub use whitespace_wordlist::WhitespaceWordlist;

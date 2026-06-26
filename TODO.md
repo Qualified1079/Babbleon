@@ -188,17 +188,27 @@ code items are phases 1-6.
 Layers 6-12, filed from `docs/v2/obfuscation-landscape.md`.  Each
 composes with the phase-3 five-layer base; they don't replace it.
 
-- [ ] **Layer 6 — direction segment reversal with marker
-      wordlist.**  Byte-reverse marked segments; preprocessor
-      reverses back on emission.  Marker-as-target objection
-      resolved: 20k-word per-epoch *marker wordlist* drawn from
-      the same pool that feeds layers 1-5; compounds mix marker
-      tokens with junk-decoy tokens so an attacker who learns
-      "flip belongs to the marker class" still cannot tell which
-      sub-token of `craigblastflip` IS the marker.  Same
-      defence-in-depth as identifier scramble.  Display-bidi
-      rejected as theatre (collides with Trojan Source linters;
-      LLMs see bytes not display).
+- [x] **Layer 6 — direction segment reversal (MVP)** —
+      `direction_reversal.rs`.  Variable-length char chunks
+      (`MIN_CHUNK_CHARS=16 .. MAX_CHUNK_CHARS=48`) reversed per a
+      per-epoch xorshift PRNG with `REVERSE_DENOM=2` (fair coin
+      per chunk).  Reversal is involutive, so the unscrambler
+      side is a literal call to the same `reverse_chunks`
+      function with the same epoch — the PRNG reproduces the
+      same chunk-size and reverse-decision sequence on both
+      passes.  Wired into `scramble_lifecycle.rs` and
+      `corpus_lifecycle.rs` between L3 and L12.  Tests: 10 unit
+      tests (round-trip, determinism, char-multiset preservation,
+      multi-byte UTF-8 safety) + 2 integration tests
+      (L6-only round-trip, L6+L12 compose-and-invert).  Marker-
+      wordlist variant from the original landscape doc is
+      deferred: the deterministic-PRNG variant requires no
+      in-stream markers, so the marker-as-target attack surface
+      is moot.  An attacker who knows the epoch trivially undoes
+      L6 (same threat boundary as L12); protection of the epoch
+      itself comes from the daemon never leaving the trusted
+      tier.  Display-bidi remains rejected as theatre (collides
+      with Trojan Source linters; LLMs see bytes not display).
 - [ ] **Layer 7 — source-level control-flow flattening.**
       Composes with layers 2-5: existing unflatteners (D810,
       CaDeCFF) pattern-match against switch-case shapes that
@@ -230,10 +240,20 @@ composes with the phase-3 five-layer base; they don't replace it.
       Other corpora (BIPIA Microsoft, IPI Arena, LLMail-Inject,
       PINT, Purple Llama Meta, OWASP cheat sheet) need per-LICENSE
       check before adding.
-- [ ] **Layer 12 — mixed-charset / ZWJ / NFKC tokenizer tricks.**
-      Confined to the scrambled-source representation; the
-      preprocessor strips before emission so the interpreter
-      sees clean source.  Cost: zero (clean-source-side).
+- [x] **Layer 12 — tokenizer-hostile noise** —
+      `tokenizer_noise.rs`.  Body-bytes-only perturbation: zero-width
+      character injection (ZWSP/ZWNJ/ZWJ at U+200B/200C/200D) at
+      deterministic per-epoch positions, plus Cyrillic-homoglyph
+      substitution for Latin `a c e i o p x y` (U+0430/0441/0435/
+      0456/043E/0440/0445/0443) on a ~1/3 PRNG draw.  Strip is
+      content-based and idempotent — older pre-L12 files unscramble
+      correctly under the new pipeline.  Wired into
+      `scramble_lifecycle.rs` (per-file CLI) and `corpus_lifecycle.rs`
+      (batch dir) so L12 runs after L3 emits its body and is the
+      first inverse step on unscramble.  Confined to the scrambled-
+      source representation; interpreter sees clean ASCII.  Cost on
+      attacker: real (multi-x BPE token-count inflation in limit
+      cases).  Cost on us: zero (clean-source-side).
 
 ### Phase 4 — supporting research and measurement
 

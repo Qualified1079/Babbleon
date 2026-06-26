@@ -54,11 +54,13 @@ use anyhow::{anyhow, Context, Result};
 
 use babbleon_preprocessor_v2::chunk_reorder::{scramble_chunks, unscramble_chunks};
 use babbleon_preprocessor_v2::decoy_injection::{inject_decoys, strip_decoys};
+use babbleon_preprocessor_v2::direction_reversal::{reverse_chunks, unreverse_chunks};
 use babbleon_preprocessor_v2::identifier_scrambler::{
     collect_unique_tokens, scramble_identifiers, unscramble_identifiers,
 };
 use babbleon_preprocessor_v2::python_tokenizer::tokenize;
 use babbleon_preprocessor_v2::scrambler::scramble;
+use babbleon_preprocessor_v2::tokenizer_noise::{inject_noise, strip_noise};
 use babbleon_preprocessor_v2::unscrambler::{tokens_to_source, unscramble_to_tokens};
 
 use crate::scramble_lifecycle::{
@@ -156,7 +158,13 @@ pub fn run_scramble_dir(opts: CorpusOptions) -> Result<CorpusReport> {
             scramble_identifiers(&mut tokens, &mapping);
             let body =
                 scramble(&tokens, &wl).map_err(|e| anyhow!("scramble: {e}"))?;
-            Ok(encode_scrambled_file(mapping.epoch, &unique_post, &body))
+            // L6: direction reversal of variable-length char chunks.
+            let reversed_body = reverse_chunks(&body, mapping.epoch);
+            // L12: tokenizer-hostile noise on body bytes.  Applied
+            // after L6 so the header round-trips byte-for-byte and
+            // the noise lands on the reversed wall.
+            let noisy_body = inject_noise(&reversed_body, mapping.epoch);
+            Ok(encode_scrambled_file(mapping.epoch, &unique_post, &noisy_body))
         },
         &mut report,
     )?;
@@ -192,13 +200,25 @@ pub fn run_unscramble_dir(opts: CorpusOptions) -> Result<CorpusReport> {
         &input_dir,
         &output_dir,
         &mut |src| {
-            let (epoch, sorted_tokens, body) = decode_scrambled_file(src)
-                .map_err(|e| anyhow!("parse header: {e}"))?;
+            let (version, epoch, sorted_tokens, body) =
+                decode_scrambled_file(src)
+                    .map_err(|e| anyhow!("parse header: {e}"))?;
             let mapping = fetch_identifier_mapping_at_epoch(
                 &socket_path,
                 &sorted_tokens,
                 epoch,
             )?;
+            // L12 inverse: strip noise before L3's greedy prefix
+            // match.  Content-based and idempotent — safe on v0
+            // files (no-op when body has no noise).
+            let body = strip_noise(&body);
+            // L6 inverse: undo the per-epoch direction reversal,
+            // gated on format version.  v0 files predate L6.
+            let body = if version >= 1 {
+                unreverse_chunks(&body, epoch)
+            } else {
+                body
+            };
             let mut tokens = unscramble_to_tokens(&body, &wl);
             unscramble_identifiers(&mut tokens, &mapping);
             // L5 inverse: strip decoy tokens BEFORE L4 reorder so
