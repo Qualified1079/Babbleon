@@ -178,10 +178,12 @@ code items are phases 1-6.
       L3 whitespace-as-words + L4 chunk reorder + L5 decoy
       injection, file header format, multi-alias, daemon
       protocol).
-- [ ] Preprocessor seccomp profile (deny socket / mount / ptrace
-      family)
+- [x] Preprocessor seccomp profile (deny socket / mount / ptrace
+      family) — `crates/v2-babbleon/src/seccomp_profile.rs`, 34-syscall
+      allowlist, installed after last daemon call pre-computation.
+      Corpus-dir gap documented; v2.1 batch-prefetch TODO filed.
 - [ ] Adversarial-LLM re-test: did L2+L3+L4+L5 fix the v1
-      shape-fingerprint problem?
+      shape-fingerprint problem? (bench matrix in progress 2026-06-26)
 
 ### Phase 4 — additional obfuscation layers (post-research)
 
