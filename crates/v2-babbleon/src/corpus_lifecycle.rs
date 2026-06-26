@@ -52,21 +52,13 @@ use std::time::Instant;
 
 use anyhow::{anyhow, Context, Result};
 
-use babbleon_preprocessor_v2::chunk_reorder::{scramble_chunks, unscramble_chunks};
-use babbleon_preprocessor_v2::decoy_injection::{inject_decoys, strip_decoys};
-use babbleon_preprocessor_v2::direction_reversal::{reverse_chunks, unreverse_chunks};
-use babbleon_preprocessor_v2::identifier_scrambler::{
-    collect_unique_tokens, scramble_identifiers, unscramble_identifiers,
+use babbleon_preprocessor_v2::file_format::{decode as decode_file, DecodedFile};
+use babbleon_preprocessor_v2::pipeline::{
+    scramble_pipeline, unscramble_pipeline,
 };
-use babbleon_preprocessor_v2::python_tokenizer::tokenize;
-use babbleon_preprocessor_v2::scrambler::scramble;
-use babbleon_preprocessor_v2::tokenizer_noise::{inject_noise, strip_noise};
-use babbleon_preprocessor_v2::unscrambler::{tokens_to_source, unscramble_to_tokens};
 
 use crate::scramble_lifecycle::{
-    decode_scrambled_file, encode_scrambled_file,
     fetch_identifier_mapping_at_epoch_pub as fetch_identifier_mapping_at_epoch,
-    fetch_identifier_mapping_pub as fetch_identifier_mapping,
     fetch_whitespace_wordlist_pub as fetch_whitespace_wordlist,
 };
 
@@ -129,6 +121,7 @@ pub fn run_scramble_dir(opts: CorpusOptions) -> Result<CorpusReport> {
     prepare_output_dir(&output_dir, allow_overwrite)?;
 
     let wl = fetch_whitespace_wordlist(&socket_path)?;
+    let epoch = wl.epoch();
     let start = Instant::now();
     let mut report = CorpusReport::default();
 
@@ -137,34 +130,39 @@ pub fn run_scramble_dir(opts: CorpusOptions) -> Result<CorpusReport> {
         &input_dir,
         &output_dir,
         &mut |src| {
-            let raw_tokens = tokenize(src);
-            // Pre-L4 daemon call: just to obtain the live epoch.  The
-            // L4/L5 shuffle seed and the L2 mapping share the same
-            // epoch so unscramble re-derives the same stream shape.
-            let unique = collect_unique_tokens(&raw_tokens);
-            let mapping = fetch_identifier_mapping(&socket_path, &unique)
-                .context("GetTokenMapping for file (pre-L4)")?;
-            // L4: chunk-shuffle + position markers.
-            let l4_tokens = scramble_chunks(raw_tokens, mapping.epoch);
-            // L5: decoy injection at depth-0 positions.
-            let mut tokens = inject_decoys(l4_tokens, mapping.epoch);
-            // Refetch mapping covering the L4+L5 augmented token set.
-            let unique_post = collect_unique_tokens(&tokens);
-            let mapping = fetch_identifier_mapping_at_epoch(
-                &socket_path,
-                &unique_post,
-                mapping.epoch,
-            )?;
-            scramble_identifiers(&mut tokens, &mapping);
-            let body =
-                scramble(&tokens, &wl).map_err(|e| anyhow!("scramble: {e}"))?;
-            // L6: direction reversal of variable-length char chunks.
-            let reversed_body = reverse_chunks(&body, mapping.epoch);
-            // L12: tokenizer-hostile noise on body bytes.  Applied
-            // after L6 so the header round-trips byte-for-byte and
-            // the noise lands on the reversed wall.
-            let noisy_body = inject_noise(&reversed_body, mapping.epoch);
-            Ok(encode_scrambled_file(mapping.epoch, &unique_post, &noisy_body))
+            // Daemon round-trip captured into an outer slot so the
+            // wire error survives the pipeline's error-type collapse.
+            let outer_err: std::cell::RefCell<Option<anyhow::Error>> =
+                std::cell::RefCell::new(None);
+            let scrambled = scramble_pipeline(
+                src,
+                epoch,
+                &wl,
+                |toks, e| {
+                    match fetch_identifier_mapping_at_epoch(
+                        &socket_path,
+                        toks,
+                        e,
+                    ) {
+                        Ok(m) => Ok(m),
+                        Err(err) => {
+                            *outer_err.borrow_mut() = Some(err);
+                            Err(babbleon_preprocessor_v2::errors::Error::Scramble(
+                                "daemon GetTokenMapping failed (see chain)"
+                                    .to_string(),
+                            ))
+                        }
+                    }
+                },
+            )
+            .map_err(|e| {
+                if let Some(daemon_err) = outer_err.borrow_mut().take() {
+                    daemon_err.context("scramble pipeline")
+                } else {
+                    anyhow!("scramble pipeline: {e}")
+                }
+            })?;
+            Ok(scrambled.file)
         },
         &mut report,
     )?;
@@ -200,35 +198,15 @@ pub fn run_unscramble_dir(opts: CorpusOptions) -> Result<CorpusReport> {
         &input_dir,
         &output_dir,
         &mut |src| {
-            let (version, epoch, sorted_tokens, body) =
-                decode_scrambled_file(src)
+            let DecodedFile { version, epoch, sorted_tokens, body } =
+                decode_file(src)
                     .map_err(|e| anyhow!("parse header: {e}"))?;
             let mapping = fetch_identifier_mapping_at_epoch(
                 &socket_path,
                 &sorted_tokens,
                 epoch,
             )?;
-            // L12 inverse: strip noise before L3's greedy prefix
-            // match.  Content-based and idempotent — safe on v0
-            // files (no-op when body has no noise).
-            let body = strip_noise(&body);
-            // L6 inverse: undo the per-epoch direction reversal,
-            // gated on format version.  v0 files predate L6.
-            let body = if version >= 1 {
-                unreverse_chunks(&body, epoch)
-            } else {
-                body
-            };
-            let mut tokens = unscramble_to_tokens(&body, &wl);
-            unscramble_identifiers(&mut tokens, &mapping);
-            // L5 inverse: strip decoy tokens BEFORE L4 reorder so
-            // chunk-boundary detection isn't disturbed by decoys.
-            let dedecoyed = strip_decoys(tokens);
-            // L4 inverse: sort chunks back to original order, strip
-            // markers.  No-op when the file went through the
-            // single-chunk fast path on scramble (no markers present).
-            let reordered = unscramble_chunks(dedecoyed);
-            Ok(tokens_to_source(&reordered))
+            Ok(unscramble_pipeline(version, epoch, &body, &wl, &mapping))
         },
         &mut report,
     )?;
