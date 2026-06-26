@@ -217,7 +217,7 @@ pub fn scramble_chunks(tokens: Vec<Token>, epoch: u64) -> Vec<Token> {
     let mut marked: Vec<Vec<Token>> = Vec::with_capacity(n);
     for (orig_idx, chunk) in chunks.into_iter().enumerate() {
         let mut m: Vec<Token> = Vec::with_capacity(chunk.len() + 2);
-        m.push(Token::word(&marker_body(orig_idx)));
+        m.push(Token::word(marker_body(orig_idx)));
         m.push(Token::whitespace(WhitespaceKind::Space));
         m.extend(chunk);
         marked.push(m);

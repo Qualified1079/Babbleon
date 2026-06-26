@@ -143,7 +143,7 @@ pub fn inject_decoys(tokens: Vec<Token>, epoch: u64) -> Vec<Token> {
     let mut placements: Vec<(usize, Token)> = (0..n_decoys)
         .map(|n| {
             let pos = candidates[rng.gen_range(candidates.len())];
-            (pos, Token::word(&decoy_body(n)))
+            (pos, Token::word(decoy_body(n)))
         })
         .collect();
     placements.sort_by_key(|(p, _)| std::cmp::Reverse(*p));
