@@ -48,7 +48,7 @@ preprocessor-benchmark `--mode full` had surfaced a ~70 ms cold-cache
 cost dominated by the Fisher-Yates rebuild per `MappingBuilder::build`.
 This session closes that priority.
 
-### Net commits this session: 4
+### Net commits this session: 11
 
 | # | Hash | Subject |
 |---|---|---|
@@ -56,6 +56,13 @@ This session closes that priority.
 | 2 | `ea08844` | feat(preprocessor-benchmark): wire PermutationCache into --mode full |
 | 3 | `4335536` | feat(v2-babbleon-daemon): wire PermutationCache into state.token_mapping |
 | 4 | `5fd96ba` | docs(preprocessor-benchmark): record cached vs uncached --mode full numbers |
+| 5 | `e5c1c77` | docs(HANDOFF,CLAUDE): record 2026-06-26 night session (PermutationCache lands) |
+| 6 | `53e588f` | chore(v2-babbleon-daemon): hoist token_mapping use-statements to file top |
+| 7 | `f2d0e97` | docs(v2-babbleon-core): add doctest example to PermutationCache |
+| 8 | `7a6d0bc` | chore(v2-babbleon-daemon): route rotate() mapping build through PermutationCache |
+| 9 | `b00c42e` | docs(HANDOFF): research note on corpus-lifecycle seccomp install design |
+| 10 | `6c77749` | chore(v2-babbleon-preprocessor): drop two needless borrows on Token::word |
+| 11 | (this commit) | docs(HANDOFF): refresh session commit list through commit 10 |
 
 ### Commit 1 — `PermutationCache` core module
 
