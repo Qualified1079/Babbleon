@@ -60,12 +60,14 @@ preprocessor pipeline currently composes six scramble layers:
   multi-x token-count inflation and broken BPE merges; the trusted
   unscrambler strips the noise content-based before L3⁻¹.
 
-Scrambled-file format: a 4-line header (magic, epoch, sorted token
-list, separator) followed by the L3 body. The token list is embedded
-so the unscrambler can re-derive the L2 mapping from the daemon
-without needing the original source. Security comes from the
-compounds being derived from the per-host secret, not from hiding
-which tokens exist.
+Scrambled-file format (version 1): a 5-line header (magic,
+`version:1`, epoch, sorted token list, separator) followed by the
+L3+L6+L12 body. The token list is embedded so the unscrambler can
+re-derive the L2 mapping from the daemon without needing the
+original source. Security comes from the compounds being derived
+from the per-host secret, not from hiding which tokens exist. Files
+without a `version:` line are read as legacy version-0 (pre-L6,
+pre-L12) and unscramble through the L3+L4+L5+L2 inverses only.
 
 Pipeline order:
 - **Scramble**: tokenize → L4 → L5 → L2 → L3 → **L6** → **L12** → encode header
