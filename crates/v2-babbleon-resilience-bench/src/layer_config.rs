@@ -168,6 +168,27 @@ impl LayerConfig {
         Self::new(false, false, 0xAB, 0)
     }
 
+    /// L2 + L3 + L4 + L5: structural layers without L6/L12.
+    /// Isolates chunk-reorder and decoy-injection strength without
+    /// L12's Cyrillic-homoglyph noise (which trips the Anthropic
+    /// classifier when sent via `claude -p`).  Use this config
+    /// when the evaluation channel is the public Claude API.
+    #[must_use]
+    pub fn l2_plus_l3_plus_l4_plus_l5() -> Self {
+        Self {
+            layer2_keyword_scramble: true,
+            layer2b_operator_scramble: false,
+            layer3_whitespace_as_words: true,
+            layer4_chunk_reorder: true,
+            layer5_decoy_injection: true,
+            layer6_direction_reversal: false,
+            layer12_noise: false,
+            layer7_secret_literal: false,
+            seed_byte: 0xAB,
+            epoch: 0,
+        }
+    }
+
     /// Full stack: L2 + L3 + L4 + L5 + L6 + L12.  All shipped
     /// production layers active.  The bench cell that most closely
     /// matches what a real host serves.
@@ -253,6 +274,9 @@ impl LayerConfig {
             (true, true, true, false, false, false, false) => {
                 "l2-plus-l2b-plus-l3".to_string()
             }
+            (true, false, true, true, true, false, false) => {
+                "l2-plus-l3-plus-l4-plus-l5".to_string()
+            }
             (true, false, true, true, true, true, true) => {
                 "full-stack".to_string()
             }
@@ -296,11 +320,13 @@ mod tests {
             LayerConfig::l2_plus_l2b_plus_l3().label(),
             LayerConfig::l2_plus_l3_plus_l7().label(),
             LayerConfig::l2_plus_l2b_plus_l3_plus_l7().label(),
+            LayerConfig::l2_plus_l3_plus_l4_plus_l5().label(),
+            LayerConfig::full_stack().label(),
         ];
         let mut set: Vec<_> = labels.to_vec();
         set.sort();
         set.dedup();
-        assert_eq!(set.len(), 7, "labels must be pairwise distinct");
+        assert_eq!(set.len(), 9, "labels must be pairwise distinct");
     }
 
     #[test]
