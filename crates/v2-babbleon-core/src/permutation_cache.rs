@@ -84,6 +84,28 @@ struct Entry {
 /// hand to [`crate::mapping::MappingBuilder::with_cache`].  The cache
 /// is `Send + Sync`; sharing across threads is safe (a `Mutex` guards
 /// the entry list).
+///
+/// # Example
+///
+/// ```
+/// use babbleon_core_v2::{
+///     MappingBuilder, PerHostSecret, PermutationCache, Wordlist,
+/// };
+///
+/// let secret = PerHostSecret::from_bytes(&[7u8; 32]).unwrap();
+/// let wordlist = Wordlist::english_baseline();
+/// let cache = PermutationCache::with_default_capacity();
+///
+/// // Building the same `(secret, wordlist)` against the cache shares
+/// // the underlying permutations across calls — repeated builds at
+/// // the same epoch reuse the cached `Permutation` instead of
+/// // re-running Fisher-Yates over the wordlist.
+/// let builder = MappingBuilder::with_cache(&secret, wordlist, &cache);
+/// let tracked = vec!["curl".to_string(), "ssh".to_string()];
+/// let _first  = builder.build(&tracked, 0).unwrap();
+/// let _second = builder.build(&tracked, 0).unwrap(); // cache hit
+/// assert_eq!(cache.len(), 2); // identifier + honey, both at epoch 0
+/// ```
 pub struct PermutationCache {
     inner: Mutex<VecDeque<Entry>>,
     capacity: usize,
