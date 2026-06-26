@@ -24,8 +24,8 @@ lands, push here)
 
 Date: 2026-06-26 (user-asleep session — claude-opus-4-7)
 
-Last commit before this handoff section: `e3db56f` —
-fix(v2-python-shim): drive the full unscramble pipeline, not just L3.
+Last commit before this handoff section: `6d16fe2` —
+test(v2-preprocessor): add edge-case coverage to the real-mapping round-trip.
 
 ---
 
@@ -62,13 +62,19 @@ session entry (`7ed409b`, `64b16d0`, `318b8ae`).  Priorities 3
 (adversarial-LLM re-test) and 5 (L11 defensive prompt injection)
 are operator-gated — out of scope for an autonomous session.
 
-### Net commits this session: 3
+### Net commits this session: 8
 
 | # | Hash | Subject |
 |---|---|---|
 | 1 | `3d34c3a` | feat(v2-preprocessor): file_format + pipeline modules for shared composition |
 | 2 | `633e291` | refactor(v2-babbleon): consume shared file_format + pipeline modules |
 | 3 | `e3db56f` | fix(v2-python-shim): drive the full unscramble pipeline, not just L3 |
+| 4 | `0f0cd56` | docs(HANDOFF): 2026-06-26 session block — initial entry |
+| 5 | `d41df7a` | test(v2-preprocessor): full pipeline round-trip against real MappingBuilder |
+| 6 | `063a291` | docs(v2-preprocessor): refresh crate-level docs to current scope |
+| 7 | `043f6a9` | docs(v2-python-shim): correct stale mechanism docs to match shared pipeline |
+| 8 | `02e0dc7` | docs(README): correct stale 4-line-header claim — current format is 5 lines |
+| 9 | `6d16fe2` | test(v2-preprocessor): add edge-case coverage to the real-mapping round-trip |
 
 ### Commit 1 — Shared file_format + pipeline modules
 
@@ -160,7 +166,7 @@ test's assertion holds.
 | Metric | Before this session | After | Δ |
 |---|---|---|---|
 | v2-babbleon-preprocessor lib tests | 143 | 162 | +19 |
-| v2-babbleon-preprocessor integ tests | 9 | 9 | 0 |
+| v2-babbleon-preprocessor integ tests | 9 | 19 | +10 (pipeline_with_real_mapping.rs) |
 | v2-babbleon lib tests | 57 | 57 | 0 |
 | v2-babbleon cli_against_daemon | 12 | 12 | 0 |
 | v2-babbleon-python-shim lib | 13 | 16 | +3 |
@@ -169,6 +175,63 @@ test's assertion holds.
 | New preprocessor source modules | 0 | 2 | +2 (file_format, pipeline) |
 | New workspace deps | 0 | 0 | 0 |
 | `forbid(unsafe_code)` violations | 0 | 0 | 0 |
+
+### Commits 4-9 — handoff, integration tests, doc-drift cleanup
+
+Commit 4 (`0f0cd56`) landed the initial 2026-06-26 entry in this
+file so a parallel session could pick up.
+
+Commit 5 (`d41df7a`) adds
+`crates/v2-babbleon-preprocessor/tests/pipeline_with_real_mapping.rs`:
+7 integration tests that drive the new pipeline modules using the
+**real** `MappingBuilder` from `babbleon-core` (same code path the
+daemon runs) instead of synthetic compound strings.  Python
+execution (`python3 -c <unscrambled>`) is the load-bearing check:
+the unscrambled source must run with identical stdout to the
+original.  Covers function-def, branching, class+methods,
+loop+list-comp, L12-presence assertion, scramble determinism,
+epoch-uniqueness.
+
+Commit 6 (`063a291`) refreshes
+`crates/v2-babbleon-preprocessor/src/lib.rs`'s crate-level docs:
+the §"Mechanism" enumerated L3 only; updated to all six production
+layers + the cross-cutting modules (tokens, python_tokenizer,
+whitespace_wordlist, file_format, pipeline, secret_literal_*).
+§"Out of scope" trimmed from items that are now landed (L2, L4,
+the standalone binary, pipe(2) plumbing) to items still ahead
+(layers 7-11 from `obfuscation-landscape.md`).
+
+Commit 7 (`043f6a9`) updates
+`crates/v2-babbleon-python-shim/src/lib.rs`'s §"Mechanism":  step 4
+named the L3-only `unscrambler::unscramble` call the shim used to
+make.  Replaced with the new pipeline path (parse header, fetch
+both wordlists, run `unscramble_pipeline`) and added a
+cross-reference to the CLI + corpus consumers.
+
+Commit 8 (`02e0dc7`) updates `README.md`:  the README described the
+scrambled-file format as a "4-line header (magic, epoch, sorted
+token list, separator)" — the legacy v0 layout.  The current
+emitter writes 5 lines (`babbleon-v2` / `version:1` / `epoch:N` /
+`tokens:...` / `---`).  Updated to describe the v1 layout with v0
+noted for back-compat readers.
+
+Commit 9 (`6d16fe2`) extends pipeline_with_real_mapping.rs with
+three more integration tests:
+
+1. Empty source — zero-byte input round-trips and executes as a
+   no-op.
+2. Comments-only source — `# this is the only line\n` round-trips.
+   The MVP tokenizer doesn't split on `#`; the round-trip must
+   still reconstruct valid no-op Python.
+3. Unicode string literal with emoji + non-homoglyph Cyrillic
+   codepoint (U+0431) — codepoints outside L12's substitution set
+   must survive.  Documents the known limitation: any Latin char
+   in the homoglyph set (`a c e i o p x y`) cannot survive a
+   round trip via its Cyrillic homoglyph because the strip is
+   content-based and reverses every known homoglyph regardless of
+   provenance.
+
+10/10 tests in this file now pass.
 
 ### Architectural property landed
 
