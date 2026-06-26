@@ -119,7 +119,9 @@ pub mod chunk_reorder;
 pub mod decoy_injection;
 pub mod direction_reversal;
 pub mod errors;
+pub mod file_format;
 pub mod identifier_scrambler;
+pub mod pipeline;
 pub mod python_tokenizer;
 pub mod scrambler;
 pub mod secret_literal_scrambler;
@@ -135,6 +137,12 @@ pub use chunk_reorder::{
 pub use decoy_injection::{has_any_decoy, inject_decoys, strip_decoys};
 pub use direction_reversal::{reverse_chunks, unreverse_chunks};
 pub use errors::{Error, Result};
+pub use file_format::{
+    decode as decode_scrambled_file, encode as encode_scrambled_file,
+    encode_versioned as encode_scrambled_file_versioned, DecodedFile,
+    FORMAT_VERSION_LATEST, FORMAT_VERSION_LEGACY,
+};
+pub use pipeline::{scramble_pipeline, unscramble_pipeline, ScrambledFile};
 pub use identifier_scrambler::{
     collect_unique_tokens, scramble_identifiers, unscramble_identifiers,
     IdentifierMapping, ALIAS_COUNT,
