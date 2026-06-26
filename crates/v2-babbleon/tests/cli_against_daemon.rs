@@ -11,22 +11,95 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// Locate a sibling binary in the same target directory as the test
-/// binary.  Works regardless of whether the test was launched via
-/// `cargo test` or directly.
+/// Locate a sibling binary cargo built for this test harness.
+///
+/// Strategy:
+///
+/// 1. **`CARGO_BIN_EXE_<name>`** — set by cargo automatically for
+///    every `[[bin]]` target in **this** package.  Covers
+///    `babbleon-v2`.
+/// 2. **target-dir lookup** — `target/<profile>/<name>` relative to
+///    the test binary's location.  Covers binaries in sibling
+///    workspace packages (e.g. `babbleon-daemon` in
+///    `v2-babbleon-daemon`) once they have been built into the same
+///    workspace target dir.
+/// 3. **self-bootstrap** — if step 2 misses, invoke
+///    `cargo build -p <package> --bin <name>` synchronously inside
+///    the test.  This makes the test suite robust against a clean
+///    target dir without requiring `cargo build --workspace` (which
+///    CLAUDE.md forbids — it would compile the deprecated v1
+///    lineage).
+///
+/// Adding a new binary: extend `cargo_package_for` so the bootstrap
+/// fallback knows which `-p` to pass.
 fn sibling_binary(name: &str) -> PathBuf {
-    // The test binary lives at target/<profile>/deps/<test-name>-<hash>.
-    // The crate binaries live at target/<profile>/<name>.
+    if let Some(p) = env_bin_exe(name) {
+        return PathBuf::from(p);
+    }
+    let target_path = target_dir_binary(name);
+    if target_path.exists() {
+        return target_path;
+    }
+    bootstrap_via_cargo_build(name);
+    let after = target_dir_binary(name);
+    assert!(
+        after.exists(),
+        "after cargo build the binary still does not exist at {} — \
+         cargo did not produce the expected `target/<profile>/<name>` artefact",
+        after.display(),
+    );
+    after
+}
+
+/// Resolve `CARGO_BIN_EXE_<name>` at compile time.  Cargo only sets
+/// this for binaries in **this** package; sibling-workspace binaries
+/// fall through to the target-dir lookup.
+fn env_bin_exe(name: &str) -> Option<&'static str> {
+    match name {
+        "babbleon-v2" => option_env!("CARGO_BIN_EXE_babbleon-v2"),
+        _ => None,
+    }
+}
+
+/// Compute `target/<profile>/<name>` from the test binary's location.
+fn target_dir_binary(name: &str) -> PathBuf {
     let mut p = std::env::current_exe().expect("current_exe");
     p.pop(); // deps/
     p.pop(); // <profile>/
     p.push(name);
-    assert!(
-        p.exists(),
-        "expected binary at {} — run `cargo build --workspace` first",
-        p.display(),
-    );
     p
+}
+
+/// Synchronously invoke `cargo build -p <package> --bin <name>` to
+/// produce a sibling-package binary into the workspace target dir.
+/// Cargo's lockfile serialises concurrent invocations so this is safe
+/// to call from parallel tests.
+fn bootstrap_via_cargo_build(name: &str) {
+    let pkg = cargo_package_for(name).unwrap_or_else(|| {
+        panic!(
+            "no cargo package registered for binary `{name}` — \
+             extend cargo_package_for() in this test file to add the mapping",
+        )
+    });
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let status = Command::new(&cargo)
+        .args(["build", "-p", pkg, "--bin", name])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .status()
+        .expect("spawn cargo build for sibling binary");
+    assert!(
+        status.success(),
+        "cargo build -p {pkg} --bin {name} failed with {status}",
+    );
+}
+
+/// Map a binary `name` to its producing cargo package name.  Add an
+/// entry when a new sibling-workspace binary is exercised.
+fn cargo_package_for(name: &str) -> Option<&'static str> {
+    match name {
+        "babbleon-daemon" => Some("v2-babbleon-daemon"),
+        _ => None,
+    }
 }
 
 fn fake_real_binary(dir: &std::path::Path, name: &str) -> PathBuf {

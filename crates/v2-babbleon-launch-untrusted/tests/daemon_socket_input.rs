@@ -18,34 +18,60 @@ use std::time::{Duration, Instant};
 
 use v2_babbleon_launch_untrusted::activated_table_input;
 
-/// Locate the built `babbleon-daemon` binary that cargo built for
-/// the v2-babbleon-daemon crate's tests.  `CARGO_BIN_EXE_*` is
-/// guaranteed for binaries in dependency crates as of Rust 1.79+ in
-/// integration-test builds.
+/// Locate `babbleon-daemon` for this test.
+///
+/// Cargo only sets `CARGO_BIN_EXE_<name>` for binaries in **this**
+/// package — not for cross-package binaries reached via a dev-dep
+/// edge.  (The earlier comment claiming otherwise was inaccurate;
+/// the prior version of this helper silently fell through to a
+/// non-existent fallback path and the test failed with a
+/// `daemon exited before binding` panic on a clean target dir.)
+///
+/// Strategy:
+///
+/// 1. **target-dir lookup** — `target/<profile>/babbleon-daemon`
+///    relative to the test binary.  Cheap and works if anything else
+///    built the daemon recently.
+/// 2. **self-bootstrap** — synchronous `cargo build -p
+///    v2-babbleon-daemon --bin babbleon-daemon`.  Cargo's lockfile
+///    serialises concurrent invocations so this is parallel-safe.
 fn daemon_binary() -> PathBuf {
-    // The launcher's Cargo.toml depends on v2-babbleon-daemon, so
-    // cargo builds the daemon's bin target alongside.  The env var
-    // for a dep-crate's bin is `CARGO_BIN_EXE_<bin-name>` if the
-    // dep declares `[[bin]]` with that name and that bin is reachable
-    // — which it is, since daemon's Cargo.toml has
-    // `[[bin]] name = "babbleon-daemon"`.
-    //
-    // Fall back to `target/debug/babbleon-daemon` relative to the
-    // workspace root if the env-var path is not available (older
-    // toolchain or alternate build profile).
-    if let Some(p) = option_env!("CARGO_BIN_EXE_babbleon-daemon") {
-        return PathBuf::from(p);
+    let target_path = target_dir_binary("babbleon-daemon");
+    if target_path.exists() {
+        return target_path;
     }
-    let mut candidate = std::env::current_exe()
-        .expect("current_exe")
-        .parent()
-        .unwrap()
-        .to_path_buf();
-    // current_exe is target/debug/deps/<test-binary>; ../babbleon-daemon
-    // resolves to the daemon binary if cargo built it.
-    candidate.pop();
-    candidate.push("babbleon-daemon");
-    candidate
+    bootstrap_via_cargo_build("v2-babbleon-daemon", "babbleon-daemon");
+    let after = target_dir_binary("babbleon-daemon");
+    assert!(
+        after.exists(),
+        "after cargo build the daemon binary still does not exist at {}",
+        after.display(),
+    );
+    after
+}
+
+/// Compute `target/<profile>/<name>` from the test binary's location.
+fn target_dir_binary(name: &str) -> PathBuf {
+    let mut p = std::env::current_exe().expect("current_exe");
+    p.pop(); // deps/
+    p.pop(); // <profile>/
+    p.push(name);
+    p
+}
+
+/// Synchronously invoke `cargo build -p <pkg> --bin <bin>` to
+/// produce a sibling-package binary into the workspace target dir.
+fn bootstrap_via_cargo_build(pkg: &str, bin: &str) {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let status = Command::new(&cargo)
+        .args(["build", "-p", pkg, "--bin", bin])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .status()
+        .expect("spawn cargo build for sibling binary");
+    assert!(
+        status.success(),
+        "cargo build -p {pkg} --bin {bin} failed with {status}",
+    );
 }
 
 /// Drop a placeholder real-binary in `dir` so the daemon has

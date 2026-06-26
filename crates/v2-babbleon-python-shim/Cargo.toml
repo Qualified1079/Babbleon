@@ -51,3 +51,10 @@ tempfile = { workspace = true }
 # from the secret); dev path needs it to build a WhitespaceWordlist
 # locally so tests do not require a daemon round-trip.
 v2-babbleon-core = { path = "../v2-babbleon-core" }
+# tests/end_to_end.rs spawns `babbleon-daemon` and `babbleon-v2`
+# subprocesses.  Cargo does NOT build cross-package binaries from a
+# dev-dep edge (`CARGO_BIN_EXE_*` is only set for binaries in THIS
+# package), so the test self-bootstraps them via in-test
+# `cargo build -p <package> --bin <name>` calls (see
+# `bootstrap_via_cargo_build` in that file).  No dev-dep edge on the
+# user CLI or daemon crates is required.

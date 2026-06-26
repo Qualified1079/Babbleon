@@ -13,6 +13,15 @@ path = "src/main.rs"
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# tests/cli_against_daemon.rs spawns `babbleon-daemon` as a subprocess.
+# Cargo does NOT build cross-package binaries automatically from a
+# dev-dep edge — `CARGO_BIN_EXE_*` is only set for binaries in THIS
+# package — so the test bootstraps the daemon binary via an in-test
+# `cargo build -p v2-babbleon-daemon --bin babbleon-daemon` (see
+# `bootstrap_via_cargo_build` in that file).  No dev-dep edge on the
+# daemon crate is required and we deliberately do not add one: it
+# would bloat the test crate's `cargo tree --edges normal` without
+# producing the desired binary build.
 
 [dependencies]
 v2-babbleon-core = { path = "../v2-babbleon-core" }

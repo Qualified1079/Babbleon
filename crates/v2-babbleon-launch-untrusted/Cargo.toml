@@ -41,13 +41,17 @@ v2-babbleon-daemon-protocol = { path = "../v2-babbleon-daemon-protocol" }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-# Daemon binary is spawned as a subprocess in
-# `tests/daemon_socket_input.rs`.  We depend on the full daemon crate
-# only at test time so cargo builds `babbleon-daemon` alongside and
-# sets `CARGO_BIN_EXE_babbleon-daemon` for the integration test
-# harness.  The production dependency arrow points only at
-# `v2-babbleon-daemon-protocol`, keeping the launcher binary's audit
-# surface tight.
+# tests/daemon_socket_input.rs spawns `babbleon-daemon` as a
+# subprocess.  Cargo does NOT build cross-package binaries from a
+# dev-dep edge (the earlier comment claiming otherwise was wrong) —
+# `CARGO_BIN_EXE_*` is only set for binaries in THIS package.  The
+# test self-bootstraps the daemon binary via an in-test
+# `cargo build -p v2-babbleon-daemon --bin babbleon-daemon` call
+# (see `bootstrap_via_cargo_build` in that file).  We keep the
+# library dev-dep edge below because the test uses MappingBuilder,
+# PerHostSecret, Wordlist, and wrapper::write_all_wrappers to
+# exercise the daemon pipeline at the library level — that work
+# DOES come from the dev-dep.
 v2-babbleon-daemon = { path = "../v2-babbleon-daemon" }
 # Core is dev-dep only: integration tests use MappingBuilder,
 # PerHostSecret, Wordlist, and wrapper::write_all_wrappers to
