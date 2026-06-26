@@ -1967,8 +1967,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "libc",
+ "nix",
  "rand 0.8.6",
  "rpassword",
+ "seccompiler",
  "tempfile",
  "tracing",
  "tracing-subscriber",
