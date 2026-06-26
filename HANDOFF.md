@@ -24,8 +24,8 @@ lands, push here)
 
 Date: 2026-06-26 (user-asleep session — claude-opus-4-7)
 
-Last commit before this handoff section: `c7d2f7a` —
-feat(preprocessor-benchmark): --mode full for production-pipeline cost.
+Last commit before this handoff section: `86f4ad8` —
+chore(lint): fix clippy doc_markdown + doc list warnings on new code.
 
 ---
 
@@ -62,7 +62,7 @@ session entry (`7ed409b`, `64b16d0`, `318b8ae`).  Priorities 3
 (adversarial-LLM re-test) and 5 (L11 defensive prompt injection)
 are operator-gated — out of scope for an autonomous session.
 
-### Net commits this session: 11 (+1 follow-up handoff entry)
+### Net commits this session: 14 (+2 follow-up handoff entries)
 
 | # | Hash | Subject |
 |---|---|---|
@@ -77,6 +77,10 @@ are operator-gated — out of scope for an autonomous session.
 | 9 | `6d16fe2` | test(v2-preprocessor): add edge-case coverage to the real-mapping round-trip |
 | 10 | `d989459` | docs(HANDOFF): extend 2026-06-26 session log through commit 9 |
 | 11 | `c7d2f7a` | feat(preprocessor-benchmark): --mode full for production-pipeline cost |
+| 12 | `eaa9b4c` | docs(HANDOFF): record bench cold-cache finding + refresh priorities |
+| 13 | `2804a1f` | docs(preprocessor-benchmark): record 2026-06-26 full-pipeline numbers |
+| 14 | `0f72de3` | docs(CLAUDE): refresh §4.5 file format + production wiring |
+| 15 | `86f4ad8` | chore(lint): fix clippy doc_markdown + doc list warnings on new code |
 
 ### Commit 1 — Shared file_format + pipeline modules
 
