@@ -265,6 +265,80 @@ fn round_trip_is_deterministic_for_fixed_epoch() {
 }
 
 #[test]
+fn round_trip_empty_source_is_well_defined() {
+    // Edge case: the operator hands the scrambler a zero-byte file
+    // (think: `__init__.py` markers, or a deliberately-empty
+    // namespace package).  We must not crash; the round-trip must
+    // produce a string that python3 accepts (the canonical empty
+    // program is the empty string).
+    let original = "";
+    let wl = build_whitespace_wordlist(0);
+    let scrambled = scramble_pipeline(
+        original,
+        0,
+        &wl,
+        build_real_identifier_mapping,
+    )
+    .expect("scramble_pipeline must accept empty input");
+    let decoded = decode_file(&scrambled.file).unwrap();
+    let mapping =
+        build_real_identifier_mapping(&decoded.sorted_tokens, 0).unwrap();
+    let unscrambled = unscramble_pipeline(
+        decoded.version,
+        decoded.epoch,
+        &decoded.body,
+        &wl,
+        &mapping,
+    );
+    // python3 -c "" succeeds with empty stdout; the round-trip output
+    // should produce the same observable behaviour even if the
+    // recovered source has trailing whitespace (the canonicalising
+    // re-emit can introduce a final newline).
+    let original_out = python_exec(original).expect("python3 -c '' executes");
+    let unscrambled_out = python_exec(&unscrambled).unwrap_or_else(|| {
+        panic!("unscrambled empty source failed to execute: {unscrambled:?}")
+    });
+    assert_eq!(original_out, unscrambled_out);
+}
+
+#[test]
+fn round_trip_comments_only_source_executes_as_noop() {
+    // Comments-only file: the python tokenizer treats # as a regular
+    // identifier byte run (MVP doesn't split on comments).  The
+    // round-trip should still reconstruct text that python3 accepts
+    // as a no-op program.
+    let original = "# this is the only line in the file\n";
+    let unscrambled = round_trip(0, original);
+    let original_out = python_exec(original).expect("baseline executes");
+    let unscrambled_out = python_exec(&unscrambled).unwrap_or_else(|| {
+        panic!("comments-only round-trip failed:\n---\n{unscrambled}\n---")
+    });
+    assert_eq!(original_out, unscrambled_out);
+}
+
+#[test]
+fn round_trip_unicode_string_literal_preserves_codepoints() {
+    // A non-ASCII string literal stresses L12's homoglyph step: the
+    // strip is content-based and reverses every known Cyrillic
+    // homoglyph back to its Latin form.  If the original source
+    // already contained a U+0430 (Cyrillic 'а'), the strip must not
+    // corrupt it back to 'a'.
+    //
+    // This is the documented L12 limitation: any Latin char in the
+    // homoglyph set (`a c e i o p x y`) that appeared in the
+    // original via its Cyrillic homoglyph cannot survive a round
+    // trip.  But characters OUTSIDE the homoglyph set should pass
+    // through.  Pick emoji + a non-homoglyph Cyrillic codepoint.
+    let original = "msg = \"\u{1F600} and \u{0431}ear\"\nprint(msg)\n";
+    let unscrambled = round_trip(0, original);
+    let original_out = python_exec(original).expect("baseline executes");
+    let unscrambled_out = python_exec(&unscrambled).unwrap_or_else(|| {
+        panic!("unicode round-trip failed:\n---\n{unscrambled}\n---")
+    });
+    assert_eq!(original_out, unscrambled_out);
+}
+
+#[test]
 fn different_epochs_produce_different_scrambled_outputs() {
     // Per-epoch derivation is the whole point of rotation.  Two
     // epochs against the same secret must produce different bodies.
