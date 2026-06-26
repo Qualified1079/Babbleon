@@ -184,6 +184,24 @@ code items are phases 1-6.
       Corpus-dir gap documented; v2.1 batch-prefetch TODO filed.
 - [ ] Adversarial-LLM re-test: did L2+L3+L4+L5 fix the v1
       shape-fingerprint problem? (bench matrix in progress 2026-06-26)
+- [ ] **Randomize `ALIAS_COUNT` per epoch.**  Currently hardcoded
+      to 3 in two places (`identifier_scrambler::ALIAS_COUNT` and
+      `daemon_protocol::ALIAS_COUNT_WIRE`, with a "must equal" comment
+      coupling them).  Replace with a deterministic per-epoch
+      function returning a low integer in (say) `[2, 5]`, derived
+      from epoch alone so both ends compute the same count without
+      protocol changes.  Steps: (a) add `alias_count_for_epoch(epoch)
+      -> usize` in the preprocessor crate; (b) add `alias_count: u8`
+      to `GetTokenMapping` request so the daemon honours the
+      caller's choice (defends against a daemon that lies about the
+      count); (c) drop the hardcoded `ALIAS_COUNT_WIRE` constant and
+      its equality assertions; (d) update bench `scramble_pipeline`,
+      file-format reader/writer (no schema change — alias matrix
+      shape already self-describes), and all `assert!(... == 3)`
+      tests.  Backwards-compat: bump file format to version 2 OR
+      arrange the function to return 3 for production-shipped
+      epochs.  Defeats: an attacker who counts compound occurrences
+      and assumes a fixed alias cycle.
 
 ### Phase 4 — additional obfuscation layers (post-research)
 

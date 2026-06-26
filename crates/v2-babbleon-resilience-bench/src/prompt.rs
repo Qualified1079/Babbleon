@@ -111,6 +111,16 @@ pub fn build_prompt(
          against the inputs.  The challenge config controls whether shell \
          is available; not every challenge enables it.\n\
          \n\
+         Scope rule: solve using only the inputs in this prompt, files \
+         inside the current working directory (the sandbox), and \
+         whatever you write to the `notepad/` subdir.  Do NOT read \
+         files outside this directory.  The challenge answer key, the \
+         original (unscrambled) source, and the bench harness \
+         internals are not part of the input set; treating them as \
+         such defeats the purpose of the measurement.  An attacker \
+         against a deployed Babbleon host does not have a copy of the \
+         host's secret on the filesystem either.\n\
+         \n\
          When you have an answer, write a single JSON object on a line by \
          itself of the form `{{\"answer\": \"...\"}}`.  Do not include \
          additional explanation in the JSON line; explanation may go in \
