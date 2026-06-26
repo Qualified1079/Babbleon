@@ -45,10 +45,14 @@
 //! in the runtime where session-lifetime is tracked.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::errors::{Error, Result};
 use crate::per_host_secret::PerHostSecret;
 use crate::permutation::Permutation;
+use crate::permutation_cache::{
+    PermutationCache, PURPOSE_ID_HONEY, PURPOSE_ID_IDENTIFIER,
+};
 use crate::wordlist::Wordlist;
 
 /// Number of wordlist words concatenated to form one scrambled compound.
@@ -123,16 +127,55 @@ impl EpochMapping {
 /// zeroizes on drop).  Building a mapping does not move the secret;
 /// the builder can produce mappings for many epochs over its
 /// lifetime.
+///
+/// When constructed with [`Self::with_cache`], the builder consults
+/// a caller-supplied [`PermutationCache`] before invoking
+/// [`Permutation::build`] — the dominant cost of a fresh `build`
+/// call (Fisher-Yates over the full wordlist).  Workloads that
+/// reuse a small set of `(epoch, purpose)` pairs benefit linearly;
+/// see the cache module docs for sizing guidance.
 pub struct MappingBuilder<'a> {
     secret: &'a PerHostSecret,
     wordlist: &'a Wordlist,
+    cache: Option<&'a PermutationCache>,
 }
 
 impl<'a> MappingBuilder<'a> {
-    /// Create a builder for the given secret and wordlist.
+    /// Create a builder for the given secret and wordlist with no
+    /// permutation cache.  Every [`Self::build`] call rebuilds the
+    /// identifier + honey permutations from scratch.
     #[must_use]
     pub fn new(secret: &'a PerHostSecret, wordlist: &'a Wordlist) -> Self {
-        Self { secret, wordlist }
+        Self {
+            secret,
+            wordlist,
+            cache: None,
+        }
+    }
+
+    /// Create a builder that consults the supplied [`PermutationCache`]
+    /// on every [`Self::build`] call.
+    ///
+    /// The cache holds [`Permutation`] instances behind [`Arc`], so a
+    /// cache hit costs a refcount bump (sub-microsecond) instead of
+    /// a ~35 ms Fisher-Yates over the wordlist.  Sharing one cache
+    /// across multiple `MappingBuilder` instances built from the
+    /// **same** `(secret, wordlist)` pair is safe and is the
+    /// expected pattern for the daemon's lifetime; sharing across
+    /// different secrets is a correctness bug (the cache cannot
+    /// distinguish secrets and would serve a stale permutation).
+    /// Call [`PermutationCache::clear`] across a secret rotation.
+    #[must_use]
+    pub fn with_cache(
+        secret: &'a PerHostSecret,
+        wordlist: &'a Wordlist,
+        cache: &'a PermutationCache,
+    ) -> Self {
+        Self {
+            secret,
+            wordlist,
+            cache: Some(cache),
+        }
     }
 
     /// Build the mapping for `epoch`, scrambling each entry in
@@ -157,17 +200,15 @@ impl<'a> MappingBuilder<'a> {
             ));
         }
 
-        let identifier_perm = Permutation::build(
-            self.secret,
+        let identifier_perm = self.get_or_build_permutation(
             epoch,
+            PURPOSE_ID_IDENTIFIER,
             PURPOSE_IDENTIFIER,
-            self.wordlist.len(),
         )?;
-        let honey_perm = Permutation::build(
-            self.secret,
+        let honey_perm = self.get_or_build_permutation(
             epoch,
+            PURPOSE_ID_HONEY,
             PURPOSE_HONEY,
-            self.wordlist.len(),
         )?;
 
         let mut real_to_scrambled = HashMap::with_capacity(tracked_tools.len());
@@ -194,6 +235,34 @@ impl<'a> MappingBuilder<'a> {
             scrambled_to_real,
             honey_names,
         })
+    }
+
+    /// Look up a permutation in the cache (if any) and fall back to a
+    /// fresh `Permutation::build`; insert the result on miss so the
+    /// next call hits.  Returns an `Arc<Permutation>` so the cache
+    /// can hand out shared references without copying the underlying
+    /// index vectors.
+    fn get_or_build_permutation(
+        &self,
+        epoch: u64,
+        purpose_id: u8,
+        purpose_info: &[u8],
+    ) -> Result<Arc<Permutation>> {
+        if let Some(cache) = self.cache {
+            if let Some(hit) = cache.get(epoch, purpose_id) {
+                return Ok(hit);
+            }
+        }
+        let perm = Arc::new(Permutation::build(
+            self.secret,
+            epoch,
+            purpose_info,
+            self.wordlist.len(),
+        )?);
+        if let Some(cache) = self.cache {
+            cache.insert(epoch, purpose_id, Arc::clone(&perm));
+        }
+        Ok(perm)
     }
 
     /// Concatenate `COMPOUND_N` wordlist entries indexed by the
@@ -458,6 +527,149 @@ mod tests {
         let scrambled = m.scramble("only").unwrap();
         // With wordlist size 1 every word in the compound is "alpha".
         assert_eq!(scrambled, "alphaalphaalphaalpha");
+    }
+
+    // ---- Cache integration ----
+    //
+    // The `with_cache` path must produce mappings byte-identical to
+    // the cacheless path; the cache only changes *how* the permutations
+    // get built, never *what* they compute.  These tests pin that
+    // contract from several angles.
+
+    #[test]
+    fn cached_build_matches_uncached_build() {
+        // Property: the cache is transparent to the mapping output.
+        let s = fixed_secret();
+        let wl = Wordlist::english_baseline();
+        let cache = crate::permutation_cache::PermutationCache::new(4);
+
+        let uncached = MappingBuilder::new(&s, wl)
+            .build(&tracked(), 0)
+            .unwrap();
+        let cached = MappingBuilder::with_cache(&s, wl, &cache)
+            .build(&tracked(), 0)
+            .unwrap();
+
+        for tool in tracked() {
+            assert_eq!(
+                uncached.scramble(&tool),
+                cached.scramble(&tool),
+                "cached vs uncached scramble for {tool} disagree",
+            );
+        }
+        assert_eq!(uncached.honey_names, cached.honey_names);
+    }
+
+    #[test]
+    fn cache_populates_after_first_build() {
+        // Property: the first `build` for a given (epoch, purpose)
+        // populates the cache; both purposes (identifier + honey)
+        // land in the cache.
+        let s = fixed_secret();
+        let wl = Wordlist::english_baseline();
+        let cache = crate::permutation_cache::PermutationCache::new(8);
+        assert!(cache.is_empty());
+
+        MappingBuilder::with_cache(&s, wl, &cache)
+            .build(&tracked(), 7)
+            .unwrap();
+
+        // 2 entries: identifier + honey, both at epoch 7.
+        assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn cache_serves_repeated_builds_at_the_same_epoch() {
+        // Property: re-building at the same epoch does not grow the
+        // cache (the entries are hit, not duplicated).
+        let s = fixed_secret();
+        let wl = Wordlist::english_baseline();
+        let cache = crate::permutation_cache::PermutationCache::new(8);
+
+        let b = MappingBuilder::with_cache(&s, wl, &cache);
+        for _ in 0..5 {
+            b.build(&tracked(), 42).unwrap();
+        }
+        assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn cache_grows_with_distinct_epochs() {
+        // Property: distinct epochs populate distinct cache slots
+        // (until eviction).
+        let s = fixed_secret();
+        let wl = Wordlist::english_baseline();
+        let cache = crate::permutation_cache::PermutationCache::new(8);
+
+        let b = MappingBuilder::with_cache(&s, wl, &cache);
+        for epoch in 0..3u64 {
+            b.build(&tracked(), epoch).unwrap();
+        }
+        // 3 epochs × 2 purposes = 6 entries (all fit in capacity 8).
+        assert_eq!(cache.len(), 6);
+    }
+
+    #[test]
+    fn cache_eviction_does_not_corrupt_output() {
+        // Property: under heavy eviction (capacity 2 forces churn),
+        // every produced mapping is still correct — the cache may
+        // miss, but the fall-back rebuild stays sound.
+        let s = fixed_secret();
+        let wl = Wordlist::english_baseline();
+        let cache = crate::permutation_cache::PermutationCache::new(2);
+        let b = MappingBuilder::with_cache(&s, wl, &cache);
+
+        let m_uncached_a = MappingBuilder::new(&s, wl)
+            .build(&tracked(), 0)
+            .unwrap();
+        let m_uncached_b = MappingBuilder::new(&s, wl)
+            .build(&tracked(), 1)
+            .unwrap();
+
+        // Force churn: build epoch 0, 1, 2 — cache holds at most 2.
+        let m_a = b.build(&tracked(), 0).unwrap();
+        let _ = b.build(&tracked(), 1).unwrap();
+        let _ = b.build(&tracked(), 2).unwrap();
+        // Re-build epoch 1 — likely a cache miss but must still be right.
+        let m_b = b.build(&tracked(), 1).unwrap();
+
+        for tool in tracked() {
+            assert_eq!(
+                m_a.scramble(&tool),
+                m_uncached_a.scramble(&tool),
+            );
+            assert_eq!(
+                m_b.scramble(&tool),
+                m_uncached_b.scramble(&tool),
+            );
+        }
+    }
+
+    #[test]
+    fn cache_is_shareable_across_builders_with_same_secret() {
+        // Property: a single cache may back multiple `MappingBuilder`
+        // instances built from the same secret + wordlist (the
+        // production daemon pattern: rebuild the builder for every
+        // request but share the cache across requests).
+        let s = fixed_secret();
+        let wl = Wordlist::english_baseline();
+        let cache = crate::permutation_cache::PermutationCache::new(8);
+
+        // First builder primes the cache.
+        let m1 = MappingBuilder::with_cache(&s, wl, &cache)
+            .build(&tracked(), 0)
+            .unwrap();
+        assert_eq!(cache.len(), 2);
+        // Second builder (fresh struct) should hit; entry count
+        // stays at 2.
+        let m2 = MappingBuilder::with_cache(&s, wl, &cache)
+            .build(&tracked(), 0)
+            .unwrap();
+        assert_eq!(cache.len(), 2);
+
+        for tool in tracked() {
+            assert_eq!(m1.scramble(&tool), m2.scramble(&tool));
+        }
     }
 }
 
