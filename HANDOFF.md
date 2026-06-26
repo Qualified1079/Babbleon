@@ -22,10 +22,212 @@ Branch (push target): `claude/magical-turing-mele8c` (operator
 intends to rename to `v1-maintenance` out-of-band; until that
 lands, push here)
 
-Date: 2026-06-25 (user-asleep session — claude-opus-4-7)
+Date: 2026-06-26 (user-asleep session — claude-opus-4-7)
 
-Last commit before this handoff section: `ec7b215` —
-feat(v2-preprocessor): land layer 6 — direction segment reversal.
+Last commit before this handoff section: `e3db56f` —
+fix(v2-python-shim): drive the full unscramble pipeline, not just L3.
+
+---
+
+## 2026-06-26 — sleeping-operator: shared file_format + pipeline modules; python-shim fix
+
+Author: Claude Opus 4.7 (autonomous overnight continuation).
+Branch: `claude/magical-turing-mele8c`.  3 commits, all green tests,
+no new workspace deps.
+
+### Entry state
+
+Branch tip on entry was `58617b2` — "test: self-bootstrap sibling
+binaries in integration tests".  All preprocessor + v2-babbleon
+crates built clean; v2-babbleon: 12/12 cli_against_daemon green.
+**v2-babbleon-python-shim tests/end_to_end: 2/5 green, 3/5 red.**
+
+The earlier session's commit message had flagged this:  "(the
+surviving 2 pre-existing shim bugs still fail — filed for a
+follow-up)" — the count was off by one; three tests were red.
+
+Root cause:  the shim's `pipeline.rs` was authored at L3-only and
+never updated as the v2 preprocessor grew to six layers (L4 chunk
+reorder, L5 decoy injection, L2 dynamic identifier scramble, L3
+whitespace-as-words, L6 direction reversal, L12 tokenizer noise)
+plus the versioned file-format header.  The shim still read the
+scrambled file as bytes, fetched only `GetWhitespaceCompounds`,
+called the bare L3 unscrambler, and piped the resulting goo at
+`python3 -`.  Python's interpreter saw the literal header lines +
+half-unscrambled body and raised `SyntaxError` on line 4.
+
+The 2026-06-25 priorities (1 header-version field, 2 bench L6+L12,
+4 preprocessor seccomp) all landed in commits between then and
+session entry (`7ed409b`, `64b16d0`, `318b8ae`).  Priorities 3
+(adversarial-LLM re-test) and 5 (L11 defensive prompt injection)
+are operator-gated — out of scope for an autonomous session.
+
+### Net commits this session: 3
+
+| # | Hash | Subject |
+|---|---|---|
+| 1 | `3d34c3a` | feat(v2-preprocessor): file_format + pipeline modules for shared composition |
+| 2 | `633e291` | refactor(v2-babbleon): consume shared file_format + pipeline modules |
+| 3 | `e3db56f` | fix(v2-python-shim): drive the full unscramble pipeline, not just L3 |
+
+### Commit 1 — Shared file_format + pipeline modules
+
+`crates/v2-babbleon-preprocessor/src/file_format.rs` —
+canonical scrambled-file header encode + decode, format version 0
+(legacy, pre-L6, pre-L12) + version 1 (current).  Lifted from
+`v2-babbleon::scramble_lifecycle`'s in-file copy so all three call
+sites (per-file CLI, corpus CLI, python-shim) share one parser +
+one emitter.  12 unit tests.
+
+`crates/v2-babbleon-preprocessor/src/pipeline.rs` — composes the L4
+/ L5 / L2 / L3 / L6 / L12 layer modules into two operator-visible
+operations:
+
+- `scramble_pipeline(source, epoch, &wl, fetch_mapping)
+    -> ScrambledFile` — drives tokenize + L4 + L5 + L2 + L3 + L6 +
+   L12 + encode.  The `fetch_mapping` closure runs the L2 daemon
+   round-trip (`GetTokenMapping`) so the preprocessor itself stays
+   free of daemon-client code.
+- `unscramble_pipeline(version, epoch, body, &wl, &mapping)
+    -> source` — runs L12⁻¹ + L6⁻¹ (gated on version >= 1) + L3⁻¹
+   + L2⁻¹ + L5⁻¹ + L4⁻¹ + tokens_to_source.
+- `unscramble_full_file(scrambled, &wl, fetch_mapping)
+    -> source` — convenience: header decode + unscramble in one call.
+
+Epoch mismatch between the caller-supplied mapping and the
+pipeline's expected epoch is a hard error.  7 unit tests including
+a legacy-v0-file round-trip constructed in-line to prove the
+version-gate works.
+
+Lib re-exports: `encode_scrambled_file`, `decode_scrambled_file`,
+`encode_scrambled_file_versioned`, `DecodedFile`,
+`FORMAT_VERSION_LATEST`, `FORMAT_VERSION_LEGACY`, `scramble_pipeline`,
+`unscramble_pipeline`, `ScrambledFile`.
+
+### Commit 2 — v2-babbleon refactor
+
+`crates/v2-babbleon/src/scramble_lifecycle.rs`: -401 +213 lines.
+The 9 header-round-trip unit tests now live in
+`file_format::tests`; the duplicated composition is gone.  The
+daemon round-trip wrappers + I/O glue + seccomp-install timing
+stay here (application-level).  The pipeline runs through
+`scramble_pipeline` / `unscramble_pipeline` with a closure that
+calls `GetTokenMapping`.
+
+`crates/v2-babbleon/src/corpus_lifecycle.rs`: -55 +27 lines.  Same
+treatment.  The per-file walk closure is now a five-line driver
+over `scramble_pipeline` / `unscramble_pipeline`.
+
+Daemon-error capture: the pipeline closure returns
+`preprocessor::Error` for type-shape reasons; both call sites slot
+the original `anyhow::Error` into a `RefCell` and re-surface it on
+the way out so operators see the real wire error, not a synthetic
+"daemon round-trip failed" wrapper.
+
+Drop: `fetch_identifier_mapping_pub`.  Only the epoch-pinned
+variant remains externally referenced.
+
+### Commit 3 — Python-shim fix
+
+`crates/v2-babbleon-python-shim/src/pipeline.rs` rewritten:
+
+- `fetch_whitespace_wordlist(socket)` — same as before.
+- `fetch_identifier_mapping(socket, tokens, expected_epoch)` —
+  new; the shim never fetched L2 before because it never ran L2.
+  Epoch-pinning matches the user CLI's logic.
+- `parse_scrambled_file(scrambled)` — thin anyhow-context wrapper
+  over `file_format::decode`.
+- `unscramble_full(socket, scrambled)` — drives the whole
+  end-to-end pipeline: parse header, fetch whitespace + L2
+  mappings, run `unscramble_pipeline`.  This is what the shim's
+  `main.rs` calls now.
+
+3 new unit tests in `pipeline::tests` (missing-socket error path,
+header-parse error surfacing, valid-header round-trip).
+
+Test fixup in `tests/end_to_end.rs`:
+`shim_surfaces_daemon_locked_error` was writing the literal string
+`"irrelevant"` as the scrambled file and relying on the broken
+shim's header-bypass to forward bytes to the daemon.  Now that the
+shim parses the header first, `"irrelevant"` fails locally before
+the daemon round-trip.  The test now writes a minimum well-formed
+v1 header (empty token list, empty body); parse succeeds, the
+`GetWhitespaceCompounds` round-trip surfaces the lock error, the
+test's assertion holds.
+
+### Stats
+
+| Metric | Before this session | After | Δ |
+|---|---|---|---|
+| v2-babbleon-preprocessor lib tests | 143 | 162 | +19 |
+| v2-babbleon-preprocessor integ tests | 9 | 9 | 0 |
+| v2-babbleon lib tests | 57 | 57 | 0 |
+| v2-babbleon cli_against_daemon | 12 | 12 | 0 |
+| v2-babbleon-python-shim lib | 13 | 16 | +3 |
+| v2-babbleon-python-shim end_to_end | **2/5** | **5/5** | +3 |
+| v2-babbleon-resilience-bench lib | 142 | 142 | 0 |
+| New preprocessor source modules | 0 | 2 | +2 (file_format, pipeline) |
+| New workspace deps | 0 | 0 | 0 |
+| `forbid(unsafe_code)` violations | 0 | 0 | 0 |
+
+### Architectural property landed
+
+There is now **one** canonical implementation of the v2
+scrambled-file format and the v2 layer composition.  All three call
+sites (per-file CLI, corpus CLI, python-shim) consume the same two
+modules in `v2-babbleon-preprocessor`.  Adding a layer L13 is now a
+one-file change in the preprocessor crate; the three call sites
+inherit it automatically.  Drift class closed.
+
+### Refreshed next-session priorities
+
+Ordered by leverage.  Items requiring operator review are called
+out so an autonomous-session bot does not silently build on a
+contested design.
+
+1. **Format-version helper on `DecodedFile`** (~30 LOC).  Currently
+   callers check `version >= 1` inline; an enum
+   `FormatGeneration::Legacy | Current(NonZeroU32)` returned by a
+   `DecodedFile::generation()` accessor would let the version gate
+   be expressed once instead of three times.  Pure hygiene; no
+   operator review.
+2. **Preprocessor pipeline benchmarks.**
+   `tools/preprocessor-benchmark/` (referenced in module docs but
+   absent on disk) for end-to-end timing of `scramble_pipeline` +
+   `unscramble_pipeline` on a multi-file corpus.  Wires existing
+   `criterion` infrastructure; would surface any throughput
+   regression from the refactor.  Autonomous-safe.
+3. **Adversarial-LLM re-test of L2+L3+L4+L5+L6+L12.**  Carried over
+   from 2026-06-25 (TODO.md phase-3 open item).  Needs adversary
+   infrastructure (claude-cli or API).  NOT autonomous — operator
+   must supply API keys and approve the run.  In flight per the
+   2026-06-26 02:55 TODO note.
+4. **Layer 11 — defensive prompt injection.**  Carried over from
+   2026-06-25.  Operator opt-in default ON per `docs/v2/
+   obfuscation-landscape.md §4`.  Vendoring + license check +
+   disclaimer copy require operator review.
+5. **Corpus-lifecycle seccomp.**  `CorpusOptions.no_seccomp` is
+   currently `#[allow(dead_code)]` because corpus-dir subcommands
+   need socket/connect inside the per-file loop, blocking the
+   filter install before the walk.  v2.1 batch-prefetch design:
+   walk the input dir up-front, fetch the union of every
+   per-file token set in one round-trip, install seccomp, then
+   process.  ~250 LOC; operator review recommended for the
+   batched daemon call's correctness boundary.
+
+### Process notes for next autonomous session
+
+- The 2026-06-26 self-bootstrap test-infrastructure commit
+  (`58617b2`) means the python-shim end_to_end tests no longer
+  require pre-built sibling binaries; they `cargo build -p <pkg>
+  --bin <name>` on demand.  Use this pattern when adding new
+  cross-crate integration tests — it survives a `cargo clean`.
+- `cargo test --workspace` is still forbidden per `CLAUDE.md §4`.
+  Pass each `v2-` crate explicitly with `-p`.
+- When refactoring composition between crates, the canonical
+  rule is now: **layer modules + composition live in
+  `v2-babbleon-preprocessor`; daemon I/O + operator I/O live in
+  the calling crate**.  Future feature work should not invert this.
 
 ---
 
