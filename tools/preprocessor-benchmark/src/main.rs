@@ -66,7 +66,9 @@ use clap::Parser;
 
 use babbleon_core_v2::per_host_secret::PerHostSecret;
 use babbleon_core_v2::wordlist::Wordlist;
-use babbleon_core_v2::MappingBuilder;
+use babbleon_core_v2::{
+    MappingBuilder, PermutationCache, PERMUTATION_CACHE_DEFAULT_CAPACITY,
+};
 use babbleon_preprocessor_v2::file_format::decode as decode_file;
 use babbleon_preprocessor_v2::identifier_scrambler::{
     IdentifierMapping, ALIAS_COUNT,
@@ -127,6 +129,15 @@ struct Args {
     /// numbers; switch to `full` for production-path budget checks.
     #[arg(long, default_value = "l3-only", value_parser = ["l3-only", "full"])]
     mode: String,
+
+    /// Permutation-cache capacity in `--mode full`.  `0` disables the
+    /// cache (every iteration rebuilds the L2 permutation from
+    /// scratch — the prior, pre-cache measurement).  The default
+    /// matches the production daemon's worst-case fan-out
+    /// (`ALIAS_COUNT * 2` entries + slack).  Ignored in `--mode
+    /// l3-only`; the L3-only path does not touch the cache.
+    #[arg(long, default_value_t = PERMUTATION_CACHE_DEFAULT_CAPACITY)]
+    cache_capacity: usize,
 }
 
 /// Pipeline mode selected via `--mode`.
@@ -192,7 +203,22 @@ fn main() -> ExitCode {
     // builder caches HKDF derivation state across `build` calls,
     // matching the production daemon's behaviour where the same
     // secret + wordlist are kept warm in memory.
-    let builder = MappingBuilder::new(&secret, &Wordlist::english_baseline());
+    //
+    // When `args.cache_capacity > 0` the builder also consults a
+    // `PermutationCache` so the dominant cost — Fisher-Yates over
+    // the 370k-entry wordlist — is paid once per `(epoch, purpose)`
+    // pair instead of once per call.  `--cache-capacity 0` opts out
+    // (matches the prior, pre-cache measurement).
+    let wordlist = Wordlist::english_baseline();
+    let cache = if args.cache_capacity > 0 {
+        Some(PermutationCache::new(args.cache_capacity))
+    } else {
+        None
+    };
+    let builder = match &cache {
+        Some(c) => MappingBuilder::with_cache(&secret, wordlist, c),
+        None => MappingBuilder::new(&secret, wordlist),
+    };
 
     println!(
         "mode: {}    epoch: {}    target: {} µs/file (median)",
@@ -200,6 +226,17 @@ fn main() -> ExitCode {
         args.epoch,
         args.target_micros,
     );
+    if matches!(mode, Mode::Full) {
+        println!(
+            "permutation-cache: capacity={} ({})",
+            args.cache_capacity,
+            if cache.is_some() {
+                "enabled"
+            } else {
+                "disabled (cold rebuild every call)"
+            },
+        );
+    }
     println!(
         "{:<28} {:>8} {:>8} {:>8} {:>8} {:>8}  vs {} µs",
         "puzzle", "mean", "median", "p95", "min", "max", args.target_micros,
