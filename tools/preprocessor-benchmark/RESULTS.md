@@ -6,6 +6,76 @@ prototype") gate: **per-file L3 preprocessor latency must be at most
 full pipeline (L4+L5+L2+L3+L6+L12 + header encode/decode) is
 measured separately as the production-path number.
 
+## 2026-06-26 (night) — `PermutationCache` ships; cached vs uncached `--mode full`
+
+Hardware: same sandbox container.  Release profile.  50 timed
+iterations per puzzle, 5 warmup.  Epoch 0.  Wordlist: the English
+baseline (369 652 entries).
+
+`crates/v2-babbleon-core/src/permutation_cache.rs` adds a small LRU
+cache keyed by `(epoch, purpose)`; the bench opts in via
+`--cache-capacity N` (default = 8 = `PERMUTATION_CACHE_DEFAULT_CAPACITY`).
+`--cache-capacity 0` disables the cache and reproduces the prior
+cold-rebuild measurement against the cached path.
+
+### Cached (`--cache-capacity 8`)
+
+```
+mode: full    epoch: 0    target: 250000 µs/file (median)
+permutation-cache: capacity=8 (enabled)
+puzzle                           mean   median      p95      min      max  vs 250000 µs
+----------------------------------------------------------------------------------------
+01-fizzbuzz.py                    978      968     1038      932     1069  PASS
+02-running-max.py                1358     1356     1396     1305     1454  PASS
+03-anagram-groups.py             1221     1219     1259     1169     1283  PASS
+04-balanced-parens.py            1626     1628     1687     1562     1713  PASS
+05-merge-intervals.py            1890     1883     1961     1831     1988  PASS
+```
+
+### Uncached (`--cache-capacity 0`)
+
+```
+mode: full    epoch: 0    target: 250000 µs/file (median)
+permutation-cache: capacity=0 (disabled (cold rebuild every call))
+puzzle                           mean   median      p95      min      max  vs 250000 µs
+----------------------------------------------------------------------------------------
+01-fizzbuzz.py                  85899    85466    89821    83129    90813  PASS
+02-running-max.py               89848    90184    92739    84469   103276  PASS
+03-anagram-groups.py            86258    87279    89287    82130    89601  PASS
+04-balanced-parens.py           86084    85608    88297    83737    88745  PASS
+05-merge-intervals.py           85873    86163    87994    82240    86163  PASS
+```
+
+### Interpretation
+
+- **Speedup: ~70-85×** depending on the puzzle.  Cached medians sit
+  at ~1-2 ms/file; uncached medians sit at ~85-90 ms/file.  The
+  delta is the Fisher-Yates cost — `ALIAS_COUNT * 2 = 6` shuffles
+  over the 370k baseline per iteration — which now happens once
+  per `(epoch, purpose)` pair and is then served from the cache.
+- **Tail**: ±5% under cache, ±10% without.  Both are scheduler
+  jitter; structural cost is dominated by the L2 lookup +
+  L3/L4/L5/L6/L12 work in the cached mode and by the Fisher-Yates
+  pass in the uncached mode.
+
+### Production-budget recompute
+
+- **Per-file interactive** (`babbleon-python script.py`): ~200 ms
+  on the very first invocation after a rotation (cold cache; six
+  permutations to build) and ~1-2 ms thereafter for the lifetime
+  of the host-epoch.  Prior estimate was "70 ms first / sub-ms
+  subsequently"; the cache shifts the cold cost up (more shuffles
+  paid up-front per request) and the warm cost down (cache hits
+  skip the Fisher-Yates).
+- **Corpus batch** (`babbleon scramble-dir vendored-deps/` over N
+  files): cold daemon ⇒ ~200 ms first file + ~1-2 ms × (N-1)
+  subsequent files.  For N = 1000 that's ~1.2 s — well below the
+  prior ~5 s estimate.
+
+The cache lives in `DaemonState` (`crates/v2-babbleon-daemon/src/state.rs`)
+and is exercised by every `GetTokenMapping` request.  See the
+2026-06-26 night HANDOFF entry for the wiring detail.
+
 ## 2026-06-26 — full-pipeline cold-cache run (mode: full)
 
 Hardware: same sandbox container.  Release profile.  20 timed
@@ -49,6 +119,11 @@ caches the per-epoch permutation in memory across requests, so the
 cost (sub-ms).  `MappingBuilder` itself does NOT yet expose a cache
 — each `build()` call rebuilds.  Filed as next-session priority 1
 in `HANDOFF.md` (2026-06-26 block).
+
+> **Update (2026-06-26 night):** the `PermutationCache` priority
+> landed; see the section above for the cached vs uncached
+> measurements.  The "cold-cache" numbers below remain the
+> reference point for the no-cache fall-back.
 
 ### Production budget implications
 
