@@ -149,7 +149,8 @@ fn scramble_after_mapping(
 }
 
 /// Drive the scramble pipeline end-to-end given a closure that
-/// fetches the identifier mapping for a (sorted_tokens, epoch) pair.
+/// fetches the identifier mapping for a (`sorted_tokens`, epoch)
+/// pair.
 ///
 /// # Mapping closure contract
 ///

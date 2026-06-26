@@ -50,10 +50,11 @@
 //!    - apply L12⁻¹ → L6⁻¹ → L3⁻¹ → L2⁻¹ → L5⁻¹ → L4⁻¹ →
 //!      `tokens_to_source` via
 //!      `babbleon_preprocessor_v2::pipeline::unscramble_pipeline`.
-//!    The same composition the `babbleon scramble`/`unscramble` CLI
-//!    and the `scramble-dir`/`unscramble-dir` batch CLI use; all
-//!    three consumers share the layer order via the preprocessor's
-//!    pipeline module.
+//!
+//!    The same composition the `babbleon scramble`/`unscramble`
+//!    CLI and the `scramble-dir`/`unscramble-dir` batch CLI use;
+//!    all three consumers share the layer order via the
+//!    preprocessor's pipeline module.
 //! 4. **Spawn `python3 -`** with stdin piped, stdout/stderr inherited
 //!    so script output passes through to the operator's terminal.
 //! 5. **Feed the source** to the child's stdin, close stdin so
