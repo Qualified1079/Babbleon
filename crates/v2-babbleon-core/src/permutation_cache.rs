@@ -52,6 +52,7 @@
 //!   current consumer hits this.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::permutation::Permutation;
@@ -109,6 +110,14 @@ struct Entry {
 pub struct PermutationCache {
     inner: Mutex<VecDeque<Entry>>,
     capacity: usize,
+    /// Hit counter — total number of `get` calls that returned `Some`.
+    /// Atomic so observability stays lock-free even when the cache
+    /// `Mutex` is contended.
+    hits: AtomicU64,
+    /// Miss counter — total number of `get` calls that returned
+    /// `None`.  Together with `hits` lets operators compute the hit
+    /// ratio and decide whether to size the cache up.
+    misses: AtomicU64,
 }
 
 impl std::fmt::Debug for PermutationCache {
@@ -120,6 +129,8 @@ impl std::fmt::Debug for PermutationCache {
         f.debug_struct("PermutationCache")
             .field("capacity", &self.capacity)
             .field("len", &self.len())
+            .field("hits", &self.hits())
+            .field("misses", &self.misses())
             .finish_non_exhaustive()
     }
 }
@@ -137,6 +148,8 @@ impl PermutationCache {
         Self {
             inner: Mutex::new(VecDeque::with_capacity(capacity)),
             capacity,
+            hits: AtomicU64::new(0),
+            misses: AtomicU64::new(0),
         }
     }
 
@@ -159,13 +172,22 @@ impl PermutationCache {
         purpose_id: u8,
     ) -> Option<Arc<Permutation>> {
         let mut entries = self.inner.lock().ok()?;
-        let idx = entries
+        let Some(idx) = entries
             .iter()
-            .position(|e| e.epoch == epoch && e.purpose_id == purpose_id)?;
+            .position(|e| e.epoch == epoch && e.purpose_id == purpose_id)
+        else {
+            // Drop the lock guard before touching the atomic so a
+            // poisoned mutex doesn't pin us; we still record the miss.
+            drop(entries);
+            self.misses.fetch_add(1, Ordering::Relaxed);
+            return None;
+        };
         let entry =
             entries.remove(idx).expect("position returned a valid index");
         let perm = Arc::clone(&entry.perm);
         entries.push_front(entry);
+        drop(entries);
+        self.hits.fetch_add(1, Ordering::Relaxed);
         Some(perm)
     }
 
@@ -213,6 +235,52 @@ impl PermutationCache {
     #[must_use]
     pub fn capacity(&self) -> usize {
         self.capacity
+    }
+
+    /// Cumulative number of [`Self::get`] calls that returned `Some`
+    /// since this cache was constructed (or last
+    /// [`Self::reset_stats`]).
+    #[must_use]
+    pub fn hits(&self) -> u64 {
+        self.hits.load(Ordering::Relaxed)
+    }
+
+    /// Cumulative number of [`Self::get`] calls that returned `None`
+    /// since this cache was constructed (or last
+    /// [`Self::reset_stats`]).
+    #[must_use]
+    pub fn misses(&self) -> u64 {
+        self.misses.load(Ordering::Relaxed)
+    }
+
+    /// Hit ratio in `[0.0, 1.0]`.  Returns `0.0` if there have been
+    /// no lookups (no division by zero).
+    #[must_use]
+    pub fn hit_ratio(&self) -> f64 {
+        let h = self.hits();
+        let m = self.misses();
+        let total = h.saturating_add(m);
+        if total == 0 {
+            0.0
+        } else {
+            // Cast to f64 for ratio; both operands fit because the
+            // counters are atomic u64 and `total` is at most
+            // 2 * u64::MAX which we already collapsed with
+            // saturating_add.  Precision loss above 2^53 is acceptable
+            // for an observability number.
+            #[allow(clippy::cast_precision_loss)]
+            {
+                h as f64 / total as f64
+            }
+        }
+    }
+
+    /// Reset hit + miss counters to zero.  The cache entries
+    /// themselves are untouched.  Useful for time-windowed
+    /// observability (reset → measure → read).
+    pub fn reset_stats(&self) {
+        self.hits.store(0, Ordering::Relaxed);
+        self.misses.store(0, Ordering::Relaxed);
     }
 
     /// Drop every cached entry without dropping the cache itself.
@@ -362,6 +430,57 @@ mod tests {
         // iff that property still holds.
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<PermutationCache>();
+    }
+
+    #[test]
+    fn counters_start_at_zero() {
+        let c = PermutationCache::new(4);
+        assert_eq!(c.hits(), 0);
+        assert_eq!(c.misses(), 0);
+        // Float-cmp lint: the `if total == 0 { 0.0 }` early-return
+        // guarantees an exact zero here, so direct equality is the
+        // right test.  Absolute-difference would be no stronger.
+        assert!(c.hit_ratio().abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn counters_track_get_outcomes() {
+        let c = PermutationCache::new(4);
+        let p = perm_for(0, b"v2-test");
+        c.insert(0, PURPOSE_ID_IDENTIFIER, Arc::clone(&p));
+
+        // Three hits, one miss.
+        let _ = c.get(0, PURPOSE_ID_IDENTIFIER);
+        let _ = c.get(0, PURPOSE_ID_IDENTIFIER);
+        let _ = c.get(0, PURPOSE_ID_IDENTIFIER);
+        let _ = c.get(9, PURPOSE_ID_IDENTIFIER);
+
+        assert_eq!(c.hits(), 3);
+        assert_eq!(c.misses(), 1);
+        assert!(
+            (c.hit_ratio() - 0.75).abs() < 1e-9,
+            "ratio {} not approx 0.75",
+            c.hit_ratio(),
+        );
+    }
+
+    #[test]
+    fn reset_stats_zeroes_counters_but_keeps_entries() {
+        let c = PermutationCache::new(4);
+        let p = perm_for(0, b"v2-test");
+        c.insert(0, PURPOSE_ID_IDENTIFIER, Arc::clone(&p));
+        let _ = c.get(0, PURPOSE_ID_IDENTIFIER);
+        let _ = c.get(7, PURPOSE_ID_IDENTIFIER);
+        assert_eq!(c.hits(), 1);
+        assert_eq!(c.misses(), 1);
+        assert_eq!(c.len(), 1);
+
+        c.reset_stats();
+        assert_eq!(c.hits(), 0);
+        assert_eq!(c.misses(), 0);
+        // Entry survives.
+        assert_eq!(c.len(), 1);
+        assert!(c.get(0, PURPOSE_ID_IDENTIFIER).is_some());
     }
 
     #[test]
