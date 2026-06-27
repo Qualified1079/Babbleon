@@ -184,24 +184,20 @@ code items are phases 1-6.
       Corpus-dir gap documented; v2.1 batch-prefetch TODO filed.
 - [ ] Adversarial-LLM re-test: did L2+L3+L4+L5 fix the v1
       shape-fingerprint problem? (bench matrix in progress 2026-06-26)
-- [ ] **Randomize `ALIAS_COUNT` per epoch.**  Currently hardcoded
-      to 3 in two places (`identifier_scrambler::ALIAS_COUNT` and
-      `daemon_protocol::ALIAS_COUNT_WIRE`, with a "must equal" comment
-      coupling them).  Replace with a deterministic per-epoch
-      function returning a low integer in (say) `[2, 5]`, derived
-      from epoch alone so both ends compute the same count without
-      protocol changes.  Steps: (a) add `alias_count_for_epoch(epoch)
-      -> usize` in the preprocessor crate; (b) add `alias_count: u8`
-      to `GetTokenMapping` request so the daemon honours the
-      caller's choice (defends against a daemon that lies about the
-      count); (c) drop the hardcoded `ALIAS_COUNT_WIRE` constant and
-      its equality assertions; (d) update bench `scramble_pipeline`,
-      file-format reader/writer (no schema change — alias matrix
-      shape already self-describes), and all `assert!(... == 3)`
-      tests.  Backwards-compat: bump file format to version 2 OR
-      arrange the function to return 3 for production-shipped
-      epochs.  Defeats: an attacker who counts compound occurrences
-      and assumes a fixed alias cycle.
+- [x] **Randomize `ALIAS_COUNT` per epoch.**  Landed across the
+      2026-06-27 session: commits `9d9af7f` (primitive),
+      `21b4cd7` (wire protocol + lifecycle), `405d7fe`
+      (end-to-end round-trip test), `d38a370` (bench coverage).
+      Both back-compat options from the original task ended up in
+      the same commit:  file format bumped to version 2 AND the
+      preprocessor's `alias_count_for_epoch(version, epoch)`
+      returns the legacy `ALIAS_COUNT=3` for `version < 2` so
+      v0/v1 files unscramble cleanly under the new daemon.  The
+      wire field is `format_version: u32` (not `alias_count: u8`)
+      because the daemon needs both `K` and the virtual-epoch
+      stride; deriving both from version keeps the two ends in
+      sync without a second wire field.  See `HANDOFF.md`
+      2026-06-27 block for the full design + stats.
 
 ### Phase 4 — additional obfuscation layers (post-research)
 
