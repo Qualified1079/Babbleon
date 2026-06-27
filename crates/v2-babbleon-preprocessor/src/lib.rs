@@ -166,8 +166,9 @@ pub use file_format::{
 };
 pub use pipeline::{scramble_pipeline, unscramble_pipeline, ScrambledFile};
 pub use identifier_scrambler::{
-    collect_unique_tokens, scramble_identifiers, unscramble_identifiers,
-    IdentifierMapping, ALIAS_COUNT,
+    alias_count_for_epoch, collect_unique_tokens, scramble_identifiers,
+    unscramble_identifiers, IdentifierMapping, ALIAS_COUNT,
+    ALIAS_COUNT_VARIABLE_FROM_VERSION, MAX_ALIAS_COUNT, MIN_ALIAS_COUNT,
 };
 pub use secret_literal_scrambler::{
     scramble_secret_literals, unscramble_secret_literals,

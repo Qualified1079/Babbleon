@@ -58,7 +58,111 @@ use crate::tokens::Token;
 /// At scramble time the pass cycles through aliases by occurrence index
 /// so repeated tokens produce varied compounds, defeating
 /// frequency-count inference.
+///
+/// # Status
+///
+/// `ALIAS_COUNT` is the legacy fixed-count invariant that applies to
+/// every scrambled file at file-format versions 0 and 1.  Files emitted
+/// at version 2 and later size their alias matrix per-epoch via
+/// [`alias_count_for_epoch`]; see that function's docs for the
+/// motivation.  Production call sites that hard-code "3" should
+/// migrate to [`alias_count_for_epoch`] in lock-step with the file-
+/// format bump filed in TODO.md §"Randomize ALIAS_COUNT per epoch".
 pub const ALIAS_COUNT: usize = 3;
+
+/// Minimum alias count produced by [`alias_count_for_epoch`] for
+/// post-legacy file-format versions.
+///
+/// Lower bound chosen so every token always has at least two aliases —
+/// a single alias would degenerate to the deterministic-mapping shape
+/// that frequency analysis attacks.
+pub const MIN_ALIAS_COUNT: usize = 2;
+
+/// Maximum alias count produced by [`alias_count_for_epoch`] for
+/// post-legacy file-format versions.
+///
+/// Upper bound chosen so the daemon's per-request work stays bounded:
+/// at `MAX_ALIAS_COUNT = 5`, a `GetTokenMapping` round-trip rebuilds
+/// at most 5 × 2 = 10 permutations (identifier + honey per virtual
+/// epoch).  Above this the cache footprint grows linearly and rotation
+/// blast radius gets ugly without commensurate defender benefit.
+pub const MAX_ALIAS_COUNT: usize = 5;
+
+/// File-format version at which the alias count became a per-epoch
+/// deterministic function instead of a fixed constant.
+///
+/// Files with `version < ALIAS_COUNT_VARIABLE_FROM_VERSION` use
+/// [`ALIAS_COUNT`] verbatim (legacy invariant); files at or above
+/// this version size their matrix via [`alias_count_for_epoch`].
+///
+/// The cutoff is named at the call site rather than embedded inline
+/// so a future format-bump that re-tunes the alias range (e.g. raising
+/// `MAX_ALIAS_COUNT`) lands in one place.
+pub const ALIAS_COUNT_VARIABLE_FROM_VERSION: u32 = 2;
+
+/// Deterministic per-epoch alias count for a given file-format
+/// version.
+///
+/// # What this defeats
+///
+/// An attacker who counts compound occurrences in a scrambled body
+/// and assumes the alias cycle has a fixed length cannot solve the
+/// recovered cycle without the version+epoch pair.  Without the
+/// alias count, a single L2 frequency-analysis pass cannot align
+/// compound runs to original tokens.  This is a strict improvement
+/// over the legacy invariant `ALIAS_COUNT = 3`, which made the
+/// cycle length public and offered nothing to a counter-analysis
+/// adversary.
+///
+/// # Mechanism
+///
+/// For `format_version < ALIAS_COUNT_VARIABLE_FROM_VERSION` returns
+/// [`ALIAS_COUNT`] — the legacy fixed value — so files emitted under
+/// older format versions unscramble correctly.
+///
+/// For `format_version >= ALIAS_COUNT_VARIABLE_FROM_VERSION` returns
+/// a value in `MIN_ALIAS_COUNT ..= MAX_ALIAS_COUNT` derived from
+/// `epoch` via a public deterministic mix (golden-ratio
+/// multiplicative hash + xor).  The mix is NOT secret-derived: the
+/// alias count is observable in the daemon's response and so is
+/// already public; mixing in HKDF would buy nothing.
+///
+/// # Determinism contract
+///
+/// `alias_count_for_epoch(v, e) == alias_count_for_epoch(v, e)` for
+/// every `(v, e)` pair — the function is total, side-effect-free,
+/// and consults nothing outside its arguments.  Both ends of a
+/// scramble/unscramble round-trip MUST compute the same value or
+/// the daemon's alias matrix will not align with the body bytes.
+///
+/// # Distribution
+///
+/// The mix is intended to be uniform in the
+/// `MIN_ALIAS_COUNT ..= MAX_ALIAS_COUNT` range across consecutive
+/// epochs; the dedicated test
+/// `alias_count_for_epoch_is_uniform_over_a_large_window` asserts
+/// every value in the range appears at least once across the first
+/// 1024 epochs.
+#[must_use]
+pub fn alias_count_for_epoch(format_version: u32, epoch: u64) -> usize {
+    if format_version < ALIAS_COUNT_VARIABLE_FROM_VERSION {
+        return ALIAS_COUNT;
+    }
+    // Public deterministic mix.  The constants are arbitrary
+    // well-known primes / golden-ratio words; they do not depend on
+    // the per-host secret.  Keeping the mix public (and therefore
+    // trivially recoverable from a published scrambled file) is fine
+    // because the alias count is already observable in the daemon's
+    // wire response.
+    const MIX_MUL: u64 = 0x9E37_79B9_7F4A_7C15;
+    const MIX_XOR: u64 = 0xDEAD_BEEF_CAFE_BABE;
+    let mixed = epoch.wrapping_mul(MIX_MUL) ^ MIX_XOR;
+    let range = (MAX_ALIAS_COUNT - MIN_ALIAS_COUNT + 1) as u64;
+    // High 32 bits feed the modulo — discards the predictable low
+    // bits that LCG-style mixes leak.
+    let bucket = (mixed >> 32) % range;
+    MIN_ALIAS_COUNT + bucket as usize
+}
 
 /// Per-file identifier mapping built from daemon-supplied aliases.
 ///
@@ -196,8 +300,9 @@ pub fn unscramble_identifiers(
 #[cfg(test)]
 mod tests {
     use super::{
-        collect_unique_tokens, scramble_identifiers, unscramble_identifiers,
-        IdentifierMapping, ALIAS_COUNT,
+        alias_count_for_epoch, collect_unique_tokens, scramble_identifiers,
+        unscramble_identifiers, IdentifierMapping, ALIAS_COUNT,
+        ALIAS_COUNT_VARIABLE_FROM_VERSION, MAX_ALIAS_COUNT, MIN_ALIAS_COUNT,
     };
     use crate::tokens::{Token, WhitespaceKind};
 
@@ -347,5 +452,133 @@ mod tests {
         ];
         let unique = collect_unique_tokens(&tokens);
         assert_eq!(unique, vec!["apple", "mango", "zoo"]);
+    }
+
+    // ----- alias_count_for_epoch -----
+
+    #[test]
+    fn alias_count_for_legacy_format_returns_constant() {
+        // Versions 0 and 1 (every file shipped before the bump)
+        // MUST return ALIAS_COUNT verbatim so existing scrambled
+        // files unscramble correctly under the new builder.
+        for v in 0..ALIAS_COUNT_VARIABLE_FROM_VERSION {
+            for epoch in [0u64, 1, 42, 12_345, u64::MAX] {
+                assert_eq!(
+                    alias_count_for_epoch(v, epoch),
+                    ALIAS_COUNT,
+                    "legacy version {v} epoch {epoch} must return ALIAS_COUNT",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn alias_count_for_v2_is_always_in_range() {
+        // The post-legacy mix must never escape the documented
+        // bounds; a function that returned 6 or 1 would silently
+        // mis-size the alias matrix downstream.  Exhaustive over a
+        // 4096-epoch window — enough to catch any off-by-one in the
+        // modulo step.
+        for epoch in 0u64..4096 {
+            let n = alias_count_for_epoch(
+                ALIAS_COUNT_VARIABLE_FROM_VERSION,
+                epoch,
+            );
+            assert!(
+                (MIN_ALIAS_COUNT..=MAX_ALIAS_COUNT).contains(&n),
+                "alias_count_for_epoch(v2, {epoch}) = {n} out of range \
+                 [{MIN_ALIAS_COUNT}, {MAX_ALIAS_COUNT}]",
+            );
+        }
+    }
+
+    #[test]
+    fn alias_count_for_epoch_is_deterministic() {
+        // Same input → same output, every time.  The function is
+        // total and side-effect-free.
+        for v in [0u32, 1, 2, 3, 7] {
+            for epoch in [0u64, 1, 2, 99, 1234, u64::MAX] {
+                let a = alias_count_for_epoch(v, epoch);
+                let b = alias_count_for_epoch(v, epoch);
+                assert_eq!(a, b);
+            }
+        }
+    }
+
+    #[test]
+    fn alias_count_for_epoch_is_uniform_over_a_large_window() {
+        // Every value in [MIN_ALIAS_COUNT, MAX_ALIAS_COUNT] must
+        // appear at least once across the first 1024 epochs.  This
+        // guards against a pathological mix that locked to one
+        // bucket — defeating the whole point of varying the count.
+        use std::collections::BTreeSet;
+        let mut seen: BTreeSet<usize> = BTreeSet::new();
+        for epoch in 0u64..1024 {
+            seen.insert(alias_count_for_epoch(
+                ALIAS_COUNT_VARIABLE_FROM_VERSION,
+                epoch,
+            ));
+        }
+        let expected: BTreeSet<usize> =
+            (MIN_ALIAS_COUNT..=MAX_ALIAS_COUNT).collect();
+        assert_eq!(
+            seen, expected,
+            "alias-count mix should cover every value in \
+             [{MIN_ALIAS_COUNT}, {MAX_ALIAS_COUNT}] across 1024 epochs",
+        );
+    }
+
+    #[test]
+    fn alias_count_for_epoch_actually_varies_across_consecutive_epochs() {
+        // A function that returned a constant for v2+ would silently
+        // re-introduce the legacy invariant.  This test fails fast
+        // if a future edit pins the mix to one value.
+        let v = ALIAS_COUNT_VARIABLE_FROM_VERSION;
+        let first = alias_count_for_epoch(v, 0);
+        let varies = (1u64..1024)
+            .any(|e| alias_count_for_epoch(v, e) != first);
+        assert!(
+            varies,
+            "alias_count_for_epoch must vary across consecutive \
+             epochs for v >= {ALIAS_COUNT_VARIABLE_FROM_VERSION}",
+        );
+    }
+
+    #[test]
+    fn alias_count_for_future_versions_uses_the_v2_mix() {
+        // Any version >= ALIAS_COUNT_VARIABLE_FROM_VERSION takes the
+        // post-legacy path.  This guards against a regression where a
+        // hypothetical version-3 bump implicitly fell back to the
+        // legacy path because the cutoff was hard-coded as `== 2`.
+        let v2 = alias_count_for_epoch(
+            ALIAS_COUNT_VARIABLE_FROM_VERSION,
+            42,
+        );
+        let v3 = alias_count_for_epoch(
+            ALIAS_COUNT_VARIABLE_FROM_VERSION + 1,
+            42,
+        );
+        let v7 = alias_count_for_epoch(
+            ALIAS_COUNT_VARIABLE_FROM_VERSION + 5,
+            42,
+        );
+        assert_eq!(v2, v3);
+        assert_eq!(v2, v7);
+    }
+
+    #[test]
+    fn alias_count_constants_satisfy_invariants() {
+        // ALIAS_COUNT must lie inside the post-legacy range so the
+        // builder's PermutationCache sizing logic (which keys on
+        // MAX_ALIAS_COUNT * 2 slots) covers the legacy case without
+        // extra plumbing.
+        assert!(
+            (MIN_ALIAS_COUNT..=MAX_ALIAS_COUNT).contains(&ALIAS_COUNT),
+            "legacy ALIAS_COUNT ({ALIAS_COUNT}) must lie inside the \
+             post-legacy range [{MIN_ALIAS_COUNT}, {MAX_ALIAS_COUNT}]",
+        );
+        assert!(MIN_ALIAS_COUNT >= 2);
+        assert!(MAX_ALIAS_COUNT <= 8);
+        assert!(MIN_ALIAS_COUNT < MAX_ALIAS_COUNT);
     }
 }
