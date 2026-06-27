@@ -1,18 +1,33 @@
-//! Scrambled-file header encode + decode (format version 0 / 1).
+//! Scrambled-file header encode + decode (format version 0 / 1 / 2).
 //!
 //! # Infrastructure module
 //!
 //! No specific attack is defeated here.  The header carries the
 //! metadata both the scrambler and the unscrambler need: the format
-//! version (so the unscrambler knows which layer inverses to apply),
-//! the epoch (so the L4/L5/L6/L12 PRNGs reproduce the same per-epoch
-//! choices), and the sorted unique-token list (so the unscrambler can
-//! ask the daemon for the same L2 mapping without the original
-//! source).
+//! version (so the unscrambler knows which layer inverses to apply
+//! AND which L2 alias-count regime to derive), the epoch (so the
+//! L4/L5/L6/L12 PRNGs reproduce the same per-epoch choices), and the
+//! sorted unique-token list (so the unscrambler can ask the daemon
+//! for the same L2 mapping without the original source).
 //!
 //! # File format
 //!
-//! Current — version 1, five lines + body:
+//! Current — version 2, five lines + body.  Identical on-wire shape
+//! to v1; the difference is in how L2's alias matrix is derived
+//! (`alias_count_for_epoch(2, epoch)` instead of the fixed
+//! `ALIAS_COUNT = 3`):
+//!
+//! ```text
+//! babbleon-v2
+//! version:2
+//! epoch:<N>
+//! tokens:<tab-separated sorted unique tokens>
+//! ---
+//! <L3 body, post-L6, post-L12, post-variable-alias-count L2>
+//! ```
+//!
+//! Version 1 — same layout, legacy L2 regime (fixed
+//! `ALIAS_COUNT = 3`, stride 3 in the daemon's virtual-epoch math):
 //!
 //! ```text
 //! babbleon-v2
@@ -20,7 +35,7 @@
 //! epoch:<N>
 //! tokens:<tab-separated sorted unique tokens>
 //! ---
-//! <L3 body, post-L6, post-L12>
+//! <L3 body, post-L6, post-L12, post-fixed-alias-count L2>
 //! ```
 //!
 //! Legacy — version 0, four lines + body (no `version:` line):
@@ -30,13 +45,14 @@
 //! epoch:<N>
 //! tokens:<tab-separated sorted unique tokens>
 //! ---
-//! <L3 body, pre-L6, pre-L12>
+//! <L3 body, pre-L6, pre-L12, fixed-alias-count L2>
 //! ```
 //!
-//! The reader accepts either layout.  A version 1 file emitted by the
-//! current scrambler triggers L6 inverse + L12 strip on unscramble; a
-//! version 0 file (from before those layers landed) skips L6 inverse
-//! so the body is not corrupted, and the L12 strip is content-based
+//! The reader accepts every layout.  Version 1 + 2 files trigger
+//! L6 inverse + L12 strip on unscramble; v2 additionally uses the
+//! variable-alias-count daemon path keyed on the embedded version.
+//! Version 0 files (from before L6 / L12 landed) skip L6 inverse so
+//! the body is not corrupted, and the L12 strip is content-based
 //! and idempotent on clean ASCII.
 //!
 //! # Security baseline
