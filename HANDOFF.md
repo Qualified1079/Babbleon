@@ -56,7 +56,7 @@ defensive; 5 is done.  This session picked up the open phase-3
 item filed in `TODO.md` § "Randomize ALIAS_COUNT per epoch", an
 explicit autonomous-safe deferred task.
 
-### Net commits this session: 5
+### Net commits this session: 6 (+ a final HANDOFF refresh)
 
 | # | Hash | Subject |
 |---|---|---|
@@ -65,6 +65,8 @@ explicit autonomous-safe deferred task.
 | 3 | `405d7fe` | test(v2-babbleon-daemon): daemon-driven variable-mode L2 round-trip |
 | 4 | `f3775ff` | docs(HANDOFF,CLAUDE): record 2026-06-27 session — variable ALIAS_COUNT lands |
 | 5 | `d38a370` | feat(v2-resilience-bench): variable_alias_count flag + presets |
+| 6 | `1e5040d` | chore(v2-core): bump PermutationCache DEFAULT_CAPACITY 8 -> 12 for v2 regime |
+| 7 | (this commit) | docs(HANDOFF): final commit-list refresh + commit-hash fix in priority 5 |
 
 ### Commit 1 — `alias_count_for_epoch` primitive (Phase A)
 
@@ -288,7 +290,7 @@ renumbered.
    effect.  Pure analysis / wordlist swap; autonomous-safe.
    Defer until priority 1 produces a baseline number.
 5. **`PermutationCache` LRU sizing audit.** Done in commit
-   `4ee92cf` (this same session's later edit).
+   `1e5040d` (this same session's later edit).
    `DEFAULT_CAPACITY` bumped from 8 to 12 (`MAX_ALIAS_COUNT_WIRE *
    2 + 2 slack`) so variable-mode requests at peak alias count
    don't evict on every other request.  Module-level doc + the
