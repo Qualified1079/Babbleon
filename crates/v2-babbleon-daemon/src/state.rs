@@ -1454,6 +1454,55 @@ mod tests {
     }
 
     #[test]
+    fn token_mapping_variable_mode_round_trips_via_identifier_mapping() {
+        // End-to-end property: the variable-mode aliases the daemon
+        // returns drive `IdentifierMapping::from_tokens_and_aliases`
+        // and `scramble`/`unscramble` correctly.  This is the
+        // production wiring an v2 file's L2 layer takes — proving it
+        // works in-process catches drift between the daemon's
+        // variable-count math and the scrambler's modulo cycling
+        // logic.
+        use babbleon_daemon_protocol_v2::ALIAS_COUNT_VARIABLE_FROM_VERSION_WIRE;
+        use babbleon_preprocessor_v2::identifier_scrambler::IdentifierMapping;
+        let mut s = build_state(tracked(), "/wrappers");
+        // Rotate so the host_epoch >= 1 — exercises the stride math
+        // beyond the genesis virtual_epoch.
+        s.rotate().unwrap();
+        s.rotate().unwrap();
+        let tokens = vec![
+            "alpha".to_string(),
+            "beta".to_string(),
+            "gamma".to_string(),
+        ];
+        let (epoch, aliases) = s
+            .token_mapping(&tokens, ALIAS_COUNT_VARIABLE_FROM_VERSION_WIRE)
+            .unwrap();
+        let mapping = IdentifierMapping::from_tokens_and_aliases(
+            tokens.clone(),
+            epoch,
+            aliases,
+        )
+        .expect("daemon-derived variable-count aliases must build mapping");
+        // Cycle through more occurrences than the alias count to
+        // exercise the modulo correctly across the variable width.
+        for (ti, tok) in tokens.iter().enumerate() {
+            for occurrence in 0..7 {
+                let compound = mapping
+                    .scramble(tok, occurrence)
+                    .expect("variable-mode scramble must succeed");
+                let recovered = mapping
+                    .unscramble(compound)
+                    .expect("variable-mode unscramble must succeed");
+                assert_eq!(
+                    recovered,
+                    tok.as_str(),
+                    "token {ti} occurrence {occurrence} did not round-trip",
+                );
+            }
+        }
+    }
+
+    #[test]
     fn token_mapping_at_variable_format_returns_per_epoch_alias_count() {
         // For format_version >= ALIAS_COUNT_VARIABLE_FROM_VERSION_WIRE
         // the daemon's response width follows
@@ -1559,8 +1608,6 @@ mod tests {
             "host_epoch=0 first alias coincides under both regimes",
         );
     }
-
-    #[test]
 
     #[test]
     fn token_mapping_after_rotation_keeps_results_correct() {
