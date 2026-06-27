@@ -48,7 +48,7 @@ preprocessor-benchmark `--mode full` had surfaced a ~70 ms cold-cache
 cost dominated by the Fisher-Yates rebuild per `MappingBuilder::build`.
 This session closes that priority.
 
-### Net commits this session: 11
+### Net commits this session: 14 (+ a final HANDOFF refresh)
 
 | # | Hash | Subject |
 |---|---|---|
@@ -62,7 +62,11 @@ This session closes that priority.
 | 8 | `7a6d0bc` | chore(v2-babbleon-daemon): route rotate() mapping build through PermutationCache |
 | 9 | `b00c42e` | docs(HANDOFF): research note on corpus-lifecycle seccomp install design |
 | 10 | `6c77749` | chore(v2-babbleon-preprocessor): drop two needless borrows on Token::word |
-| 11 | (this commit) | docs(HANDOFF): refresh session commit list through commit 10 |
+| 11 | `7024526` | docs(HANDOFF): refresh session commit list through commit 10 |
+| 12 | `b9e1c94` | docs(V2_PLAN): note that PermutationCache obsoletes the cost motivation for the mapping-worker crate |
+| 13 | `98a1f8e` | feat(v2-babbleon-core): add hit/miss counters to PermutationCache |
+| 14 | `9a3881d` | feat(preprocessor-benchmark): report PermutationCache hit/miss stats |
+| 15 | (this commit) | docs(HANDOFF): final refresh of session commit list (15 commits) |
 
 ### Commit 1 — `PermutationCache` core module
 
@@ -161,13 +165,14 @@ to the new measurements.
 
 | Metric | Before | After | Δ |
 |---|---|---|---|
-| v2-babbleon-core lib tests | 73 | 90 | +17 |
+| v2-babbleon-core lib tests | 73 | 93 | +20 |
 | v2-babbleon-daemon lib tests | 122 | 124 | +2 |
 | New core source modules | 0 | 1 | +1 (permutation_cache) |
 | Workspace deps | unchanged | unchanged | 0 |
 | `forbid(unsafe_code)` violations | 0 | 0 | 0 |
 | `--mode full` median (cached) | n/a | 1-2 ms | ~85x faster |
 | `--mode full` median (uncached) | 85-90 ms | 85-90 ms | unchanged |
+| `--mode full` cache hit ratio | n/a | 0.995 | observable via stats line |
 
 ### Architectural property landed
 
