@@ -56,13 +56,15 @@ defensive; 5 is done.  This session picked up the open phase-3
 item filed in `TODO.md` § "Randomize ALIAS_COUNT per epoch", an
 explicit autonomous-safe deferred task.
 
-### Net commits this session: 3
+### Net commits this session: 5
 
 | # | Hash | Subject |
 |---|---|---|
 | 1 | `9d9af7f` | feat(v2-preprocessor): alias_count_for_epoch primitive (TODO.md phase 3) |
 | 2 | `21b4cd7` | feat(v2): wire variable-alias-count regime through daemon protocol |
 | 3 | `405d7fe` | test(v2-babbleon-daemon): daemon-driven variable-mode L2 round-trip |
+| 4 | `f3775ff` | docs(HANDOFF,CLAUDE): record 2026-06-27 session — variable ALIAS_COUNT lands |
+| 5 | `d38a370` | feat(v2-resilience-bench): variable_alias_count flag + presets |
 
 ### Commit 1 — `alias_count_for_epoch` primitive (Phase A)
 
@@ -253,14 +255,23 @@ Ordered by leverage.  Items requiring operator review are called
 out so an autonomous-session bot does not silently build on a
 contested design.
 
+Items 4 and 5 from the initial draft of this priority list landed
+in this same session (commits `d38a370` and `f3775ff`); they are
+removed from the open list and the remaining priorities are
+renumbered.
+
 1. **Adversarial-LLM re-test of L2+L3+L4+L5+L6+L12 with the
    new variable alias count.**  Carried over from 2026-06-26.
    The variable count is the most promising L2 defence-in-depth
    improvement since dynamic identifier scrambling landed; an
    adversarial re-test should measure whether the variable cycle
-   actually moves crack rates.  Needs adversary infrastructure
-   (claude-cli or API).  **NOT autonomous** — operator must
-   supply API keys and approve the run.
+   actually moves crack rates.  Now bench-ready: the
+   `LayerConfig::variable_alias_count` flag landed this session
+   (commit `d38a370`) so the bench harness can directly compare
+   legacy and variable regimes at the same seed + epoch.  Needs
+   adversary infrastructure (claude-cli or API).  **NOT
+   autonomous** — operator must supply API keys and approve the
+   run.
 2. **Layer 11 — defensive prompt injection.**  Carried over from
    2026-06-26.  Operator opt-in default ON per
    `docs/v2/obfuscation-landscape.md §4`.  Vendoring + license
@@ -269,20 +280,21 @@ contested design.
    still `#[allow(dead_code)]`.  Three implementation paths
    filed in the 2026-06-26 (night) research note; operator
    review recommended.
-4. **Bench coverage for the variable alias count.**  The
-   resilience bench's `scramble_pipeline.rs` still uses the
-   hardcoded legacy `ALIAS_COUNT` for its synthetic mapping
-   path; a `LayerConfig::variable_alias_count` flag would let
-   the bench measure crack-rate deltas attributable to the new
-   regime alone.  ~100 LOC; autonomous-safe.  Defer until the
-   adversarial-LLM re-test (priority 1) defines what numbers to
-   move.
-5. **`CLAUDE.md §4.5` refresh for the v2 file format and the
-   variable alias count.**  The current §4.5 names L2 as
-   "`ALIAS_COUNT=3` multi-alias per token"; that's now correct
-   for v0/v1 files only.  Update with the variable-count
-   regime + the `alias_count_for_epoch` reference.  Pure
-   documentation; autonomous-safe.
+4. **Wordlist post-filter by tokenization density** (TODO.md
+   "Benchmarks + measurements" section).  Once the
+   adversarial-LLM re-test (priority 1) confirms the variable
+   alias count moves the needle, a wordlist re-filter that
+   keeps mid-tail cl100k/o200k entries would compound the
+   effect.  Pure analysis / wordlist swap; autonomous-safe.
+   Defer until priority 1 produces a baseline number.
+5. **`PermutationCache` LRU sizing audit.** Done in commit
+   `4ee92cf` (this same session's later edit).
+   `DEFAULT_CAPACITY` bumped from 8 to 12 (`MAX_ALIAS_COUNT_WIRE *
+   2 + 2 slack`) so variable-mode requests at peak alias count
+   don't evict on every other request.  Module-level doc + the
+   constant's own rustdoc updated to name the v2 variable-mode
+   worst case.  Kept the priority entry visible so a future
+   session reading the list sees the close-out.
 
 ### Process notes for next autonomous session
 

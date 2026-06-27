@@ -32,8 +32,11 @@
 //!
 //! Capacity is chosen at construction.  The default —
 //! [`DEFAULT_CAPACITY`] — sizes for the production daemon's worst
-//! case (`ALIAS_COUNT_WIRE = 3` × two purposes = six entries) with a
-//! two-entry slack for misaligned consumers.
+//! case under the v2 variable alias-count regime:
+//! `MAX_ALIAS_COUNT_WIRE = 5` × two purposes (identifier + honey) =
+//! ten entries, plus two-entry slack for misaligned consumers.
+//! Legacy v1 cells fit comfortably (six entries) under the same
+//! cap; the variable regime only enlarges the worst case.
 //!
 //! # What this does NOT defeat
 //!
@@ -58,9 +61,16 @@ use std::sync::{Arc, Mutex};
 use crate::permutation::Permutation;
 
 /// Default capacity sized for the production daemon's worst-case
-/// fan-out (`ALIAS_COUNT_WIRE = 3` virtual epochs × two purposes =
-/// six entries) with a two-entry slack for misaligned consumers.
-pub const DEFAULT_CAPACITY: usize = 8;
+/// fan-out: under the v2 variable alias-count regime,
+/// `MAX_ALIAS_COUNT_WIRE = 5` virtual epochs × two purposes
+/// (identifier + honey) = ten entries, plus a two-entry slack for
+/// misaligned consumers.
+///
+/// Sized to a constant 12 rather than the symbolic
+/// `MAX_ALIAS_COUNT_WIRE * 2 + 2` so this crate stays free of the
+/// daemon-protocol dependency.  A future change to the wire
+/// MAX must land in lock-step with a bump here.
+pub const DEFAULT_CAPACITY: usize = 12;
 
 /// Stable purpose discriminator for the identifier permutation.
 ///
