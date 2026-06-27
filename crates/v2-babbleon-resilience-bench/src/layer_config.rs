@@ -83,6 +83,21 @@ pub struct LayerConfig {
     /// `true` measure crack-fraction of the proposed mechanism.
     #[serde(default)]
     pub layer7_secret_literal: bool,
+    /// Drive L2's alias matrix with the per-epoch variable count
+    /// (`alias_count_for_epoch(2, epoch)` ∈ `[2, 5]`) instead of
+    /// the legacy fixed `ALIAS_COUNT = 3`.
+    ///
+    /// When `true` the bench mirrors what file-format-version-2
+    /// production scrambles emit; the matrix width varies per
+    /// `epoch`.  When `false` the bench uses the legacy fixed cycle
+    /// (file-format-version-1 behaviour) so legacy cells remain
+    /// comparable across sessions.
+    ///
+    /// Defaults to `false` so older bench TOML continues to
+    /// reproduce the legacy crack-fractions byte-for-byte; new
+    /// cells targeting the v2 alias regime opt in.
+    #[serde(default)]
+    pub variable_alias_count: bool,
     /// Fill byte for the synthetic per-host secret `[u8; 32]`.
     /// Reproducibility seed; carries zero security weight.
     pub seed_byte: u8,
@@ -111,6 +126,7 @@ impl LayerConfig {
             layer6_direction_reversal: false,
             layer12_noise: false,
             layer7_secret_literal: false,
+            variable_alias_count: false,
             seed_byte,
             epoch,
         }
@@ -147,6 +163,7 @@ impl LayerConfig {
             layer6_direction_reversal: false,
             layer12_noise: false,
             layer7_secret_literal: false,
+            variable_alias_count: false,
             seed_byte: 0xAB,
             epoch: 0,
         }
@@ -184,6 +201,7 @@ impl LayerConfig {
             layer6_direction_reversal: false,
             layer12_noise: false,
             layer7_secret_literal: false,
+            variable_alias_count: false,
             seed_byte: 0xAB,
             epoch: 0,
         }
@@ -203,8 +221,36 @@ impl LayerConfig {
             layer6_direction_reversal: true,
             layer12_noise: true,
             layer7_secret_literal: false,
+            variable_alias_count: false,
             seed_byte: 0xAB,
             epoch: 0,
+        }
+    }
+
+    /// Full stack + variable alias count.  Same layer mix as
+    /// [`Self::full_stack`] but L2 cycles through a per-epoch
+    /// variable alias count instead of the legacy fixed three.
+    /// Matches what file-format-version-2 production scrambles
+    /// emit today.
+    #[must_use]
+    pub fn full_stack_with_variable_alias_count() -> Self {
+        Self {
+            variable_alias_count: true,
+            ..Self::full_stack()
+        }
+    }
+
+    /// L2 + L3 + variable alias count.  Diagnostic config:
+    /// isolates the alias-count effect by stripping every non-L2/L3
+    /// layer from the bench cell.  Pairs with
+    /// [`Self::l2_plus_l3`] (legacy fixed cycle) so a crack-rate
+    /// delta between the two is attributable to the alias-count
+    /// regime alone.
+    #[must_use]
+    pub fn l2_plus_l3_with_variable_alias_count() -> Self {
+        Self {
+            variable_alias_count: true,
+            ..Self::l2_plus_l3()
         }
     }
 
@@ -222,6 +268,7 @@ impl LayerConfig {
             layer6_direction_reversal: false,
             layer12_noise: false,
             layer7_secret_literal: true,
+            variable_alias_count: false,
             seed_byte: 0xAB,
             epoch: 0,
         }
@@ -241,6 +288,7 @@ impl LayerConfig {
             layer6_direction_reversal: false,
             layer12_noise: false,
             layer7_secret_literal: true,
+            variable_alias_count: false,
             seed_byte: 0xAB,
             epoch: 0,
         }
@@ -284,10 +332,15 @@ impl LayerConfig {
                 "custom-l2={l2}-l2b={l2b}-l3={l3}-l4={l4}-l5={l5}-l6={l6}-l12={l12}"
             ),
         };
-        if self.layer7_secret_literal {
+        let with_l7 = if self.layer7_secret_literal {
             format!("{base}-plus-l7")
         } else {
             base
+        };
+        if self.variable_alias_count {
+            format!("{with_l7}-var-alias")
+        } else {
+            with_l7
         }
     }
 }
@@ -384,5 +437,85 @@ mod tests {
         let j = serde_json::to_string(&c).unwrap();
         let back: LayerConfig = serde_json::from_str(&j).unwrap();
         assert_eq!(c, back);
+    }
+
+    // ----- variable_alias_count -----
+
+    #[test]
+    fn default_disables_variable_alias_count() {
+        // Older bench TOML must continue reproducing legacy crack-
+        // fractions byte-for-byte; the new opt-in field defaults
+        // off.
+        assert!(!LayerConfig::default().variable_alias_count);
+        assert!(!LayerConfig::l2_plus_l3().variable_alias_count);
+        assert!(!LayerConfig::full_stack().variable_alias_count);
+    }
+
+    #[test]
+    fn variable_alias_count_preset_sets_the_flag() {
+        let c = LayerConfig::l2_plus_l3_with_variable_alias_count();
+        assert!(c.variable_alias_count);
+        assert!(c.layer2_keyword_scramble);
+        assert!(c.layer3_whitespace_as_words);
+    }
+
+    #[test]
+    fn full_stack_with_variable_alias_count_preset_matches_full_stack_plus_flag() {
+        // Defensive: a future edit could decouple the two presets;
+        // this test pins the contract that the variable-alias-count
+        // full-stack preset differs from full_stack() ONLY by the
+        // variable_alias_count flag.
+        let mut full = LayerConfig::full_stack();
+        let variable = LayerConfig::full_stack_with_variable_alias_count();
+        full.variable_alias_count = true;
+        assert_eq!(full, variable);
+    }
+
+    #[test]
+    fn variable_alias_count_label_suffixes_var_alias() {
+        let c = LayerConfig::l2_plus_l3_with_variable_alias_count();
+        assert_eq!(c.label(), "l2-plus-l3-var-alias");
+    }
+
+    #[test]
+    fn variable_alias_count_composes_with_layer7_label() {
+        let c = LayerConfig {
+            variable_alias_count: true,
+            ..LayerConfig::l2_plus_l3_plus_l7()
+        };
+        assert_eq!(c.label(), "l2-plus-l3-plus-l7-var-alias");
+    }
+
+    #[test]
+    fn variable_alias_count_label_differs_from_legacy() {
+        let legacy = LayerConfig::l2_plus_l3().label();
+        let variable = LayerConfig::l2_plus_l3_with_variable_alias_count().label();
+        assert_ne!(legacy, variable);
+    }
+
+    #[test]
+    fn variable_alias_count_serde_round_trips() {
+        let c = LayerConfig::full_stack_with_variable_alias_count();
+        let j = serde_json::to_string(&c).unwrap();
+        let back: LayerConfig = serde_json::from_str(&j).unwrap();
+        assert_eq!(c, back);
+        assert!(back.variable_alias_count);
+    }
+
+    #[test]
+    fn legacy_serde_without_variable_alias_count_defaults_off() {
+        // Pre-Phase-4 bench TOML / JSON did NOT carry the
+        // `variable_alias_count` field.  `#[serde(default)]` keeps
+        // those payloads parsing cleanly with the flag off.
+        let legacy_json = r#"{
+            "layer2_keyword_scramble": true,
+            "layer3_whitespace_as_words": true,
+            "seed_byte": 171,
+            "epoch": 0
+        }"#;
+        let c: LayerConfig = serde_json::from_str(legacy_json).unwrap();
+        assert!(!c.variable_alias_count);
+        assert!(c.layer2_keyword_scramble);
+        assert!(c.layer3_whitespace_as_words);
     }
 }

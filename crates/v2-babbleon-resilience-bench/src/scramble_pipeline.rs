@@ -49,7 +49,9 @@ use babbleon_preprocessor_v2::chunk_reorder::scramble_chunks;
 use babbleon_preprocessor_v2::decoy_injection::inject_decoys;
 use babbleon_preprocessor_v2::direction_reversal::reverse_chunks;
 use babbleon_preprocessor_v2::identifier_scrambler::{
-    collect_unique_tokens, scramble_identifiers, IdentifierMapping, ALIAS_COUNT,
+    alias_count_for_epoch, collect_unique_tokens, scramble_identifiers,
+    IdentifierMapping, ALIAS_COUNT, ALIAS_COUNT_VARIABLE_FROM_VERSION,
+    MAX_ALIAS_COUNT,
 };
 use babbleon_preprocessor_v2::python_tokenizer::tokenize;
 use babbleon_preprocessor_v2::scrambler::scramble;
@@ -107,9 +109,25 @@ pub fn apply_layers(source: &str, config: LayerConfig) -> Result<String> {
         let id_wordlist = Wordlist::english_baseline();
         let builder = MappingBuilder::new(&synthetic_secret, &id_wordlist);
         let sorted_tokens = collect_unique_tokens(&tokens);
-        let base = config.epoch.saturating_mul(ALIAS_COUNT as u64);
-        let mut per_alias: Vec<Vec<String>> = Vec::with_capacity(ALIAS_COUNT);
-        for ai in 0..ALIAS_COUNT {
+        // Pick stride + alias_count matching the production daemon's
+        // legacy vs variable regimes — see
+        // `crates/v2-babbleon-daemon/src/state.rs::token_mapping`.
+        // Legacy: stride 3, count 3.  Variable: stride MAX, count
+        // alias_count_for_epoch(2, epoch) ∈ [2, 5].
+        let (alias_count, stride) = if config.variable_alias_count {
+            (
+                alias_count_for_epoch(
+                    ALIAS_COUNT_VARIABLE_FROM_VERSION,
+                    config.epoch,
+                ),
+                MAX_ALIAS_COUNT,
+            )
+        } else {
+            (ALIAS_COUNT, ALIAS_COUNT)
+        };
+        let base = config.epoch.saturating_mul(stride as u64);
+        let mut per_alias: Vec<Vec<String>> = Vec::with_capacity(alias_count);
+        for ai in 0..alias_count {
             let virtual_epoch = base + ai as u64;
             let epoch_mapping = builder
                 .build(&sorted_tokens, virtual_epoch)
@@ -124,7 +142,7 @@ pub fn apply_layers(source: &str, config: LayerConfig) -> Result<String> {
         }
         let mut aliases: Vec<Vec<String>> = sorted_tokens
             .iter()
-            .map(|_| Vec::with_capacity(ALIAS_COUNT))
+            .map(|_| Vec::with_capacity(alias_count))
             .collect();
         for alias_compounds in per_alias {
             for (ti, compound) in alias_compounds.into_iter().enumerate() {
@@ -355,5 +373,90 @@ mod tests {
             apply_layers(s, LayerConfig::baseline_no_scramble()).unwrap();
         assert!(out.contains("hello"));
         assert!(out.contains("world"));
+    }
+
+    // ----- variable_alias_count -----
+
+    #[test]
+    fn variable_alias_count_produces_different_output_than_legacy() {
+        // L2+L3 with the legacy fixed cycle vs the per-epoch variable
+        // cycle: at host_epoch >= 1 the regimes' virtual-epoch
+        // strides diverge (3 vs MAX_ALIAS_COUNT), so the L2 compounds
+        // diverge and the L3 body differs.  At host_epoch == 0 both
+        // strides yield virtual_epoch = 0 for the first alias and
+        // bodies that don't cycle past occurrence 0 coincide (see
+        // the documented genesis-epoch coincidence in the daemon
+        // state tests); pick epoch 1 to surface the regime
+        // difference.
+        let legacy_cfg = LayerConfig {
+            epoch: 1,
+            ..LayerConfig::l2_plus_l3()
+        };
+        let variable_cfg = LayerConfig {
+            epoch: 1,
+            ..LayerConfig::l2_plus_l3_with_variable_alias_count()
+        };
+        let legacy = apply_layers(SAMPLE, legacy_cfg).unwrap();
+        let variable = apply_layers(SAMPLE, variable_cfg).unwrap();
+        assert_ne!(
+            legacy, variable,
+            "variable-alias-count L2+L3 must diverge from legacy at host_epoch >= 1",
+        );
+    }
+
+    #[test]
+    fn variable_alias_count_coincides_with_legacy_at_genesis() {
+        // Documents the genesis-epoch coincidence at the bench
+        // layer: at epoch 0 both strides yield virtual_epoch = 0
+        // for the first alias, and SAMPLE's tokens only cycle
+        // through occurrence 0.  Pinning this avoids the
+        // accidentally-equal failure mode masking a real bug if a
+        // future cache rework breaks the genesis coincidence
+        // silently.
+        let legacy =
+            apply_layers(SAMPLE, LayerConfig::l2_plus_l3()).unwrap();
+        let variable = apply_layers(
+            SAMPLE,
+            LayerConfig::l2_plus_l3_with_variable_alias_count(),
+        )
+        .unwrap();
+        assert_eq!(
+            legacy, variable,
+            "epoch 0 + non-repeating tokens: regimes coincide on the first alias",
+        );
+    }
+
+    #[test]
+    fn variable_alias_count_is_deterministic() {
+        // Same seed + epoch + flag must produce identical bytes
+        // across runs — the bench's reproducibility contract.
+        let a = apply_layers(
+            SAMPLE,
+            LayerConfig::l2_plus_l3_with_variable_alias_count(),
+        )
+        .unwrap();
+        let b = apply_layers(
+            SAMPLE,
+            LayerConfig::l2_plus_l3_with_variable_alias_count(),
+        )
+        .unwrap();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn variable_alias_count_full_stack_still_eliminates_l3_whitespace() {
+        // Sanity check that turning on variable_alias_count does
+        // not regress the downstream layers: L3 must still erase
+        // every newline regardless of how many aliases L2 cycled
+        // through.
+        let out = apply_layers(
+            SAMPLE,
+            LayerConfig::full_stack_with_variable_alias_count(),
+        )
+        .unwrap();
+        assert!(
+            !out.contains('\n'),
+            "L3 must eliminate newlines under variable-alias-count: {out}",
+        );
     }
 }
