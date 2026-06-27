@@ -22,11 +22,283 @@ Branch (push target): `claude/magical-turing-mele8c` (operator
 intends to rename to `v1-maintenance` out-of-band; until that
 lands, push here)
 
-Date: 2026-06-26 (user-asleep session — claude-opus-4-7)
+Date: 2026-06-27 (user-asleep session — claude-opus-4-7)
 
-Last commit before this handoff section: `5fd96ba` —
-docs(preprocessor-benchmark): record cached vs uncached `--mode full`
-numbers.  (See immediately-below 2026-06-26 night block.)
+Last commit before this handoff section: `405d7fe` —
+test(v2-babbleon-daemon): daemon-driven variable-mode L2 round-trip.
+See the 2026-06-27 block immediately below for context.
+
+---
+
+## 2026-06-27 — sleeping-operator: ALIAS_COUNT randomization lands across A/B/C
+
+Author: Claude Opus 4.7 (autonomous overnight continuation).
+Branch: `claude/magical-turing-mele8c`.  3 commits, all green tests
+across v2 crates, no new workspace deps.
+
+### Entry state
+
+Branch tip on entry was `2e224bd` — "docs(HANDOFF): final refresh
+of session commit list (15 commits)".  Workspace built clean; the
+2026-06-26 (night) refreshed next-session priorities held:
+
+1. Adversarial-LLM re-test — operator-gated (NOT autonomous)
+2. Layer 11 defensive prompt injection — operator review
+3. Corpus-lifecycle seccomp — operator review
+4. `MappingBuilder::clear_cache_on_lock` — defensive note, filed
+   for phase 4+
+5. `MappingBuilder` rebuild-on-rotate — **already closed** in
+   commit `7a6d0bc` (the 2026-06-26 night refresh failed to
+   strike this one through).
+
+So priorities 1-3 are blocked on operator review; 4 is filed
+defensive; 5 is done.  This session picked up the open phase-3
+item filed in `TODO.md` § "Randomize ALIAS_COUNT per epoch", an
+explicit autonomous-safe deferred task.
+
+### Net commits this session: 3
+
+| # | Hash | Subject |
+|---|---|---|
+| 1 | `9d9af7f` | feat(v2-preprocessor): alias_count_for_epoch primitive (TODO.md phase 3) |
+| 2 | `21b4cd7` | feat(v2): wire variable-alias-count regime through daemon protocol |
+| 3 | `405d7fe` | test(v2-babbleon-daemon): daemon-driven variable-mode L2 round-trip |
+
+### Commit 1 — `alias_count_for_epoch` primitive (Phase A)
+
+`crates/v2-babbleon-preprocessor/src/identifier_scrambler.rs`.
+The TODO filed four steps for this task; commit 1 lands step (a)
+in isolation so the wider wiring (steps b–d) can be staged on top.
+
+New surface:
+
+- `MIN_ALIAS_COUNT = 2`, `MAX_ALIAS_COUNT = 5` — documented
+  bounds on the post-legacy range.  Lower bound prevents the
+  deterministic-mapping shape; upper bound caps the daemon's
+  per-request Fisher-Yates work at `MAX * 2`.
+- `ALIAS_COUNT_VARIABLE_FROM_VERSION = 2` — file-format cutoff
+  between legacy (fixed) and variable (per-epoch) alias-count
+  regimes.
+- `alias_count_for_epoch(format_version, epoch) -> usize`:
+    - `format_version < 2`: returns `ALIAS_COUNT` (= 3) verbatim
+      for back-compat.
+    - `format_version >= 2`: returns
+      `MIN + ((epoch * 0x9E37_79B9_7F4A_7C15 ^
+              0xDEAD_BEEF_CAFE_BABE) >> 32) % (MAX - MIN + 1)`.
+      Mix is intentionally public — the alias count is observable
+      in the daemon's wire response, so HKDF derivation buys
+      nothing.
+
+6 new lib tests (`identifier_scrambler::tests`):
+
+- `alias_count_for_legacy_format_returns_constant` — every
+  v < 2 returns `ALIAS_COUNT`.
+- `alias_count_for_v2_is_always_in_range` — exhaustive over
+  4096 epochs.
+- `alias_count_for_epoch_is_deterministic` — same input → same
+  output across version/epoch combinations.
+- `alias_count_for_epoch_is_uniform_over_a_large_window` —
+  every value in `[MIN, MAX]` appears across the first 1024
+  epochs.  Defeats a pathological mix that locked to one bucket.
+- `alias_count_for_epoch_actually_varies_across_consecutive_epochs`
+  — guards against a future edit that pins the mix to one value.
+- `alias_count_for_future_versions_uses_the_v2_mix` — every
+  version >= cutoff takes the post-legacy path.
+
+Preprocessor lib tests: 156 → 162 (+6).
+
+### Commit 2 — wire protocol + lifecycle wiring (Phase B + C)
+
+Closes TODO steps (b), (c), (d) in one commit because the wire-
+shape change cascades through every call site at once and
+splitting the change would leave the workspace red between
+landing steps.
+
+#### Protocol crate (`v2-babbleon-daemon-protocol`)
+
+New constants:
+
+- `MIN_ALIAS_COUNT_WIRE = 2`, `MAX_ALIAS_COUNT_WIRE = 5` —
+  mirrors of the preprocessor constants.
+- `MAX_FORMAT_VERSION_WIRE = 2` — highest accepted
+  `format_version` field value.  Bumping this in lock-step with
+  `FORMAT_VERSION_LATEST` is the contract for adding a v3.
+- `ALIAS_COUNT_VARIABLE_FROM_VERSION_WIRE = 2` — cutoff at which
+  the daemon switches from fixed to variable alias count.
+- `LEGACY_FORMAT_VERSION_WIRE = 1` — default the parser uses when
+  a request's `format_version` field is absent (pre-Phase-B
+  client).
+
+`Request::GetTokenMapping` grows a `format_version: u32` field.
+Wire form:
+
+```
+{"kind":"get-token-mapping","tokens":[...],"format_version":2}
+```
+
+Pre-Phase-B clients omit the field entirely and parse as
+`LEGACY_FORMAT_VERSION_WIRE`, so unmodified peers keep working
+without a coordinated bump.
+
+`Response::TokenMapping` parser:
+
+- Inner-row length check relaxed from `== ALIAS_COUNT_WIRE` to
+  `[MIN_ALIAS_COUNT_WIRE, MAX_ALIAS_COUNT_WIRE]`.
+- New row-uniformity check: every row of the alias matrix must
+  have the same width.  Surfaces a daemon-bug shape (different
+  per-token widths) loudly.
+
+10 new unit tests; proptest harness extended to draw
+`format_version` from `0..=MAX_FORMAT_VERSION_WIRE` and alias
+counts from `[MIN, MAX]`.
+
+#### Daemon (`v2-babbleon-daemon`)
+
+`DaemonState::token_mapping(tokens, format_version)`:
+
+- For `format_version < ALIAS_COUNT_VARIABLE_FROM_VERSION_WIRE`:
+  `K = ALIAS_COUNT_WIRE = 3`, stride = 3 (legacy invariant —
+  unchanged behaviour for v0/v1 files).
+- For `format_version >= ALIAS_COUNT_VARIABLE_FROM_VERSION_WIRE`:
+  `K = alias_count_for_epoch(format_version, epoch)`, stride =
+  `MAX_ALIAS_COUNT_WIRE`.  The MAX-strided math keeps cache keys
+  non-colliding across host-epochs whose alias counts differ —
+  documented genesis-epoch coincidence aside.
+
+3 new state tests covering:
+- variable-mode width matches the per-epoch function;
+- variable-mode compounds are globally distinct;
+- legacy and variable regimes use independent virtual-epoch IDs
+  at host_epoch >= 1, with the documented genesis coincidence at
+  host_epoch == 0.
+
+Handler `get_token_mapping` and the dispatcher pattern-match on
+the new field; every existing daemon integration test threads
+`LEGACY_FORMAT_VERSION_WIRE` through.
+
+#### Lifecycle + shim wiring
+
+Three call sites updated:
+
+- `crates/v2-babbleon/src/scramble_lifecycle.rs` — per-file CLI:
+  scramble passes `FORMAT_VERSION_LATEST`; unscramble parses
+  `version` from the header and passes that.
+- `crates/v2-babbleon/src/corpus_lifecycle.rs` — batch dir: same
+  treatment.
+- `crates/v2-babbleon-python-shim/src/pipeline.rs` — interpreter
+  feed: parses `version` from the scrambled header (it already
+  did) and threads it to the daemon round-trip.
+
+#### File format bump
+
+`FORMAT_VERSION_LATEST` bumps `1 → 2`.  v2 files use the variable
+alias count regime; v0/v1 files unscramble correctly under the
+new daemon via the legacy code path (gated on the header's
+`version` field).  Encoder/decoder schema is unchanged — only
+the integer in the `version:` line moves.
+
+### Commit 3 — End-to-end round-trip test
+
+The existing `pipeline_with_real_mapping.rs` builds its
+`IdentifierMapping` in-process with the hardcoded legacy stride;
+round-trips work because both ends use the same mapping but the
+test doesn't actually exercise the new variable-count code path
+through the daemon.
+
+`state::tests::token_mapping_variable_mode_round_trips_via_identifier_mapping`
+closes the gap: rotates the daemon to host_epoch = 2, asks for a
+`format_version = 2` matrix, builds an `IdentifierMapping` from
+the returned aliases, and cycles 7 occurrences per token through
+`scramble`/`unscramble`.  Catches drift between the daemon's
+variable-count math and the scrambler's modulo cycling logic.
+
+### Stats
+
+| Metric | Before | After | Δ |
+|---|---|---|---|
+| v2-babbleon-preprocessor lib tests | 156 | 162 | +6 |
+| v2-babbleon-daemon-protocol lib tests | 77 | 76 | -1 (10 new alias / version cases added; 11 alias-count cases collapsed into format-version variants — net wash) |
+| v2-babbleon-daemon lib tests | 124 | 129 | +5 |
+| v2-babbleon lib tests | 57 | 57 | 0 |
+| v2-babbleon cli_against_daemon | 12 | 12 | 0 |
+| v2-babbleon-python-shim lib tests | 16 | 16 | 0 |
+| v2-babbleon-python-shim end_to_end | 5 | 5 | 0 |
+| v2-babbleon-resilience-bench lib tests | 142 | 142 | 0 |
+| Workspace deps | unchanged | unchanged | 0 |
+| `forbid(unsafe_code)` violations | 0 | 0 | 0 |
+| File format version | 1 | 2 | +1 |
+
+### Architectural property landed
+
+L2's alias count is no longer a fixed constant baked into both
+the daemon and the wire format.  Files at format version 2 carry
+a per-epoch alias count in `[2, 5]` computed deterministically
+from `(format_version, epoch)`; both ends of a scramble /
+unscramble round-trip derive the same value from the file's
+header.  An attacker who counts compound occurrences in a v2
+body cannot assume a fixed cycle length — the cycle now depends
+on a non-secret-but-non-trivial function of the file's epoch.
+
+This is a **format-version break**: a v2 file scrambled by a
+post-`9d9af7f` host cannot be unscrambled by a pre-`9d9af7f`
+binary at the same epoch (the alias count would mismatch).  v0
+and v1 files unscramble cleanly under the new daemon via the
+legacy code path; pre-`9d9af7f` daemons unscramble v0/v1 files
+fine but cannot handle v2.  Production hosts should rotate
+after upgrade so any in-flight v1 files are re-scrambled at v2.
+
+### Refreshed next-session priorities
+
+Ordered by leverage.  Items requiring operator review are called
+out so an autonomous-session bot does not silently build on a
+contested design.
+
+1. **Adversarial-LLM re-test of L2+L3+L4+L5+L6+L12 with the
+   new variable alias count.**  Carried over from 2026-06-26.
+   The variable count is the most promising L2 defence-in-depth
+   improvement since dynamic identifier scrambling landed; an
+   adversarial re-test should measure whether the variable cycle
+   actually moves crack rates.  Needs adversary infrastructure
+   (claude-cli or API).  **NOT autonomous** — operator must
+   supply API keys and approve the run.
+2. **Layer 11 — defensive prompt injection.**  Carried over from
+   2026-06-26.  Operator opt-in default ON per
+   `docs/v2/obfuscation-landscape.md §4`.  Vendoring + license
+   check + disclaimer copy require operator review.
+3. **Corpus-lifecycle seccomp.**  `CorpusOptions.no_seccomp` is
+   still `#[allow(dead_code)]`.  Three implementation paths
+   filed in the 2026-06-26 (night) research note; operator
+   review recommended.
+4. **Bench coverage for the variable alias count.**  The
+   resilience bench's `scramble_pipeline.rs` still uses the
+   hardcoded legacy `ALIAS_COUNT` for its synthetic mapping
+   path; a `LayerConfig::variable_alias_count` flag would let
+   the bench measure crack-rate deltas attributable to the new
+   regime alone.  ~100 LOC; autonomous-safe.  Defer until the
+   adversarial-LLM re-test (priority 1) defines what numbers to
+   move.
+5. **`CLAUDE.md §4.5` refresh for the v2 file format and the
+   variable alias count.**  The current §4.5 names L2 as
+   "`ALIAS_COUNT=3` multi-alias per token"; that's now correct
+   for v0/v1 files only.  Update with the variable-count
+   regime + the `alias_count_for_epoch` reference.  Pure
+   documentation; autonomous-safe.
+
+### Process notes for next autonomous session
+
+- The wire-protocol back-compat default (missing
+  `format_version` field → `LEGACY_FORMAT_VERSION_WIRE`) is
+  load-bearing for pre-Phase-B peers.  Do NOT remove the
+  default without first auditing every peer crate that
+  constructs `Request::GetTokenMapping`.
+- The genesis-coincidence (legacy and variable regimes return
+  the same compound for the first alias at host_epoch == 0)
+  is documented in
+  `state::tests::token_mapping_legacy_and_variable_share_genesis_first_alias`
+  — if a future cache rework breaks the property this test
+  flags it.  Not a bug in the current cache.
+- `cargo test --workspace` is still forbidden per
+  `CLAUDE.md §4`.  Pass each `v2-` crate explicitly with `-p`.
 
 ---
 

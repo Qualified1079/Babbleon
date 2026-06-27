@@ -91,8 +91,15 @@ The v2 preprocessor composes six scramble layers in
 `crates/v2-babbleon-preprocessor/src/`:
 
 - **L2** (`identifier_scrambler.rs`) — dynamic, language-agnostic;
-  scrambles every whitespace-delimited token; `ALIAS_COUNT=3`
-  multi-alias per token defeats frequency analysis.
+  scrambles every whitespace-delimited token.  Multi-alias per
+  token defeats frequency analysis.  Alias count depends on the
+  file's format version (see `alias_count_for_epoch`): v0/v1
+  files use the legacy `ALIAS_COUNT=3`; v2 files use a
+  deterministic per-epoch count in `[MIN_ALIAS_COUNT=2,
+  MAX_ALIAS_COUNT=5]` so an attacker who counts compound
+  occurrences cannot assume a fixed cycle length.  See
+  `identifier_scrambler::alias_count_for_epoch` +
+  `ALIAS_COUNT_VARIABLE_FROM_VERSION = 2`.
 - **L3** (`scrambler.rs` + `unscrambler.rs`) — whitespace-as-words.
 - **L4** (`chunk_reorder.rs`) — reorders top-level chunks
   deterministically; inserts `__bbnpos<N>__` markers.
@@ -122,18 +129,28 @@ on `version >= 1`, so pre-L6 files (version 0, inferred from
 absent `version:` line) unscramble correctly without operator
 intervention.
 
-File format (version 1, current):
-`babbleon-v2\nversion:1\nepoch:N\ntokens:T1\tT2\t...\n---\n<L3+L6+L12 body>`.
-Legacy version 0 layout (pre-L6 + pre-L12):
-`babbleon-v2\nepoch:N\ntokens:T1\tT2\t...\n---\n<L3 body>` (no
-`version:` line; the reader infers v0).  The sorted token list is
-embedded so the unscrambler can ask the daemon for the same L2
-mapping without the original source.
+File format (version 2, current):
+`babbleon-v2\nversion:2\nepoch:N\ntokens:T1\tT2\t...\n---\n<L3+L6+L12 body>`.
+Version 1 layout is identical on the wire but pins the L2 alias
+count at `ALIAS_COUNT=3` and uses stride 3 in the virtual-epoch
+math.  Version 2 switches L2 to the per-epoch variable count via
+`alias_count_for_epoch(2, epoch) ∈ [2, 5]` and stride
+`MAX_ALIAS_COUNT_WIRE=5`.  Legacy version 0 layout (pre-L6 +
+pre-L12): `babbleon-v2\nepoch:N\ntokens:T1\tT2\t...\n---\n<L3
+body>` (no `version:` line; the reader infers v0).  The sorted
+token list is embedded so the unscrambler can ask the daemon for
+the same L2 mapping without the original source.
 
 Daemon protocol: `GetWhitespaceCompounds` (one call per session) +
-`GetTokenMapping { tokens }` (per file). Response is
+`GetTokenMapping { tokens, format_version }` (per file). Response is
 `TokenMapping { epoch, aliases: Vec<Vec<String>> }` where
-`aliases[token_idx][alias_idx]` is one of `ALIAS_COUNT` compounds.
+`aliases[token_idx][alias_idx]` is one of K compounds.  K =
+`ALIAS_COUNT_WIRE = 3` for `format_version < 2` (legacy
+invariant); K = `alias_count_for_epoch(format_version, epoch)` for
+`format_version >= 2`.  Pre-Phase-B wire forms (no
+`format_version` field on the request) parse as
+`LEGACY_FORMAT_VERSION_WIRE = 1` for back-compat.  Inner rows are
+guaranteed uniform (every token's aliases vec is the same width).
 
 L2 permutation cache:
 `crates/v2-babbleon-core/src/permutation_cache.rs` provides a small
