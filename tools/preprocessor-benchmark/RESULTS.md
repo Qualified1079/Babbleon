@@ -14,11 +14,14 @@ baseline (369 652 entries).
 
 `crates/v2-babbleon-core/src/permutation_cache.rs` adds a small LRU
 cache keyed by `(epoch, purpose)`; the bench opts in via
-`--cache-capacity N` (default = 8 = `PERMUTATION_CACHE_DEFAULT_CAPACITY`).
+`--cache-capacity N` (default = `PERMUTATION_CACHE_DEFAULT_CAPACITY`,
+which was `8` for the run below and was bumped to `12` on 2026-06-27
+to size for the v2 variable alias-count regime's worst case —
+`MAX_ALIAS_COUNT_WIRE * 2 + 2 slack`).
 `--cache-capacity 0` disables the cache and reproduces the prior
 cold-rebuild measurement against the cached path.
 
-### Cached (`--cache-capacity 8`)
+### Cached (`--cache-capacity 8`, prior default)
 
 ```
 mode: full    epoch: 0    target: 250000 µs/file (median)
