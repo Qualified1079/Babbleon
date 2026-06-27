@@ -83,13 +83,68 @@ pub const WHITESPACE_COMPOUND_COUNT_WIRE: usize = 5;
 /// stopped at the protocol parser.
 const WHITESPACE_COMPOUND_MAX_BYTES: usize = 1024;
 
-/// Number of independent aliases derived per token in `GetTokenMapping`.
+/// Legacy default number of independent aliases derived per token in
+/// `GetTokenMapping`.
 ///
-/// The daemon builds `ALIAS_COUNT_WIRE` separate compound sets using
-/// virtual epochs `epoch * ALIAS_COUNT_WIRE + i`.  Must equal
+/// Holds whenever the request's [`Request::GetTokenMapping::format_version`]
+/// is below [`ALIAS_COUNT_VARIABLE_FROM_VERSION_WIRE`] (which includes
+/// pre-Phase-B wire forms that omit the field entirely).  At and above
+/// that version the count is per-epoch via
+/// `v2-babbleon-preprocessor::alias_count_for_epoch`.
+///
+/// Must equal
 /// `v2-babbleon-preprocessor::identifier_scrambler::ALIAS_COUNT`;
 /// both constants are checked by integration tests.
 pub const ALIAS_COUNT_WIRE: usize = 3;
+
+/// Minimum alias count the parser accepts in a `TokenMapping`
+/// response.
+///
+/// Mirrors
+/// `v2-babbleon-preprocessor::identifier_scrambler::MIN_ALIAS_COUNT`;
+/// both constants are checked by integration tests.
+pub const MIN_ALIAS_COUNT_WIRE: usize = 2;
+
+/// Maximum alias count the parser accepts in a `TokenMapping`
+/// response.
+///
+/// Mirrors
+/// `v2-babbleon-preprocessor::identifier_scrambler::MAX_ALIAS_COUNT`;
+/// both constants are checked by integration tests.  Caps the
+/// daemon's per-request work at `MAX_ALIAS_COUNT_WIRE * 2` Fisher-
+/// Yates passes (identifier + honey per virtual epoch); also caps
+/// the response wire size at `~MAX_ALIAS_COUNT_WIRE * |tokens| *
+/// TOKEN_COMPOUND_MAX_BYTES` bytes.
+pub const MAX_ALIAS_COUNT_WIRE: usize = 5;
+
+/// Highest [`Request::GetTokenMapping::format_version`] the parser
+/// accepts on the wire.
+///
+/// Mirrors `v2-babbleon-preprocessor::FORMAT_VERSION_LATEST` plus a
+/// modest forward-compat margin — values above this cap are rejected
+/// at parse time so a peer that points at a daemon with a newer
+/// preprocessor sees a clean rejection instead of an inconsistent
+/// alias matrix.  Bump in lock-step with any file-format-version
+/// bump.
+pub const MAX_FORMAT_VERSION_WIRE: u32 = 2;
+
+/// File-format version at which the alias count became per-epoch
+/// (`alias_count_for_epoch`) instead of the fixed
+/// [`ALIAS_COUNT_WIRE`].
+///
+/// Pre-Phase-B clients (no `format_version` on the wire) default to
+/// `LEGACY_FORMAT_VERSION_WIRE` for back-compat.  Mirrors
+/// `v2-babbleon-preprocessor::ALIAS_COUNT_VARIABLE_FROM_VERSION`.
+pub const ALIAS_COUNT_VARIABLE_FROM_VERSION_WIRE: u32 = 2;
+
+/// Default `format_version` for a `GetTokenMapping` wire form that
+/// omits the field.
+///
+/// Pre-Phase-B clients did not send the field; they implicitly
+/// referred to v1-format files (the only format-version that
+/// shipped before Phase B).  Parsing the omitted field as 1
+/// preserves their behaviour exactly.
+pub const LEGACY_FORMAT_VERSION_WIRE: u32 = 1;
 
 /// Maximum number of unique tokens accepted in a `GetTokenMapping`
 /// request.  A file with more than 65 536 unique whitespace-delimited
@@ -155,10 +210,22 @@ pub enum Request {
     /// vault to be unlocked; the daemon answers `Response::Error
     /// { kind: ErrorKind::Vault, ... }` otherwise.
     ///
-    /// The daemon derives [`crate::ALIAS_COUNT_WIRE`] independent
-    /// compound sets for the same token list (using virtual epochs
-    /// `epoch * ALIAS_COUNT + i`).  The CLI cycles through aliases
-    /// per-occurrence so repeated tokens produce varied output.
+    /// The daemon derives `K` independent compound sets for the same
+    /// token list, where:
+    ///
+    /// - For `format_version < ALIAS_COUNT_VARIABLE_FROM_VERSION_WIRE`
+    ///   (i.e. v0 / v1 files): `K = ALIAS_COUNT_WIRE` (= 3).  Virtual
+    ///   epoch math is `epoch * ALIAS_COUNT_WIRE + i` — unchanged from
+    ///   the pre-Phase-B daemon.
+    /// - For `format_version >= ALIAS_COUNT_VARIABLE_FROM_VERSION_WIRE`
+    ///   (i.e. v2+ files): `K = alias_count_for_epoch(format_version,
+    ///   epoch)`.  Virtual epoch math is
+    ///   `epoch * MAX_ALIAS_COUNT_WIRE + i` so the daemon's
+    ///   `PermutationCache` does not collide across host-epochs whose
+    ///   alias counts differ.
+    ///
+    /// The CLI cycles through aliases per-occurrence so repeated tokens
+    /// produce varied output.
     ///
     /// The token list must have at most [`MAX_TOKEN_MAPPING_COUNT`]
     /// entries; each token must be non-empty and under
@@ -172,6 +239,14 @@ pub enum Request {
     GetTokenMapping {
         /// Sorted, deduplicated list of source tokens to map.
         tokens: Vec<String>,
+        /// File-format version of the scrambled file the caller is
+        /// producing or consuming.  Selects the legacy / variable
+        /// alias-count regime — see the variant-level docs.
+        ///
+        /// Must lie in `0 ..= MAX_FORMAT_VERSION_WIRE`.  Pre-Phase-B
+        /// wire forms (no `format_version` field on the wire) parse
+        /// as [`LEGACY_FORMAT_VERSION_WIRE`] for back-compat.
+        format_version: u32,
     },
 }
 
@@ -391,10 +466,11 @@ impl Request {
             Self::GetWhitespaceCompounds => {
                 serde_json::json!({ "kind": "get-whitespace-compounds" })
             }
-            Self::GetTokenMapping { tokens } => {
+            Self::GetTokenMapping { tokens, format_version } => {
                 serde_json::json!({
                     "kind": "get-token-mapping",
                     "tokens": tokens,
+                    "format_version": format_version,
                 })
             }
         };
@@ -751,7 +827,14 @@ fn parse_whitespace_compounds(
 }
 
 /// Parse a `keyword-compounds` response into a typed
-/// Parse a `get-token-mapping` request's `tokens` array field.
+/// Parse a `get-token-mapping` request's `tokens` array + optional
+/// `format_version` field.
+///
+/// Pre-Phase-B clients (no `format_version` on the wire) parse as
+/// `LEGACY_FORMAT_VERSION_WIRE` so the daemon continues to serve the
+/// legacy three-alias matrix to unmodified peers.  Post-Phase-B
+/// clients supply the field explicitly; the parser enforces
+/// `0 ..= MAX_FORMAT_VERSION_WIRE`.
 fn parse_get_token_mapping(
     obj: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<Request> {
@@ -791,7 +874,37 @@ fn parse_get_token_mapping(
         }
         tokens.push(s.to_owned());
     }
-    Ok(Request::GetTokenMapping { tokens })
+    let format_version = parse_optional_format_version(obj)?;
+    Ok(Request::GetTokenMapping { tokens, format_version })
+}
+
+/// Parse the optional `format_version` field from a JSON request object.
+///
+/// Returns [`LEGACY_FORMAT_VERSION_WIRE`] when the field is absent
+/// (back-compat for pre-Phase-B clients).  Returns `Err` when the
+/// field is present but malformed (non-integer or above
+/// [`MAX_FORMAT_VERSION_WIRE`]).
+fn parse_optional_format_version(
+    obj: &serde_json::Map<String, serde_json::Value>,
+) -> Result<u32> {
+    let Some(v) = obj.get("format_version") else {
+        return Ok(LEGACY_FORMAT_VERSION_WIRE);
+    };
+    let raw = v.as_u64().ok_or_else(|| {
+        Error::Ipc(
+            "get-token-mapping request: format_version must be a \
+             non-negative integer"
+                .into(),
+        )
+    })?;
+    if raw > u64::from(MAX_FORMAT_VERSION_WIRE) {
+        return Err(Error::Ipc(format!(
+            "get-token-mapping request: format_version {raw} above the \
+             accepted maximum {MAX_FORMAT_VERSION_WIRE}",
+        )));
+    }
+    // The cast is exact: `raw <= MAX_FORMAT_VERSION_WIRE` (a `u32`).
+    Ok(raw as u32)
 }
 
 /// Parse a `token-mapping` response's `epoch` and `aliases` fields.
@@ -799,9 +912,12 @@ fn parse_get_token_mapping(
 /// Strict on:
 /// - `epoch` present + u64.
 /// - `aliases` present + JSON array.
-/// - Each element of `aliases` is an array of exactly
-///   [`ALIAS_COUNT_WIRE`] non-empty strings under
-///   [`TOKEN_COMPOUND_MAX_BYTES`].
+/// - Each element of `aliases` is an array of strings, every string
+///   non-empty and under [`TOKEN_COMPOUND_MAX_BYTES`].
+/// - Each inner array has length in
+///   [`MIN_ALIAS_COUNT_WIRE`] ..= [`MAX_ALIAS_COUNT_WIRE`].
+/// - Every inner array has the SAME length — different per-token
+///   alias counts in the same response would imply a daemon bug.
 fn parse_token_mapping(
     obj: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<Response> {
@@ -829,18 +945,32 @@ fn parse_token_mapping(
         )));
     }
     let mut aliases: Vec<Vec<String>> = Vec::with_capacity(outer.len());
+    // First non-empty inner length defines the row-uniformity target.
+    let mut row_len: Option<usize> = None;
     for (ti, token_entry) in outer.iter().enumerate() {
         let inner = token_entry.as_array().ok_or_else(|| {
             Error::Ipc(format!(
                 "token-mapping response: aliases[{ti}] is not an array"
             ))
         })?;
-        if inner.len() != ALIAS_COUNT_WIRE {
+        if !(MIN_ALIAS_COUNT_WIRE..=MAX_ALIAS_COUNT_WIRE).contains(&inner.len())
+        {
             return Err(Error::Ipc(format!(
-                "token-mapping response: aliases[{ti}] length {} != \
-                 expected {ALIAS_COUNT_WIRE}",
+                "token-mapping response: aliases[{ti}] length {} outside \
+                 accepted range [{MIN_ALIAS_COUNT_WIRE}, {MAX_ALIAS_COUNT_WIRE}]",
                 inner.len(),
             )));
+        }
+        if let Some(prev) = row_len {
+            if prev != inner.len() {
+                return Err(Error::Ipc(format!(
+                    "token-mapping response: aliases[{ti}] length {} differs \
+                     from prior rows ({prev}); response matrix must be uniform",
+                    inner.len(),
+                )));
+            }
+        } else {
+            row_len = Some(inner.len());
         }
         let mut per_token: Vec<String> = Vec::with_capacity(inner.len());
         for (ai, entry) in inner.iter().enumerate() {
@@ -1379,7 +1509,10 @@ mod tests {
 
     #[test]
     fn get_token_mapping_request_roundtrips_empty_tokens() {
-        let req = Request::GetTokenMapping { tokens: vec![] };
+        let req = Request::GetTokenMapping {
+            tokens: vec![],
+            format_version: LEGACY_FORMAT_VERSION_WIRE,
+        };
         let wire = req.to_wire();
         let parsed = Request::parse(&wire).unwrap();
         assert_eq!(parsed, req);
@@ -1389,6 +1522,7 @@ mod tests {
     fn get_token_mapping_request_roundtrips_nonempty_tokens() {
         let req = Request::GetTokenMapping {
             tokens: vec!["def".to_string(), "foo".to_string(), "x".to_string()],
+            format_version: LEGACY_FORMAT_VERSION_WIRE,
         };
         let wire = req.to_wire();
         let parsed = Request::parse(&wire).unwrap();
@@ -1399,6 +1533,7 @@ mod tests {
     fn get_token_mapping_request_wire_form_is_one_line() {
         let req = Request::GetTokenMapping {
             tokens: vec!["alpha".to_string()],
+            format_version: LEGACY_FORMAT_VERSION_WIRE,
         };
         let wire = req.to_wire();
         assert_eq!(wire.iter().filter(|b| **b == b'\n').count(), 1);
@@ -1422,12 +1557,72 @@ mod tests {
         );
     }
 
+    #[test]
+    fn get_token_mapping_request_roundtrips_for_every_format_version() {
+        for v in 0..=MAX_FORMAT_VERSION_WIRE {
+            let req = Request::GetTokenMapping {
+                tokens: vec!["x".to_string()],
+                format_version: v,
+            };
+            let wire = req.to_wire();
+            let parsed = Request::parse(&wire).unwrap();
+            assert_eq!(parsed, req, "format_version {v} did not round-trip");
+        }
+    }
+
+    #[test]
+    fn get_token_mapping_request_without_format_version_defaults_to_legacy() {
+        // A wire-form missing the format_version field (pre-Phase-B
+        // client) parses as LEGACY_FORMAT_VERSION_WIRE so existing peers
+        // continue to receive a three-alias matrix.
+        let body = r#"{"kind":"get-token-mapping","tokens":["x","y"]}"#;
+        let parsed = Request::parse(body.as_bytes()).unwrap();
+        assert_eq!(
+            parsed,
+            Request::GetTokenMapping {
+                tokens: vec!["x".to_string(), "y".to_string()],
+                format_version: LEGACY_FORMAT_VERSION_WIRE,
+            }
+        );
+    }
+
+    #[test]
+    fn get_token_mapping_request_rejects_format_version_above_max() {
+        let body = format!(
+            r#"{{"kind":"get-token-mapping","tokens":["x"],"format_version":{}}}"#,
+            MAX_FORMAT_VERSION_WIRE + 1,
+        );
+        let err = Request::parse(body.as_bytes()).unwrap_err();
+        assert!(
+            format!("{err}").contains("above the accepted maximum"),
+            "{err}",
+        );
+    }
+
+    #[test]
+    fn get_token_mapping_request_rejects_non_integer_format_version() {
+        let body =
+            r#"{"kind":"get-token-mapping","tokens":["x"],"format_version":"v2"}"#;
+        let err = Request::parse(body.as_bytes()).unwrap_err();
+        assert!(
+            format!("{err}").contains("non-negative integer"),
+            "{err}",
+        );
+    }
+
     // ----- TokenMapping response -----
 
     fn sample_token_mapping_aliases(token_count: usize) -> Vec<Vec<String>> {
+        sample_token_mapping_aliases_n(token_count, ALIAS_COUNT_WIRE)
+    }
+
+    fn sample_token_mapping_aliases_n(
+        token_count: usize,
+        alias_count: usize,
+    ) -> Vec<Vec<String>> {
         (0..token_count)
             .map(|ti| {
-                (0..ALIAS_COUNT_WIRE)
+                (0..alias_count)
                     .map(|ai| format!("tok{ti}alias{ai}sample"))
                     .collect()
             })
@@ -1488,5 +1683,51 @@ mod tests {
         let body = r#"{"ok":true,"kind":"token-mapping","epoch":0}"#;
         let err = Response::parse(body.as_bytes()).unwrap_err();
         assert!(format!("{err}").contains("aliases"));
+    }
+
+    #[test]
+    fn token_mapping_response_roundtrips_for_every_alias_count_in_range() {
+        // Every supported alias count must survive the parser, which
+        // is the wire side of randomising the count per epoch.
+        for alias_count in MIN_ALIAS_COUNT_WIRE..=MAX_ALIAS_COUNT_WIRE {
+            let aliases = sample_token_mapping_aliases_n(2, alias_count);
+            let r = Response::TokenMapping { epoch: 0, aliases };
+            let wire = r.to_wire().unwrap();
+            let parsed = Response::parse(&wire).unwrap();
+            assert_eq!(parsed, r, "alias_count {alias_count} did not round-trip");
+        }
+    }
+
+    #[test]
+    fn token_mapping_response_rejects_inner_below_range() {
+        // alias count 1 is below MIN_ALIAS_COUNT_WIRE.
+        let body = r#"{"ok":true,"kind":"token-mapping","epoch":0,"aliases":[["only"]]}"#;
+        let err = Response::parse(body.as_bytes()).unwrap_err();
+        assert!(
+            format!("{err}").contains("outside accepted range"),
+            "{err}",
+        );
+    }
+
+    #[test]
+    fn token_mapping_response_rejects_inner_above_range() {
+        // alias count 6 exceeds MAX_ALIAS_COUNT_WIRE.
+        let body = r#"{"ok":true,"kind":"token-mapping","epoch":0,"aliases":[["a","b","c","d","e","f"]]}"#;
+        let err = Response::parse(body.as_bytes()).unwrap_err();
+        assert!(
+            format!("{err}").contains("outside accepted range"),
+            "{err}",
+        );
+    }
+
+    #[test]
+    fn token_mapping_response_rejects_non_uniform_inner_lengths() {
+        // First row size 3, second row size 4 — a daemon-bug shape.
+        let body = r#"{"ok":true,"kind":"token-mapping","epoch":0,"aliases":[["a","b","c"],["d","e","f","g"]]}"#;
+        let err = Response::parse(body.as_bytes()).unwrap_err();
+        assert!(
+            format!("{err}").contains("must be uniform"),
+            "{err}",
+        );
     }
 }

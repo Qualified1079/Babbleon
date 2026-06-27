@@ -100,10 +100,14 @@ pub fn fetch_identifier_mapping(
     socket_path: &Path,
     tokens: &[String],
     expected_epoch: u64,
+    format_version: u32,
 ) -> Result<IdentifierMapping> {
     let resp = round_trip(
         socket_path,
-        &Request::GetTokenMapping { tokens: tokens.to_vec() },
+        &Request::GetTokenMapping {
+            tokens: tokens.to_vec(),
+            format_version,
+        },
     )
     .with_context(|| {
         format!("daemon round-trip via {}", socket_path.display())
@@ -165,8 +169,12 @@ pub fn unscramble_full(
     let DecodedFile { version, epoch, sorted_tokens, body } =
         parse_scrambled_file(scrambled)?;
     let wl = fetch_whitespace_wordlist(socket_path)?;
-    let mapping =
-        fetch_identifier_mapping(socket_path, &sorted_tokens, epoch)?;
+    let mapping = fetch_identifier_mapping(
+        socket_path,
+        &sorted_tokens,
+        epoch,
+        version,
+    )?;
     Ok(unscramble_pipeline(version, epoch, &body, &wl, &mapping))
 }
 

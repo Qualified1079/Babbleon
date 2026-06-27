@@ -40,8 +40,8 @@ pub fn dispatch(state: &mut DaemonState, request: Request) -> Response {
         Request::RotateMapping => rotate_mapping(state),
         Request::Unlock(secret) => unlock(state, &secret),
         Request::GetWhitespaceCompounds => get_whitespace_compounds(state),
-        Request::GetTokenMapping { tokens } => {
-            get_token_mapping(state, &tokens)
+        Request::GetTokenMapping { tokens, format_version } => {
+            get_token_mapping(state, &tokens, format_version)
         }
     }
 }
@@ -128,8 +128,12 @@ fn get_whitespace_compounds(state: &DaemonState) -> Response {
 /// in a dynamic identifier-mapping reply.
 /// `DaemonState::token_mapping` retains the secret; only the
 /// HKDF-derived per-token compounds cross the socket.
-fn get_token_mapping(state: &DaemonState, tokens: &[String]) -> Response {
-    match state.token_mapping(tokens) {
+fn get_token_mapping(
+    state: &DaemonState,
+    tokens: &[String],
+    format_version: u32,
+) -> Response {
+    match state.token_mapping(tokens, format_version) {
         Ok((epoch, aliases)) => Response::TokenMapping { epoch, aliases },
         Err(e) => error_response(&e),
     }
@@ -486,7 +490,14 @@ mod tests {
     fn get_token_mapping_returns_response_for_unlocked() {
         let mut s = state();
         let tokens = vec!["def".to_string(), "foo".to_string(), "x".to_string()];
-        let r = dispatch(&mut s, Request::GetTokenMapping { tokens: tokens.clone() });
+        let r = dispatch(
+            &mut s,
+            Request::GetTokenMapping {
+                tokens: tokens.clone(),
+                format_version:
+                    babbleon_daemon_protocol_v2::LEGACY_FORMAT_VERSION_WIRE,
+            },
+        );
         match r {
             Response::TokenMapping { epoch, aliases } => {
                 assert_eq!(epoch, 0);
@@ -511,7 +522,11 @@ mod tests {
         let mut s = locked_state();
         let r = dispatch(
             &mut s,
-            Request::GetTokenMapping { tokens: vec!["x".to_string()] },
+            Request::GetTokenMapping {
+                tokens: vec!["x".to_string()],
+                format_version:
+                    babbleon_daemon_protocol_v2::LEGACY_FORMAT_VERSION_WIRE,
+            },
         );
         match r {
             Response::Error { kind, message } => {
@@ -529,7 +544,11 @@ mod tests {
         dispatch(&mut s, Request::RotateMapping);
         let r = dispatch(
             &mut s,
-            Request::GetTokenMapping { tokens: vec!["x".to_string()] },
+            Request::GetTokenMapping {
+                tokens: vec!["x".to_string()],
+                format_version:
+                    babbleon_daemon_protocol_v2::LEGACY_FORMAT_VERSION_WIRE,
+            },
         );
         match r {
             Response::TokenMapping { epoch, .. } => {
@@ -545,7 +564,14 @@ mod tests {
     fn get_token_mapping_aliases_are_distinct_per_token() {
         let mut s = state();
         let tokens = vec!["alpha".to_string(), "beta".to_string()];
-        let r = dispatch(&mut s, Request::GetTokenMapping { tokens });
+        let r = dispatch(
+            &mut s,
+            Request::GetTokenMapping {
+                tokens,
+                format_version:
+                    babbleon_daemon_protocol_v2::LEGACY_FORMAT_VERSION_WIRE,
+            },
+        );
         match r {
             Response::TokenMapping { aliases, .. } => {
                 for token_aliases in &aliases {

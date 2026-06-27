@@ -115,8 +115,19 @@ pub fn run_scramble(opts: ScrambleOptions) -> Result<()> {
     // closure ran (it must) and any error it produced.
     let socket_for_closure = socket_path.clone();
     let mapping_err: RefCell<Option<anyhow::Error>> = RefCell::new(None);
+    // scramble emits the latest file format; the daemon must use the
+    // matching alias-count regime so the unscramble side derives an
+    // identical mapping when it reads the same format-version line
+    // from the header.
+    let scramble_format_version =
+        babbleon_preprocessor_v2::FORMAT_VERSION_LATEST;
     let fetch_mapping = |toks: &[String], epoch: u64| -> babbleon_preprocessor_v2::errors::Result<IdentifierMapping> {
-        match fetch_identifier_mapping_at_epoch(&socket_for_closure, toks, epoch) {
+        match fetch_identifier_mapping_at_epoch(
+            &socket_for_closure,
+            toks,
+            epoch,
+            scramble_format_version,
+        ) {
             Ok(m) => Ok(m),
             Err(e) => {
                 *mapping_err.borrow_mut() = Some(e);
@@ -158,8 +169,12 @@ pub fn run_unscramble(opts: ScrambleOptions) -> Result<()> {
     let DecodedFile { version, epoch, sorted_tokens, body } =
         decode_file(&raw).with_context(|| "parse scrambled-file header")?;
 
-    let id_mapping =
-        fetch_identifier_mapping_at_epoch(&socket_path, &sorted_tokens, epoch)?;
+    let id_mapping = fetch_identifier_mapping_at_epoch(
+        &socket_path,
+        &sorted_tokens,
+        epoch,
+        version,
+    )?;
     let wl = fetch_whitespace_wordlist(&socket_path)?;
 
     install_seccomp(no_seccomp)?;
@@ -229,10 +244,14 @@ fn fetch_whitespace_wordlist(socket_path: &Path) -> Result<WhitespaceWordlist> {
 fn fetch_identifier_mapping(
     socket_path: &Path,
     tokens: &[String],
+    format_version: u32,
 ) -> Result<IdentifierMapping> {
     let resp = round_trip(
         socket_path,
-        &Request::GetTokenMapping { tokens: tokens.to_vec() },
+        &Request::GetTokenMapping {
+            tokens: tokens.to_vec(),
+            format_version,
+        },
     )
     .with_context(|| {
         format!("daemon round-trip via {}", socket_path.display())
@@ -255,7 +274,8 @@ fn fetch_identifier_mapping(
     }
 }
 
-/// Round-trip `GetTokenMapping` for `tokens` at a specific `expected_epoch`.
+/// Round-trip `GetTokenMapping` for `tokens` at a specific `expected_epoch`
+/// + `format_version`.
 ///
 /// Public entry point for corpus-level callers that parse the per-file
 /// header epoch and need to validate it against the daemon's current
@@ -264,8 +284,14 @@ pub fn fetch_identifier_mapping_at_epoch_pub(
     socket_path: &Path,
     tokens: &[String],
     expected_epoch: u64,
+    format_version: u32,
 ) -> Result<IdentifierMapping> {
-    fetch_identifier_mapping_at_epoch(socket_path, tokens, expected_epoch)
+    fetch_identifier_mapping_at_epoch(
+        socket_path,
+        tokens,
+        expected_epoch,
+        format_version,
+    )
 }
 
 /// The daemon always uses its current epoch; this function validates
@@ -273,12 +299,18 @@ pub fn fetch_identifier_mapping_at_epoch_pub(
 /// header.  If they differ, the file was scrambled at a different
 /// epoch than the daemon is currently serving — the caller must
 /// rotate the mapping back or use a different daemon state.
+///
+/// `format_version` is the file-format version the caller is
+/// producing or consuming; the daemon uses it to pick the legacy /
+/// variable alias-count regime.  See [`Request::GetTokenMapping`]
+/// for the regime semantics.
 fn fetch_identifier_mapping_at_epoch(
     socket_path: &Path,
     tokens: &[String],
     expected_epoch: u64,
+    format_version: u32,
 ) -> Result<IdentifierMapping> {
-    let mapping = fetch_identifier_mapping(socket_path, tokens)?;
+    let mapping = fetch_identifier_mapping(socket_path, tokens, format_version)?;
     if mapping.epoch != expected_epoch {
         return Err(anyhow!(
             "epoch mismatch: file was scrambled at epoch {expected_epoch}, \

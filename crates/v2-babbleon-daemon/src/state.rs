@@ -98,7 +98,11 @@ use babbleon_core_v2::{
     build_activated_table_from_mapping, EpochMapping, MappingBuilder,
     PerHostSecret, PermutationCache, Wordlist,
 };
-use babbleon_daemon_protocol_v2::ALIAS_COUNT_WIRE;
+use babbleon_daemon_protocol_v2::{
+    ALIAS_COUNT_VARIABLE_FROM_VERSION_WIRE, ALIAS_COUNT_WIRE,
+    MAX_ALIAS_COUNT_WIRE,
+};
+use babbleon_preprocessor_v2::alias_count_for_epoch;
 
 use crate::errors::{Error, Result};
 use crate::materialization::{
@@ -555,9 +559,24 @@ impl DaemonState {
     ///
     /// Returns the current epoch and an `aliases[token_idx][alias_idx]`
     /// matrix where each element is the compound for that token at
-    /// that alias index.  [`babbleon_daemon_protocol_v2::ALIAS_COUNT_WIRE`]
-    /// aliases are derived per token using virtual epochs
-    /// `epoch * ALIAS_COUNT + i`.
+    /// that alias index.
+    ///
+    /// `format_version` selects the alias-count regime:
+    ///
+    /// - `format_version < ALIAS_COUNT_VARIABLE_FROM_VERSION_WIRE`:
+    ///   legacy mode.  Returns
+    ///   [`babbleon_daemon_protocol_v2::ALIAS_COUNT_WIRE`] aliases per
+    ///   token using virtual epochs
+    ///   `epoch * ALIAS_COUNT_WIRE + i` (unchanged from the
+    ///   pre-Phase-B daemon — files at format v0/v1 unscramble
+    ///   correctly).
+    /// - `format_version >= ALIAS_COUNT_VARIABLE_FROM_VERSION_WIRE`:
+    ///   variable mode.  Returns
+    ///   `alias_count_for_epoch(format_version, epoch)` aliases per
+    ///   token using virtual epochs
+    ///   `epoch * MAX_ALIAS_COUNT_WIRE + i`.  The MAX-strided math
+    ///   keeps cache keys non-colliding across host-epochs whose
+    ///   alias counts differ.
     ///
     /// The daemon's `PerHostSecret` stays inside this `DaemonState`
     /// for the call; only the HKDF-derived output crosses the wire.
@@ -570,6 +589,7 @@ impl DaemonState {
     pub fn token_mapping(
         &self,
         tokens: &[String],
+        format_version: u32,
     ) -> Result<(u64, Vec<Vec<String>>)> {
         let SecretState::Unlocked { secret, epoch, .. } = &self.secret_state else {
             return Err(Error::Vault(
@@ -585,13 +605,24 @@ impl DaemonState {
         // Yates pass.  See `DaemonState::permutation_cache`.
         let builder =
             MappingBuilder::with_cache(secret, wl, &self.permutation_cache);
-        // ALIAS_COUNT_WIRE aliases per token, using virtual epochs so
-        // each alias is derived independently.
-        let base = epoch.saturating_mul(ALIAS_COUNT_WIRE as u64);
+        let (alias_count, stride) = if format_version
+            < ALIAS_COUNT_VARIABLE_FROM_VERSION_WIRE
+        {
+            (ALIAS_COUNT_WIRE, ALIAS_COUNT_WIRE)
+        } else {
+            // Variable mode: alias count is per-epoch, stride is the
+            // wire-imposed maximum so cache keys are non-colliding
+            // across the range.
+            (
+                alias_count_for_epoch(format_version, *epoch),
+                MAX_ALIAS_COUNT_WIRE,
+            )
+        };
+        let base = epoch.saturating_mul(stride as u64);
         // Build each alias mapping and extract compounds per token.
         let mut per_alias_compounds: Vec<Vec<String>> =
-            Vec::with_capacity(ALIAS_COUNT_WIRE);
-        for ai in 0..ALIAS_COUNT_WIRE {
+            Vec::with_capacity(alias_count);
+        for ai in 0..alias_count {
             let virtual_epoch = base + ai as u64;
             let mapping = builder
                 .build(tokens, virtual_epoch)
@@ -610,7 +641,7 @@ impl DaemonState {
         // Transpose: per_alias_compounds[alias][token] →
         // aliases[token][alias].
         let mut aliases: Vec<Vec<String>> =
-            tokens.iter().map(|_| Vec::with_capacity(ALIAS_COUNT_WIRE)).collect();
+            tokens.iter().map(|_| Vec::with_capacity(alias_count)).collect();
         for alias_compounds in per_alias_compounds {
             for (ti, compound) in alias_compounds.into_iter().enumerate() {
                 aliases[ti].push(compound);
@@ -1285,7 +1316,11 @@ mod tests {
         let s = build_state(tracked(), "/wrappers");
         let tokens =
             vec!["def".to_string(), "foo".to_string(), "return".to_string()];
-        let (epoch, aliases) = s.token_mapping(&tokens).unwrap();
+        let (epoch, aliases) = s.token_mapping(
+            &tokens,
+            babbleon_daemon_protocol_v2::LEGACY_FORMAT_VERSION_WIRE,
+        )
+        .unwrap();
         assert_eq!(epoch, 0);
         assert_eq!(aliases.len(), tokens.len());
         for token_aliases in &aliases {
@@ -1312,7 +1347,10 @@ mod tests {
     #[test]
     fn token_mapping_locked_returns_vault_error() {
         let s = build_locked(tracked(), "/wrappers");
-        match s.token_mapping(&["x".to_string()]) {
+        match s.token_mapping(
+            &["x".to_string()],
+            babbleon_daemon_protocol_v2::LEGACY_FORMAT_VERSION_WIRE,
+        ) {
             Err(Error::Vault(m)) => assert!(m.contains("locked"), "{m}"),
             Err(other) => panic!("expected Error::Vault, got {other:?}"),
             Ok(_) => panic!("locked state must refuse token_mapping"),
@@ -1324,10 +1362,18 @@ mod tests {
         use babbleon_daemon_protocol_v2::ALIAS_COUNT_WIRE;
         let mut s = build_state(tracked(), "/wrappers");
         let tokens = vec!["alpha".to_string(), "beta".to_string()];
-        let (e0, a0) = s.token_mapping(&tokens).unwrap();
+        let (e0, a0) = s.token_mapping(
+            &tokens,
+            babbleon_daemon_protocol_v2::LEGACY_FORMAT_VERSION_WIRE,
+        )
+        .unwrap();
         assert_eq!(e0, 0);
         s.rotate().unwrap();
-        let (e1, a1) = s.token_mapping(&tokens).unwrap();
+        let (e1, a1) = s.token_mapping(
+            &tokens,
+            babbleon_daemon_protocol_v2::LEGACY_FORMAT_VERSION_WIRE,
+        )
+        .unwrap();
         assert_eq!(e1, 1);
         // After rotation, at least one alias changes (almost certainly all).
         let changed = a0.iter().zip(a1.iter()).any(|(v0, v1)| v0 != v1);
@@ -1340,8 +1386,18 @@ mod tests {
         let a = build_state(tracked(), "/wrappers");
         let b = build_state(tracked(), "/wrappers");
         let tokens = vec!["x".to_string(), "y".to_string()];
-        let (_, aliases_a) = a.token_mapping(&tokens).unwrap();
-        let (_, aliases_b) = b.token_mapping(&tokens).unwrap();
+        let (_, aliases_a) = a
+            .token_mapping(
+                &tokens,
+                babbleon_daemon_protocol_v2::LEGACY_FORMAT_VERSION_WIRE,
+            )
+            .unwrap();
+        let (_, aliases_b) = b
+            .token_mapping(
+                &tokens,
+                babbleon_daemon_protocol_v2::LEGACY_FORMAT_VERSION_WIRE,
+            )
+            .unwrap();
         assert_eq!(aliases_a, aliases_b);
     }
 
@@ -1351,7 +1407,11 @@ mod tests {
         let s = build_state(tracked(), "/wrappers");
         let tokens =
             vec!["def".to_string(), "foo".to_string(), "return".to_string()];
-        let (epoch, aliases) = s.token_mapping(&tokens).unwrap();
+        let (epoch, aliases) = s.token_mapping(
+            &tokens,
+            babbleon_daemon_protocol_v2::LEGACY_FORMAT_VERSION_WIRE,
+        )
+        .unwrap();
         let mapping =
             IdentifierMapping::from_tokens_and_aliases(tokens.clone(), epoch, aliases)
                 .expect("daemon-derived aliases must satisfy from_tokens_and_aliases");
@@ -1375,15 +1435,132 @@ mod tests {
         let s = build_state(tracked(), "/wrappers");
         assert!(s.permutation_cache.is_empty());
         let tokens = vec!["alpha".to_string(), "beta".to_string()];
-        let (_, first) = s.token_mapping(&tokens).unwrap();
+        let (_, first) = s.token_mapping(
+            &tokens,
+            babbleon_daemon_protocol_v2::LEGACY_FORMAT_VERSION_WIRE,
+        )
+        .unwrap();
         // ALIAS_COUNT_WIRE distinct virtual epochs * (identifier + honey).
         assert_eq!(s.permutation_cache.len(), ALIAS_COUNT_WIRE * 2);
 
-        let (_, second) = s.token_mapping(&tokens).unwrap();
+        let (_, second) = s.token_mapping(
+            &tokens,
+            babbleon_daemon_protocol_v2::LEGACY_FORMAT_VERSION_WIRE,
+        )
+        .unwrap();
         // Repeat call: cache stays the same size; outputs identical.
         assert_eq!(s.permutation_cache.len(), ALIAS_COUNT_WIRE * 2);
         assert_eq!(first, second);
     }
+
+    #[test]
+    fn token_mapping_at_variable_format_returns_per_epoch_alias_count() {
+        // For format_version >= ALIAS_COUNT_VARIABLE_FROM_VERSION_WIRE
+        // the daemon's response width follows
+        // `alias_count_for_epoch(format_version, epoch)`.  The legacy
+        // path is exercised by the `token_mapping_returns_aliases_for_each_token`
+        // test above.
+        use babbleon_daemon_protocol_v2::ALIAS_COUNT_VARIABLE_FROM_VERSION_WIRE;
+        use babbleon_preprocessor_v2::alias_count_for_epoch;
+        let s = build_state(tracked(), "/wrappers");
+        let tokens = vec!["q".to_string(), "r".to_string()];
+        let (epoch, aliases) = s
+            .token_mapping(&tokens, ALIAS_COUNT_VARIABLE_FROM_VERSION_WIRE)
+            .unwrap();
+        let expected =
+            alias_count_for_epoch(ALIAS_COUNT_VARIABLE_FROM_VERSION_WIRE, epoch);
+        assert_eq!(aliases.len(), tokens.len());
+        for row in &aliases {
+            assert_eq!(
+                row.len(),
+                expected,
+                "variable-mode alias row width must match alias_count_for_epoch",
+            );
+        }
+    }
+
+    #[test]
+    fn token_mapping_variable_mode_globally_distinct_compounds() {
+        // Even when the alias count varies, every compound across every
+        // (token, alias_idx) pair must be globally distinct — otherwise
+        // the unscrambler's reverse-map build would collide.
+        use babbleon_daemon_protocol_v2::ALIAS_COUNT_VARIABLE_FROM_VERSION_WIRE;
+        let s = build_state(tracked(), "/wrappers");
+        let tokens =
+            vec!["uno".to_string(), "dos".to_string(), "tres".to_string()];
+        let (_, aliases) = s
+            .token_mapping(&tokens, ALIAS_COUNT_VARIABLE_FROM_VERSION_WIRE)
+            .unwrap();
+        let mut all: Vec<&str> = aliases
+            .iter()
+            .flat_map(|v| v.iter().map(String::as_str))
+            .collect();
+        all.sort_unstable();
+        let len = all.len();
+        all.dedup();
+        assert_eq!(
+            all.len(),
+            len,
+            "variable-mode compounds must be globally distinct",
+        );
+    }
+
+    #[test]
+    fn token_mapping_legacy_and_variable_use_independent_virtual_epochs() {
+        // The two regimes use different strides
+        // (`ALIAS_COUNT_WIRE` vs `MAX_ALIAS_COUNT_WIRE`) so at any
+        // host-epoch >= 1 they land on different virtual_epoch IDs and
+        // therefore different compounds.  At host_epoch == 0 both
+        // strides yield virtual_epoch == 0, so the property only holds
+        // for the second (and later) compound positions.  Rotate the
+        // daemon to host_epoch = 1 before comparing.
+        use babbleon_daemon_protocol_v2::{
+            ALIAS_COUNT_VARIABLE_FROM_VERSION_WIRE, LEGACY_FORMAT_VERSION_WIRE,
+        };
+        let mut s = build_state(tracked(), "/wrappers");
+        s.rotate().unwrap();
+        let tokens = vec!["zeta".to_string()];
+        let (_, legacy) = s
+            .token_mapping(&tokens, LEGACY_FORMAT_VERSION_WIRE)
+            .unwrap();
+        let (_, variable) = s
+            .token_mapping(&tokens, ALIAS_COUNT_VARIABLE_FROM_VERSION_WIRE)
+            .unwrap();
+        // host_epoch=1: legacy first virtual_epoch = 3; variable first
+        // virtual_epoch = 5.  Distinct → distinct compounds.
+        assert_ne!(
+            legacy[0][0], variable[0][0],
+            "regimes must use independent virtual-epoch IDs at host_epoch>=1",
+        );
+    }
+
+    #[test]
+    fn token_mapping_legacy_and_variable_share_genesis_first_alias() {
+        // Documents the genesis-epoch boundary:  the legacy and
+        // variable regimes BOTH derive virtual_epoch == 0 for the
+        // first alias at host_epoch == 0.  This is a documented,
+        // accepted cache-key collision — the compound is identical
+        // and the cache hit is correct.  Not a defect; making this
+        // explicit so a future cache rework does not silently break
+        // the property.
+        use babbleon_daemon_protocol_v2::{
+            ALIAS_COUNT_VARIABLE_FROM_VERSION_WIRE, LEGACY_FORMAT_VERSION_WIRE,
+        };
+        let s = build_state(tracked(), "/wrappers");
+        let tokens = vec!["genesis".to_string()];
+        let (_, legacy) = s
+            .token_mapping(&tokens, LEGACY_FORMAT_VERSION_WIRE)
+            .unwrap();
+        let (_, variable) = s
+            .token_mapping(&tokens, ALIAS_COUNT_VARIABLE_FROM_VERSION_WIRE)
+            .unwrap();
+        assert_eq!(
+            legacy[0][0], variable[0][0],
+            "host_epoch=0 first alias coincides under both regimes",
+        );
+    }
+
+    #[test]
 
     #[test]
     fn token_mapping_after_rotation_keeps_results_correct() {
@@ -1397,11 +1574,23 @@ mod tests {
         let mut s = build_state(tracked(), "/wrappers");
         let tokens = vec!["gamma".to_string()];
 
-        let (_, a0) = s.token_mapping(&tokens).unwrap();
+        let (_, a0) = s.token_mapping(
+            &tokens,
+            babbleon_daemon_protocol_v2::LEGACY_FORMAT_VERSION_WIRE,
+        )
+        .unwrap();
         s.rotate().unwrap();
-        let (e1, a1) = s.token_mapping(&tokens).unwrap();
+        let (e1, a1) = s.token_mapping(
+            &tokens,
+            babbleon_daemon_protocol_v2::LEGACY_FORMAT_VERSION_WIRE,
+        )
+        .unwrap();
         s.rotate().unwrap();
-        let (e2, a2) = s.token_mapping(&tokens).unwrap();
+        let (e2, a2) = s.token_mapping(
+            &tokens,
+            babbleon_daemon_protocol_v2::LEGACY_FORMAT_VERSION_WIRE,
+        )
+        .unwrap();
 
         assert_ne!(a0, a1, "rotation must change the alias set");
         assert_ne!(a1, a2, "rotation must change the alias set");

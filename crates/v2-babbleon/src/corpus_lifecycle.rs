@@ -124,6 +124,11 @@ pub fn run_scramble_dir(opts: CorpusOptions) -> Result<CorpusReport> {
     let epoch = wl.epoch();
     let start = Instant::now();
     let mut report = CorpusReport::default();
+    // scramble-dir emits the latest file format; pass the matching
+    // version to the daemon so the unscramble-dir side reads back the
+    // same alias-count regime from the per-file header.
+    let scramble_format_version =
+        babbleon_preprocessor_v2::FORMAT_VERSION_LATEST;
 
     walk_and_apply(
         &input_dir,
@@ -143,6 +148,7 @@ pub fn run_scramble_dir(opts: CorpusOptions) -> Result<CorpusReport> {
                         &socket_path,
                         toks,
                         e,
+                        scramble_format_version,
                     ) {
                         Ok(m) => Ok(m),
                         Err(err) => {
@@ -205,6 +211,7 @@ pub fn run_unscramble_dir(opts: CorpusOptions) -> Result<CorpusReport> {
                 &socket_path,
                 &sorted_tokens,
                 epoch,
+                version,
             )?;
             Ok(unscramble_pipeline(version, epoch, &body, &wl, &mapping))
         },

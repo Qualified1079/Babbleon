@@ -146,7 +146,15 @@ fn get_token_mapping_round_trip_against_inline_server() {
     let server = serve_one(&path);
 
     let tokens = vec!["x".to_string(), "foo".to_string()];
-    let resp = round_trip(&path, &Request::GetTokenMapping { tokens: tokens.clone() }).unwrap();
+    let resp = round_trip(
+        &path,
+        &Request::GetTokenMapping {
+            tokens: tokens.clone(),
+            format_version:
+                babbleon_daemon_protocol_v2::LEGACY_FORMAT_VERSION_WIRE,
+        },
+    )
+    .unwrap();
     match resp {
         Response::TokenMapping { epoch, aliases } => {
             assert_eq!(epoch, 0);

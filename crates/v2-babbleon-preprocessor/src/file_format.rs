@@ -65,12 +65,21 @@ pub const HEADER_SEP: &str = "---";
 ///   L2 (identifier scramble) + L3 (whitespace-as-words).  Pre-L6
 ///   and pre-L12 files lacked an explicit `version` line; the
 ///   reader infers version 0 from the missing line.
-/// - **1** — current.  Adds **L6** (direction segment reversal,
-///   per-epoch xorshift) and **L12** (zero-width + Cyrillic-
-///   homoglyph noise on body bytes).  Files at version 1 carry the
-///   explicit `version:1` header line; unscramble applies L6
-///   inverse and L12 strip in addition to the legacy inverses.
-pub const FORMAT_VERSION_LATEST: u32 = 1;
+/// - **1** — Adds **L6** (direction segment reversal, per-epoch
+///   xorshift) and **L12** (zero-width + Cyrillic-homoglyph noise
+///   on body bytes).  Files at version 1 carry the explicit
+///   `version:1` header line; unscramble applies L6 inverse and
+///   L12 strip in addition to the legacy inverses.  L2 always
+///   produces `ALIAS_COUNT = 3` aliases per token (legacy invariant);
+///   virtual-epoch math is `epoch * 3 + i`.
+/// - **2** — current.  Switches L2 to per-epoch variable alias
+///   count (`alias_count_for_epoch(version=2, epoch)` ∈ `[2, 5]`)
+///   so an attacker who counts compound occurrences cannot assume a
+///   fixed alias cycle.  Virtual-epoch math switches to
+///   `epoch * MAX_ALIAS_COUNT + i` so the daemon's
+///   `PermutationCache` does not collide across host-epochs whose
+///   alias counts differ.  L4/L5/L6/L12 unchanged from version 1.
+pub const FORMAT_VERSION_LATEST: u32 = 2;
 
 /// Legacy format version (pre-L6, pre-L12).  The scrambler never
 /// emits this; the reader infers it when the `version` header line

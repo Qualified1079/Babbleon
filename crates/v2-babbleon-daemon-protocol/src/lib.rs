@@ -54,8 +54,10 @@ pub mod unlock_secret;
 pub use client::round_trip;
 pub use errors::{Error, Result};
 pub use protocol::{
-    ErrorKind, Request, Response, ALIAS_COUNT_WIRE, MAX_REQUEST_BYTES,
-    MAX_TOKEN_MAPPING_COUNT,
+    ErrorKind, Request, Response, ALIAS_COUNT_VARIABLE_FROM_VERSION_WIRE,
+    ALIAS_COUNT_WIRE, LEGACY_FORMAT_VERSION_WIRE, MAX_ALIAS_COUNT_WIRE,
+    MAX_FORMAT_VERSION_WIRE, MAX_REQUEST_BYTES, MAX_TOKEN_MAPPING_COUNT,
+    MIN_ALIAS_COUNT_WIRE,
 };
 pub use socket_path::default_socket_path;
 pub use unlock_secret::{

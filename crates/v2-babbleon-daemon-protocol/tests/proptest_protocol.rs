@@ -32,8 +32,9 @@
 
 use babbleon_daemon_protocol_v2::{
     protocol::WHITESPACE_COMPOUND_COUNT_WIRE,
-    ErrorKind, Request, Response, UnlockSecret, ALIAS_COUNT_WIRE,
-    MAX_REQUEST_BYTES, MAX_TOKEN_MAPPING_COUNT, UNLOCK_SECRET_LEN,
+    ErrorKind, Request, Response, UnlockSecret, MAX_ALIAS_COUNT_WIRE,
+    MAX_FORMAT_VERSION_WIRE, MAX_REQUEST_BYTES, MAX_TOKEN_MAPPING_COUNT,
+    MIN_ALIAS_COUNT_WIRE, UNLOCK_SECRET_LEN,
 };
 use proptest::array::uniform32;
 use proptest::collection::vec;
@@ -52,6 +53,14 @@ fn arb_token_list() -> impl Strategy<Value = Vec<String>> {
     proptest::collection::vec("[a-z_]{1,32}".prop_map(String::from), 0..8)
 }
 
+fn arb_alias_count() -> impl Strategy<Value = usize> {
+    MIN_ALIAS_COUNT_WIRE..=MAX_ALIAS_COUNT_WIRE
+}
+
+fn arb_format_version() -> impl Strategy<Value = u32> {
+    0..=MAX_FORMAT_VERSION_WIRE
+}
+
 fn arb_request() -> impl Strategy<Value = Request> {
     prop_oneof![
         Just(Request::Status),
@@ -59,7 +68,11 @@ fn arb_request() -> impl Strategy<Value = Request> {
         Just(Request::RotateMapping),
         arb_unlock_secret().prop_map(Request::Unlock),
         Just(Request::GetWhitespaceCompounds),
-        arb_token_list().prop_map(|tokens| Request::GetTokenMapping { tokens }),
+        (arb_token_list(), arb_format_version()).prop_map(
+            |(tokens, format_version)| {
+                Request::GetTokenMapping { tokens, format_version }
+            }
+        ),
     ]
 }
 
@@ -97,12 +110,19 @@ fn arb_compounds()
 }
 
 /// `aliases[token_idx][alias_idx]` matrix for a token-mapping response.
-/// Up to 4 tokens, each with exactly ALIAS_COUNT_WIRE aliases.
+/// Up to 4 tokens, each with an alias count in the supported range,
+/// uniform across rows.  Row-uniformity matches the response parser's
+/// invariant: every row of the alias matrix has the same width.
 fn arb_token_mapping_aliases() -> impl Strategy<Value = Vec<Vec<String>>> {
-    proptest::collection::vec(
-        proptest::collection::vec(arb_compound(), ALIAS_COUNT_WIRE..=ALIAS_COUNT_WIRE),
-        0..4,
-    )
+    (arb_alias_count(), 0usize..4).prop_flat_map(|(alias_count, token_count)| {
+        proptest::collection::vec(
+            proptest::collection::vec(
+                arb_compound(),
+                alias_count..=alias_count,
+            ),
+            token_count..=token_count,
+        )
+    })
 }
 
 fn arb_error_kind() -> impl Strategy<Value = ErrorKind> {
