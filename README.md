@@ -27,9 +27,13 @@ preprocessor pipeline currently composes six scramble layers:
   src/identifier_scrambler.rs`). Language-agnostic. Every
   whitespace-delimited token in the source — keywords, operators,
   identifiers, string literals, punctuation — is collected and
-  assigned per-epoch HKDF-derived compound aliases. `ALIAS_COUNT=3`
-  multi-alias per token: each token gets 3 independent compounds
-  cycling across occurrences to defeat frequency analysis.
+  assigned per-epoch HKDF-derived compound aliases. Multi-alias per
+  token: each token gets K independent compounds cycling across
+  occurrences to defeat frequency analysis. K depends on the file
+  format version: v0/v1 files use the legacy fixed `ALIAS_COUNT=3`;
+  v2 files (current) use a deterministic per-epoch count in `[2, 5]`
+  via `alias_count_for_epoch(format_version, epoch)` so an attacker
+  who counts compound occurrences cannot assume a fixed cycle.
 - **L3 — whitespace-as-words** (`scrambler.rs` + `unscrambler.rs`).
   Every newline, space, tab, indent-open, and indent-close is
   replaced with a per-epoch compound. The scrambled file is one
@@ -60,12 +64,16 @@ preprocessor pipeline currently composes six scramble layers:
   multi-x token-count inflation and broken BPE merges; the trusted
   unscrambler strips the noise content-based before L3⁻¹.
 
-Scrambled-file format (version 1): a 5-line header (magic,
-`version:1`, epoch, sorted token list, separator) followed by the
-L3+L6+L12 body. The token list is embedded so the unscrambler can
+Scrambled-file format (version 2): a 5-line header (magic,
+`version:2`, epoch, sorted token list, separator) followed by the
+L3+L6+L12 body.  The token list is embedded so the unscrambler can
 re-derive the L2 mapping from the daemon without needing the
-original source. Security comes from the compounds being derived
-from the per-host secret, not from hiding which tokens exist. Files
+original source.  Security comes from the compounds being derived
+from the per-host secret, not from hiding which tokens exist.
+Version 1 files (pre-variable-alias-count) carry the same 5-line
+header layout but pin L2 to `ALIAS_COUNT=3` and use a stride-3
+virtual-epoch math; the new daemon unscrambles them through a
+legacy code path keyed on the header's `version` field.  Files
 without a `version:` line are read as legacy version-0 (pre-L6,
 pre-L12) and unscramble through the L3+L4+L5+L2 inverses only.
 
