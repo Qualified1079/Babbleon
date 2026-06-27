@@ -276,6 +276,20 @@ fn main() -> ExitCode {
         if all_pass { "PASS" } else { "FAIL" },
     );
 
+    if let Some(c) = &cache {
+        // Useful as a sanity check: in --mode full the cache should
+        // be ~100% hit after the first iteration of the first puzzle;
+        // a lower number means the workload is churning epochs faster
+        // than capacity holds, which we want to surface so operators
+        // can size the cache up.
+        println!(
+            "permutation-cache stats: hits={} misses={} ratio={:.3}",
+            c.hits(),
+            c.misses(),
+            c.hit_ratio(),
+        );
+    }
+
     if all_pass {
         ExitCode::SUCCESS
     } else {
