@@ -152,7 +152,7 @@ chosen SBOM format (CycloneDX or SPDX — decision pending).
 | `crates/babbleon-ns-helper` | `crates/babbleon-launch-untrusted` | Verb-first, says what the operator does with it. |
 | `crates/babbleon-pam` | `crates/babbleon-pam` | PAM ABI fixes the name. |
 | n/a (new) | `crates/babbleon-preprocessor` | The runtime un-scrambler for v2 structural scrambling. |
-| n/a (new) | `crates/babbleon-mapping-worker` | Separate-uid process that pre-builds the next epoch's permutation; communicates with the daemon over a one-shot pipe. |
+| n/a (new) | `crates/babbleon-mapping-worker` | Separate-uid process that pre-builds the next epoch's permutation; communicates with the daemon over a one-shot pipe.  **NOTE (2026-06-26 night):** the in-process `PermutationCache` shipped in commit `31135f6` covers the steady-state cost the mapping-worker was originally proposed to solve.  The remaining motivation for a separate-uid worker is the *isolation* of the Fisher-Yates compute under a different uid (defense-in-depth against memory disclosure during the build), not the *cost* (now amortized).  Operator review can re-scope this crate around the isolation goal alone — likely much smaller than the original plan. |
 
 ## What stays in `crates/` from v1 unchanged
 
