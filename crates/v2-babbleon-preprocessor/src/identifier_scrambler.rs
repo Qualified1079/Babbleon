@@ -65,9 +65,10 @@ use crate::tokens::Token;
 /// every scrambled file at file-format versions 0 and 1.  Files emitted
 /// at version 2 and later size their alias matrix per-epoch via
 /// [`alias_count_for_epoch`]; see that function's docs for the
-/// motivation.  Production call sites that hard-code "3" should
-/// migrate to [`alias_count_for_epoch`] in lock-step with the file-
-/// format bump filed in TODO.md §"Randomize ALIAS_COUNT per epoch".
+/// motivation.  Production call sites that hard-code "3" are now
+/// confined to back-compat code paths gated on
+/// `version < ALIAS_COUNT_VARIABLE_FROM_VERSION`; new call sites
+/// should derive the count via [`alias_count_for_epoch`].
 pub const ALIAS_COUNT: usize = 3;
 
 /// Minimum alias count produced by [`alias_count_for_epoch`] for
