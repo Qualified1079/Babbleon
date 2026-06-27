@@ -97,7 +97,14 @@ impl XorShift64 {
         x
     }
     fn gen_range(&mut self, exclusive_upper: usize) -> usize {
-        (self.next_u64() as usize) % exclusive_upper.max(1)
+        // Mod at u64 width so the result does not depend on the host's
+        // pointer width.  Casting `next_u64() as usize` first would
+        // truncate to 32 bits on 32-bit targets, producing a different
+        // permutation than a 64-bit unscrambler at the same epoch and
+        // breaking decoy round-trip across architectures.  The final
+        // `as usize` is lossless because `modulus` came from a usize.
+        let modulus = exclusive_upper.max(1) as u64;
+        (self.next_u64() % modulus) as usize
     }
 }
 

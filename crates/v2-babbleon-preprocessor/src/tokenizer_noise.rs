@@ -136,7 +136,15 @@ impl XorShift64 {
     }
 
     fn gen_range(&mut self, exclusive_upper: usize) -> usize {
-        (self.next_u64() as usize) % exclusive_upper.max(1)
+        // Mod at u64 width.  Truncating the PRNG output to `usize` first
+        // would drop the upper 32 bits on 32-bit targets and produce a
+        // different noise-insertion sequence than a 64-bit host running
+        // the same epoch.  Although L12 strips are content-based and
+        // therefore idempotent, the inserted positions still need to be
+        // architecture-stable for benchmark and corpus-test reproducibility.
+        // The final `as usize` is lossless because `modulus` came from a usize.
+        let modulus = exclusive_upper.max(1) as u64;
+        (self.next_u64() % modulus) as usize
     }
 }
 

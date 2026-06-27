@@ -104,7 +104,15 @@ impl XorShift64 {
     }
 
     fn gen_range(&mut self, exclusive_upper: usize) -> usize {
-        (self.next_u64() as usize) % exclusive_upper.max(1)
+        // Mod at u64 width before truncating to usize.  A 32-bit `usize`
+        // would otherwise drop the upper PRNG bits before the mod, which
+        // changes the chunk-size and reverse-decision sequence.  Since L6
+        // is involutive (the unscrambler is the same function), any
+        // divergence between scrambler and unscrambler architectures
+        // would silently corrupt the body.  The final `as usize` is
+        // lossless because `modulus` came from a usize.
+        let modulus = exclusive_upper.max(1) as u64;
+        (self.next_u64() % modulus) as usize
     }
 }
 

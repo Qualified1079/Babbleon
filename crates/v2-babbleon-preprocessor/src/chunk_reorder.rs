@@ -179,7 +179,18 @@ impl XorShift64 {
     fn gen_range(&mut self, exclusive_upper: usize) -> usize {
         // Unbiased mod; for our small `n` (chunks per file) the modulo
         // bias is negligible.  Used only for chunk reorder shuffle.
-        (self.next_u64() as usize) % exclusive_upper.max(1)
+        //
+        // The modulo MUST happen at u64 width and not after a `as usize`
+        // truncation.  On a 32-bit target `usize` is 32 bits, so casting
+        // first would drop the upper 32 bits of the PRNG output before the
+        // mod; the result then differs from the same computation on a
+        // 64-bit host running the identical epoch, breaking the
+        // cross-architecture determinism contract that the unscrambler
+        // relies on.  The final `as usize` is lossless because
+        // `next_u64() % modulus < modulus`, and `modulus` came from a
+        // `usize` so it fits.
+        let modulus = exclusive_upper.max(1) as u64;
+        (self.next_u64() % modulus) as usize
     }
 }
 
@@ -294,7 +305,7 @@ fn strip_leading_marker(chunk: Vec<Token>) -> Result<(usize, Vec<Token>), Vec<To
 mod tests {
     use super::{
         has_any_marker, marker_body, parse_marker, scramble_chunks,
-        unscramble_chunks,
+        shuffle_permutation, unscramble_chunks,
     };
     use crate::python_tokenizer::tokenize;
     use crate::tokens::Token;
@@ -304,6 +315,21 @@ mod tests {
         for n in [0usize, 1, 7, 42, 99_999] {
             assert_eq!(parse_marker(&marker_body(n)), Some(n));
         }
+    }
+
+    #[test]
+    fn shuffle_permutation_is_pinned_at_known_epoch() {
+        // Regression guard for cross-architecture determinism.  Any change
+        // to `XorShift64::from_epoch`, `next_u64`, or `gen_range` will
+        // shift the permutation sequence; the contract is that two hosts
+        // at the same epoch must produce the same shuffle, otherwise the
+        // unscrambler cannot reverse the scrambler's chunk reorder.
+        //
+        // The golden vector below was captured on x86_64 against the
+        // current PRNG.  Updating it requires a deliberate change to the
+        // PRNG and a version bump on the file format.
+        let perm = shuffle_permutation(7, 42);
+        assert_eq!(perm, vec![2, 0, 4, 6, 5, 1, 3]);
     }
 
     #[test]
