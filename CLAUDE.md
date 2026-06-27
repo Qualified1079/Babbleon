@@ -156,8 +156,9 @@ L2 permutation cache:
 `crates/v2-babbleon-core/src/permutation_cache.rs` provides a small
 LRU keyed by `(epoch, purpose)`.  `MappingBuilder::with_cache`
 opts in; cache hits skip the ~35 ms Fisher-Yates pass per
-`Permutation`.  `DaemonState` owns one cache (default capacity 8 =
-`ALIAS_COUNT_WIRE * 2 + slack`) and consumes it from
+`Permutation`.  `DaemonState` owns one cache (default capacity 12
+= `MAX_ALIAS_COUNT_WIRE * 2 + slack`, sized for the v2 variable
+alias-count regime's worst case) and consumes it from
 `token_mapping`; the preprocessor-benchmark `--mode full` accepts
 `--cache-capacity` (`0` disables).  Without the cache, a 1000-file
 corpus scramble paid ~70 s of avoidable rebuilds; with it, ~1.2 s.
