@@ -112,7 +112,9 @@ impl XorShift64 {
         // would silently corrupt the body.  The final `as usize` is
         // lossless because `modulus` came from a usize.
         let modulus = exclusive_upper.max(1) as u64;
-        (self.next_u64() % modulus) as usize
+        #[allow(clippy::cast_possible_truncation)] // bounded above by `modulus`
+        let bucket = (self.next_u64() % modulus) as usize;
+        bucket
     }
 }
 

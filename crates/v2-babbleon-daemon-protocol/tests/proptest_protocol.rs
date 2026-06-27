@@ -33,8 +33,8 @@
 use babbleon_daemon_protocol_v2::{
     protocol::WHITESPACE_COMPOUND_COUNT_WIRE,
     ErrorKind, Request, Response, UnlockSecret, MAX_ALIAS_COUNT_WIRE,
-    MAX_FORMAT_VERSION_WIRE, MAX_REQUEST_BYTES, MAX_TOKEN_MAPPING_COUNT,
-    MIN_ALIAS_COUNT_WIRE, UNLOCK_SECRET_LEN,
+    MAX_FORMAT_VERSION_WIRE, MAX_REQUEST_BYTES, MIN_ALIAS_COUNT_WIRE,
+    UNLOCK_SECRET_LEN,
 };
 use proptest::array::uniform32;
 use proptest::collection::vec;

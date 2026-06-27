@@ -146,9 +146,6 @@ pub const ALIAS_COUNT_VARIABLE_FROM_VERSION: u32 = 2;
 /// 1024 epochs.
 #[must_use]
 pub fn alias_count_for_epoch(format_version: u32, epoch: u64) -> usize {
-    if format_version < ALIAS_COUNT_VARIABLE_FROM_VERSION {
-        return ALIAS_COUNT;
-    }
     // Public deterministic mix.  The constants are arbitrary
     // well-known primes / golden-ratio words; they do not depend on
     // the per-host secret.  Keeping the mix public (and therefore
@@ -157,6 +154,10 @@ pub fn alias_count_for_epoch(format_version: u32, epoch: u64) -> usize {
     // wire response.
     const MIX_MUL: u64 = 0x9E37_79B9_7F4A_7C15;
     const MIX_XOR: u64 = 0xDEAD_BEEF_CAFE_BABE;
+
+    if format_version < ALIAS_COUNT_VARIABLE_FROM_VERSION {
+        return ALIAS_COUNT;
+    }
     let mixed = epoch.wrapping_mul(MIX_MUL) ^ MIX_XOR;
     let range = (MAX_ALIAS_COUNT - MIN_ALIAS_COUNT + 1) as u64;
     // High 32 bits feed the modulo — discards the predictable low
@@ -203,8 +204,15 @@ impl IdentifierMapping {
         let mut forward = HashMap::with_capacity(sorted_tokens.len());
         let mut reverse =
             HashMap::with_capacity(sorted_tokens.len() * ALIAS_COUNT);
-        for (token, token_aliases) in sorted_tokens.iter().zip(aliases.iter()) {
-            for compound in token_aliases {
+        // Consume `aliases` by value: the reverse-map loop clones each
+        // compound it inserts, and the inner `token_aliases` Vec moves
+        // straight into `forward` without a second pass of N clones.
+        // Saves one `Vec<String>` clone per token (≈ 300k for a typical
+        // file at v2's variable alias count).
+        for (token, token_aliases) in
+            sorted_tokens.iter().zip(aliases.into_iter())
+        {
+            for compound in &token_aliases {
                 if reverse.insert(compound.clone(), token.clone()).is_some() {
                     return Err(crate::errors::Error::Scramble(format!(
                         "identifier-mapping collision: compound {compound:?} \
@@ -212,7 +220,7 @@ impl IdentifierMapping {
                     )));
                 }
             }
-            forward.insert(token.clone(), token_aliases.clone());
+            forward.insert(token.clone(), token_aliases);
         }
         Ok(Self { sorted_tokens, epoch, forward, reverse })
     }

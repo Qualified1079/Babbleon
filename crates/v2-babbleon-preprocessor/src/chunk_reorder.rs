@@ -190,7 +190,9 @@ impl XorShift64 {
         // `next_u64() % modulus < modulus`, and `modulus` came from a
         // `usize` so it fits.
         let modulus = exclusive_upper.max(1) as u64;
-        (self.next_u64() % modulus) as usize
+        #[allow(clippy::cast_possible_truncation)] // bounded above by `modulus`
+        let bucket = (self.next_u64() % modulus) as usize;
+        bucket
     }
 }
 
