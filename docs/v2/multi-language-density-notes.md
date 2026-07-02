@@ -43,22 +43,73 @@ Applying the tool's `--intersect-tokenizers --min-tokens 3
 language and reading `kept_intersection` from the intersection
 manifest:
 
-| Language  | Input  | Kept (intersect[3,5]) | Kept % | Δ mean tokens |
-|-----------|-------:|----------------------:|-------:|--------------:|
-| English   | 369 652 |             223 009  | 60.3 % |    +15.4 % / +16.1 % (cl100k / o200k) |
-| German    |  42 179 |              …       | tbd    | tbd           |
-| Spanish   |  40 236 |              15 485  | 38.5 % | tbd (need bench) |
-| French    |  35 433 |              …       | tbd    | tbd           |
+| Language  | Input  | Kept (intersect[3,5]) | Kept %  |
+|-----------|-------:|----------------------:|--------:|
+| English   | 369 652 |             223 009  | 60.3 % |
+| German    |  42 179 |              17 159  | 40.7 % |
+| Spanish   |  40 236 |              15 485  | 38.5 % |
+| French    |  35 433 |              11 173  | 31.5 % |
 
-Spanish's `intersect[3, 5]` retention (38.5 %) is much lower than
-English's (60.3 %) because the pure-ASCII Spanish top-50k is
-biased toward short common words (43 % score 2 tokens under
-cl100k, vs English's ~30 %).  The mid-tail (3–5 tokens) covers a
-smaller fraction of the distribution.  The other language rows
-are unpopulated because the compound-cost benchmark
-(`tools/tokenizer-benchmark`) needs to be rerun against each
-filtered wordlist; that is a small follow-up cost, not a design
-question.
+The non-English retention rates (30–40 %) are much lower than
+English's (60 %) because the pure-ASCII HermitDave subsets are
+top-50k frequency-truncated — biased toward short common words
+whose BPE token count sits at 1–2, below the mid-tail band the
+filter is looking for.  The tail of English's 369 k wordlist
+covers the 3–5 token band more densely.
+
+## Compound-cost benchmark per language
+
+`tools/tokenizer-benchmark --samples 2000 --compound-n 4 --seed 1`
+against each raw + filtered wordlist:
+
+| Wordlist                    | Entries | cl100k mean | o200k mean | Δ cl100k vs English baseline | Δ o200k vs English baseline |
+|-----------------------------|--------:|------------:|-----------:|-----------------------------:|----------------------------:|
+| **English baseline**        | 369 652 |       11.96 |      11.53 |                            — |                           — |
+| English `intersect[3, 5]`   | 223 009 |       13.60 |      12.97 |                      +13.7 % |                     +12.5 % |
+| German (pure-ASCII)         |  42 179 |       10.96 |       9.81 |                       −8.4 % |                     −14.9 % |
+| German `intersect[3, 5]`    |  17 159 |       14.05 |      12.84 |                     **+17.5 %** |                     +11.4 % |
+| Spanish (pure-ASCII)        |  40 236 |       10.12 |       9.47 |                      −15.4 % |                     −17.9 % |
+| Spanish `intersect[3, 5]`   |  15 485 |       12.87 |      12.20 |                       +7.6 % |                      +5.8 % |
+| French (pure-ASCII)         |  35 433 |        9.47 |       8.93 |                      −20.8 % |                     −22.5 % |
+| French `intersect[3, 5]`    |  11 173 |       12.57 |      12.09 |                       +5.1 % |                      +4.9 % |
+
+Numbers are single-seed (seed=1); the English baseline row from
+`tools/wordlist-density-analysis/RESULTS.md` is a 3-seed mean, so
+strict comparability sits at ±0.05 tokens.  Session-1 measured
+seed-to-seed spread at σ ≈ 0.02 tokens on cl100k `intersect[3, 5]`.
+
+## What the numbers say
+
+1. **All three unfiltered non-English pools cost LESS attention
+   per compound than the English baseline** — 8–21 % less at
+   cl100k, 15–23 % less at o200k.  A naive "add another language"
+   strategy therefore *reduces* the LLM's per-compound work.  The
+   trade is real: added entropy vs added attention cost.
+2. **All three filtered non-English pools cost MORE attention per
+   compound than the English baseline unfiltered.**  So filtering
+   any language above the mid-tail band recovers the attention
+   deficit vs English, though at the cost of pool size (each
+   filtered non-English pool holds only 11–17 k words).
+3. **German `intersect[3, 5]` is competitive with English
+   `intersect[3, 5]`** — same size class problem (17 k vs 223 k)
+   but +17.5 % cl100k / +11.4 % o200k over the English baseline
+   vs English filter's +13.7 % / +12.5 %.  German's compound-word
+   morphology plus BPE segmentation happens to be favorable
+   under cl100k.  It is the strongest single-language addition
+   candidate.
+4. **French `intersect[3, 5]` is the weakest candidate** — +5 %
+   attention gain with the smallest pool (11 k).  Combined with
+   its lowest ASCII-retention rate (71 % of the top-50k after
+   the `[a-z]+` filter), French benefits the most from relaxing
+   the density-analysis validator to Unicode-lowercase before
+   ship.
+5. **The multi-language pool strategy is a size-vs-cost
+   tradeoff**, not a "free wins" story.  The most useful shape
+   is probably a **primary-language, secondary-language mix**
+   where the primary is English (attention cost + pool size),
+   and secondary languages contribute per-epoch identifiers at
+   the cost of a small attention discount — an obfuscation
+   analogue of the language-rotation defence.
 
 ## Design implications for the multi-language pool
 
