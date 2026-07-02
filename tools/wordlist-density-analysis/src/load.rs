@@ -7,11 +7,32 @@
 //! baseline must preserve them; the same validation code runs on
 //! load so we cannot analyse something that would fail the runtime
 //! loader.
+//!
+//! # `Mode::UnicodeLowercase` opt-in
+//!
+//! Phase-4 multi-language exploration (see
+//! `docs/v2/multi-language-density-notes.md`) needs to score
+//! wordlists with diacritics (`café`, `naïve`, `köln`) that the
+//! runtime loader currently refuses.  The `UnicodeLowercase` mode
+//! accepts any character that reports `is_lowercase()` per Unicode.
+//! This is analysis-side only — a wordlist that loads under
+//! Unicode mode must still be normalised or the loader relaxed on
+//! the runtime side before it can ship.
 
 use anyhow::{bail, Context, Result};
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
+
+/// Which character set the loader will accept.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Mode {
+    /// Default: matches the runtime's `[a-z]+` invariant.
+    AsciiLowercase,
+    /// Opt-in: accepts any Unicode lowercase character.  For
+    /// exploratory phase-4 multi-language analysis.
+    UnicodeLowercase,
+}
 
 /// A loaded, validated Babbleon-baseline wordlist.
 #[derive(Debug)]
@@ -20,11 +41,17 @@ pub struct Wordlist {
 }
 
 impl Wordlist {
-    /// Load and validate a wordlist file.
-    ///
-    /// Every entry must be non-empty, unique, and match `[a-z]+`.
-    /// A malformed file returns an error naming the first offender.
+    /// Load and validate a wordlist file under the default
+    /// `AsciiLowercase` mode.  Kept as a shim so existing call
+    /// sites (this crate's tests + external tools that link the
+    /// module) do not need to plumb a mode argument.
+    #[allow(dead_code)]
     pub fn from_path(path: &Path) -> Result<Self> {
+        Self::from_path_with_mode(path, Mode::AsciiLowercase)
+    }
+
+    /// Load and validate a wordlist file in the given mode.
+    pub fn from_path_with_mode(path: &Path, mode: Mode) -> Result<Self> {
         let raw = fs::read_to_string(path)
             .with_context(|| format!("read wordlist {}", path.display()))?;
         let words: Vec<String> = raw
@@ -33,7 +60,7 @@ impl Wordlist {
             .filter(|line| !line.is_empty())
             .map(str::to_owned)
             .collect();
-        validate(&words)?;
+        validate(&words, mode)?;
         Ok(Self { words })
     }
 
@@ -42,7 +69,7 @@ impl Wordlist {
     }
 }
 
-fn validate(words: &[String]) -> Result<()> {
+fn validate(words: &[String], mode: Mode) -> Result<()> {
     if words.is_empty() {
         bail!("wordlist is empty");
     }
@@ -51,8 +78,20 @@ fn validate(words: &[String]) -> Result<()> {
         if w.is_empty() {
             bail!("wordlist entry is empty");
         }
-        if !w.chars().all(|c| c.is_ascii_lowercase()) {
-            bail!("wordlist entry {:?} contains non-[a-z] characters", w);
+        match mode {
+            Mode::AsciiLowercase => {
+                if !w.chars().all(|c| c.is_ascii_lowercase()) {
+                    bail!("wordlist entry {:?} contains non-[a-z] characters", w);
+                }
+            }
+            Mode::UnicodeLowercase => {
+                if !w.chars().all(char::is_lowercase) {
+                    bail!(
+                        "wordlist entry {:?} contains non-lowercase characters (Unicode mode)",
+                        w
+                    );
+                }
+            }
         }
         if !seen.insert(w) {
             bail!("wordlist entry {:?} appears more than once", w);
@@ -111,5 +150,47 @@ mod tests {
         let path = write_tmp("empty", "\n\n  \n");
         let err = Wordlist::from_path(&path).unwrap_err().to_string();
         assert!(err.contains("empty"), "actual: {err}");
+    }
+
+    #[test]
+    fn ascii_mode_rejects_diacritic() {
+        let path = write_tmp("dia-ascii", "cafe\ncafé\n");
+        let err = Wordlist::from_path(&path).unwrap_err().to_string();
+        assert!(err.contains("café"), "actual: {err}");
+    }
+
+    #[test]
+    fn unicode_mode_accepts_diacritics() {
+        let path = write_tmp("dia-uni", "cafe\ncafé\nnaïve\nköln\n");
+        let wl = Wordlist::from_path_with_mode(&path, Mode::UnicodeLowercase).unwrap();
+        assert_eq!(wl.words, vec!["cafe", "café", "naïve", "köln"]);
+    }
+
+    #[test]
+    fn unicode_mode_still_rejects_uppercase() {
+        let path = write_tmp("uni-upper", "alpha\nBeta\n");
+        let err = Wordlist::from_path_with_mode(&path, Mode::UnicodeLowercase)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Beta"), "actual: {err}");
+    }
+
+    #[test]
+    fn unicode_mode_still_rejects_digits() {
+        let path = write_tmp("uni-digit", "alpha\nbeta2\n");
+        let err = Wordlist::from_path_with_mode(&path, Mode::UnicodeLowercase)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("beta2"), "actual: {err}");
+    }
+
+    #[test]
+    fn unicode_mode_rejects_duplicates() {
+        let path = write_tmp("uni-dup", "café\ncafé\n");
+        let err = Wordlist::from_path_with_mode(&path, Mode::UnicodeLowercase)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("café"), "actual: {err}");
+        assert!(err.contains("more than once"), "actual: {err}");
     }
 }

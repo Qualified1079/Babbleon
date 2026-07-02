@@ -161,6 +161,23 @@ combination.  The existing extractor already supports one
 language per invocation; a follow-up would let the operator
 concatenate + shuffle across languages before extraction.
 
+## Follow-up — Unicode-lowercase loader landed
+
+`tools/wordlist-density-analysis/src/load.rs` grew a
+`Mode::UnicodeLowercase` opt-in (CLI: `--unicode-lowercase`).
+Scoring French with the full top-50k (after dropping contractions
+via `perl -CS -ne '/^\p{Ll}+$/'`) recovers 46 792 entries — a
+32 % gain over the 35 433 pure-ASCII subset.  Full-list mean
+compound token count for French (cl100k) rises from 2.39 to 2.62
+because the accented characters cost more tokens; this offsets
+some of the "French compound cost is low" finding above.
+
+The runtime loader in `crates/v2-babbleon-core::wordlist` still
+enforces `[a-z]+`; the tool's Unicode mode is analysis-side only.
+Wiring a matching relax into the runtime is a separate
+operator-review-gated diff — it changes the observable Babbleon
+compound alphabet, which is a public surface.
+
 ## Design implications for the multi-language pool
 
 1. **The distribution shape is language-preserving.**  Every

@@ -57,7 +57,7 @@ use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
 
 use crate::filter::{intersect, Bound, FilterSpec, Tokenizer};
-use crate::load::Wordlist;
+use crate::load::{Mode, Wordlist};
 use crate::score::{score_all, Tokenizers};
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -134,15 +134,35 @@ struct Args {
     /// Skip the summary print (useful when driving from a script).
     #[arg(long, default_value_t = false)]
     quiet: bool,
+
+    /// Opt-in: accept any Unicode lowercase character (`café`,
+    /// `naïve`, `köln`) instead of the runtime's `[a-z]+`
+    /// invariant.  Analysis-side only — a wordlist that loads
+    /// under this mode must still be normalised or the runtime
+    /// loader relaxed before it can ship.  Used for phase-4
+    /// multi-language exploration.  See
+    /// `docs/v2/multi-language-density-notes.md`.
+    #[arg(long, default_value_t = false)]
+    unicode_lowercase: bool,
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    let wordlist = Wordlist::from_path(&args.wordlist)
+    let mode = if args.unicode_lowercase {
+        Mode::UnicodeLowercase
+    } else {
+        Mode::AsciiLowercase
+    };
+    let wordlist = Wordlist::from_path_with_mode(&args.wordlist, mode)
         .with_context(|| format!("load {}", args.wordlist.display()))?;
     if !args.quiet {
-        println!("Loaded {} words from {}", wordlist.len(), args.wordlist.display());
+        println!(
+            "Loaded {} words from {} (mode={:?})",
+            wordlist.len(),
+            args.wordlist.display(),
+            mode
+        );
     }
 
     let tokenizers = Tokenizers::load()?;
