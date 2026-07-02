@@ -265,6 +265,13 @@ enum LayerConfigPreset {
     L2PlusL3PlusL4PlusL5,
     /// Full production stack: L2 + L3 + L4 + L5 + L6 + L12.
     FullStack,
+    /// L2 + L3 with the per-epoch variable alias count (diagnostic;
+    /// isolates the alias-count effect against `L2PlusL3`'s legacy
+    /// fixed cycle).
+    L2PlusL3VariableAliasCount,
+    /// Full production stack with the per-epoch variable alias
+    /// count (matches what file-format-version-2 emits today).
+    FullStackVariableAliasCount,
 }
 
 impl LayerConfigPreset {
@@ -287,6 +294,12 @@ impl LayerConfigPreset {
                 LayerConfig::l2_plus_l3_plus_l4_plus_l5()
             }
             LayerConfigPreset::FullStack => LayerConfig::full_stack(),
+            LayerConfigPreset::L2PlusL3VariableAliasCount => {
+                LayerConfig::l2_plus_l3_with_variable_alias_count()
+            }
+            LayerConfigPreset::FullStackVariableAliasCount => {
+                LayerConfig::full_stack_with_variable_alias_count()
+            }
         }
     }
 }
