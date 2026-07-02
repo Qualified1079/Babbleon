@@ -242,20 +242,6 @@ composes with the phase-3 five-layer base; they don't replace it.
       Host-path string literals rewritten to consult the
       scrambled-path table at runtime.  Not general string
       obfuscation (that changes program semantics).
-- [ ] **Layer 11 — defensive prompt injection (DIRECT
-      implementation, opt-in default ON).**  Real-world precedent
-      established: CVE-2025-53773 (GitHub Copilot RCE via prompt
-      injection in code comments).  Vendor garak (Apache 2.0)
-      probe payloads — ~500 to start — into
-      `crates/babbleon-core/wordlist/prompt-injection-payloads/`
-      with attribution.  Per-epoch random selection from the
-      pool means rotation rotates adversarial prompts for free.
-      Operator opt-out via config; install doc surfaces a clear
-      disclaimer that source files now contain adversarial
-      prompts that may upset CI lint / AI code review tooling.
-      Other corpora (BIPIA Microsoft, IPI Arena, LLMail-Inject,
-      PINT, Purple Llama Meta, OWASP cheat sheet) need per-LICENSE
-      check before adding.
 - [x] **Layer 12 — tokenizer-hostile noise** —
       `tokenizer_noise.rs`.  Body-bytes-only perturbation: zero-width
       character injection (ZWSP/ZWNJ/ZWJ at U+200B/200C/200D) at
