@@ -56,7 +56,7 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
 
-use crate::filter::{FilterSpec, Tokenizer};
+use crate::filter::{Bound, FilterSpec, Tokenizer};
 use crate::load::Wordlist;
 use crate::score::{score_all, Tokenizers};
 
@@ -93,13 +93,25 @@ struct Args {
     #[arg(long, value_enum)]
     filter: Option<TokenizerArg>,
 
-    /// Inclusive lower percentile bound for the filter band.
-    #[arg(long, default_value_t = 30.0)]
-    min_percentile: f64,
+    /// Inclusive lower percentile bound.  Mutually exclusive with
+    /// `--min-tokens`.  Defaults to 30 when neither is supplied.
+    #[arg(long, conflicts_with = "min_tokens")]
+    min_percentile: Option<f64>,
 
-    /// Inclusive upper percentile bound for the filter band.
-    #[arg(long, default_value_t = 70.0)]
-    max_percentile: f64,
+    /// Inclusive upper percentile bound.  Mutually exclusive with
+    /// `--max-tokens`.  Defaults to 70 when neither is supplied.
+    #[arg(long, conflicts_with = "max_tokens")]
+    max_percentile: Option<f64>,
+
+    /// Inclusive lower cutoff as an absolute token count.  Mutually
+    /// exclusive with `--min-percentile`.
+    #[arg(long)]
+    min_tokens: Option<usize>,
+
+    /// Inclusive upper cutoff as an absolute token count.  Mutually
+    /// exclusive with `--max-percentile`.
+    #[arg(long)]
+    max_tokens: Option<usize>,
 
     /// Write the surviving wordlist (one word per line) to this path.
     /// Only meaningful with `--filter`.
@@ -144,21 +156,35 @@ fn main() -> Result<()> {
     }
 
     if let Some(tok) = args.filter {
+        let min = match (args.min_percentile, args.min_tokens) {
+            (Some(p), None) => Bound::Percentile(p),
+            (None, Some(n)) => Bound::Tokens(n),
+            (None, None) => Bound::Percentile(30.0),
+            (Some(_), Some(_)) => unreachable!("clap enforces conflicts_with"),
+        };
+        let max = match (args.max_percentile, args.max_tokens) {
+            (Some(p), None) => Bound::Percentile(p),
+            (None, Some(n)) => Bound::Tokens(n),
+            (None, None) => Bound::Percentile(70.0),
+            (Some(_), Some(_)) => unreachable!("clap enforces conflicts_with"),
+        };
         let spec = FilterSpec {
             tokenizer: tok.into(),
-            min_percentile: args.min_percentile,
-            max_percentile: args.max_percentile,
+            min,
+            max,
         };
         if let Err(msg) = spec.validate() {
             bail!("invalid filter spec: {msg}");
         }
-        let result = spec.apply(&scores);
+        let result = spec
+            .apply(&scores)
+            .map_err(|msg| anyhow::anyhow!("filter apply failed: {msg}"))?;
         if !args.quiet {
             println!(
-                "\nFilter: tokenizer={} percentile=[{}, {}] cutoff=[{}, {}]",
+                "\nFilter: tokenizer={} bounds=[{}, {}] resolved-cutoff=[{}, {}]",
                 spec.tokenizer,
-                spec.min_percentile,
-                spec.max_percentile,
+                spec.min,
+                spec.max,
                 result.cutoff_low,
                 result.cutoff_high
             );
@@ -185,8 +211,14 @@ fn main() -> Result<()> {
                 println!("Wrote filter manifest to {}", path.display());
             }
         }
-    } else if args.filtered_out.is_some() || args.manifest_out.is_some() {
-        bail!("--filtered-out / --manifest-out require --filter <tokenizer>");
+    } else if args.filtered_out.is_some()
+        || args.manifest_out.is_some()
+        || args.min_percentile.is_some()
+        || args.max_percentile.is_some()
+        || args.min_tokens.is_some()
+        || args.max_tokens.is_some()
+    {
+        bail!("filter parameters require --filter <tokenizer>");
     }
 
     Ok(())

@@ -118,8 +118,8 @@ pub fn write_filter_manifest(result: &FilterResult, path: &Path) -> Result<()> {
     let mut w = BufWriter::new(f);
     writeln!(w, "# wordlist-density-analysis filter manifest")?;
     writeln!(w, "tokenizer        {}", result.spec.tokenizer)?;
-    writeln!(w, "min_percentile   {}", result.spec.min_percentile)?;
-    writeln!(w, "max_percentile   {}", result.spec.max_percentile)?;
+    writeln!(w, "min_bound        {}", result.spec.min)?;
+    writeln!(w, "max_bound        {}", result.spec.max)?;
     writeln!(w, "cutoff_low       {}", result.cutoff_low)?;
     writeln!(w, "cutoff_high      {}", result.cutoff_high)?;
     writeln!(w, "input_total      {}", result.total_input())?;
@@ -138,7 +138,7 @@ pub fn write_filter_manifest(result: &FilterResult, path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::filter::{FilterSpec, Tokenizer};
+    use crate::filter::{Bound, FilterSpec, Tokenizer};
 
     fn tmp_path(tag: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
@@ -175,10 +175,10 @@ mod tests {
         let scores = dummy_scores();
         let spec = FilterSpec {
             tokenizer: Tokenizer::Cl100k,
-            min_percentile: 30.0,
-            max_percentile: 70.0,
+            min: Bound::Percentile(30.0),
+            max: Bound::Percentile(70.0),
         };
-        let r = spec.apply(&scores);
+        let r = spec.apply(&scores).unwrap();
         let p = tmp_path("kept");
         write_filtered_wordlist(&r, &p).unwrap();
         let body = fs::read_to_string(&p).unwrap();
@@ -190,17 +190,17 @@ mod tests {
         let scores = dummy_scores();
         let spec = FilterSpec {
             tokenizer: Tokenizer::Cl100k,
-            min_percentile: 30.0,
-            max_percentile: 70.0,
+            min: Bound::Percentile(30.0),
+            max: Bound::Percentile(70.0),
         };
-        let r = spec.apply(&scores);
+        let r = spec.apply(&scores).unwrap();
         let p = tmp_path("manifest");
         write_filter_manifest(&r, &p).unwrap();
         let body = fs::read_to_string(&p).unwrap();
         for needle in [
             "tokenizer",
-            "min_percentile",
-            "max_percentile",
+            "min_bound",
+            "max_bound",
             "cutoff_low",
             "cutoff_high",
             "input_total",
