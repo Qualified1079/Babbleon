@@ -88,14 +88,34 @@ threat-model and prior-art notes.
 
 ## Try it
 
+**v2 CLI** (product path — five-verb surface plus scramble /
+unscramble):
+
+    cargo run -p v2-babbleon -- init          # one-time vault setup
+    cargo run -p v2-babbleon -- unlock        # unseal into daemon memory
+    cargo run -p v2-babbleon -- status        # epoch, tool count, last rotation
+    cargo run -p v2-babbleon -- rotate-mapping
+    cargo run -p v2-babbleon -- scramble -i mysrc.py -o scrambled.bbn
+    cargo run -p v2-babbleon -- unscramble -i scrambled.bbn -o mysrc.py
+    cargo run -p v2-babbleon -- scramble-dir --input-dir vendored/ \
+                                             --output-dir scrambled/
+
+`scramble-dir` is the install-time batch — one daemon round-trip up
+front, then per-file work.  Every subcommand honours a global
+`--no-seccomp` for the syscall-allowlist iteration loop and
+`--verbose` (`-v`, `-vv`) for tracing.
+
+**v1 CLI (deprecated)** still ships the no-syscall sandbox demo for
+historical reference:
+
     cargo run -p babbleon-cli -- demo
 
-Runs a no-syscall sandbox demo: builds a vault, shows both views,
-runs an attacker simulation against the scrambled view, rotates,
-re-runs, and triggers a honey tripwire.
+Builds a vault, shows both views, runs an attacker simulation against
+the scrambled view, rotates, re-runs, and triggers a honey tripwire.
+Do not build new features on this path — see `crates/DEPRECATED-V1.md`.
 
 For the adversarial naming-layer harness against a frontier LLM, open
-`tools/scrambler/index.html` in a browser. No server, no deps.
+`tools/scrambler/index.html` in a browser.  No server, no deps.
 
 ## Layout
 
