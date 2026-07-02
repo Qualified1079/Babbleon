@@ -63,7 +63,7 @@ were:
 So of the five, three are still blocked on operator gates, one is
 deferred, and one (priority 5) was the natural autonomous pickup.
 
-### Net commits this session: 10 (+ this refresh)
+### Net commits this session: 14 (+ this refresh)
 
 | # | Hash | Subject |
 |---|---|---|
@@ -74,10 +74,13 @@ deferred, and one (priority 5) was the natural autonomous pickup.
 | 5 | `2c3c9e3` | docs(HANDOFF): commit-list refresh + extractor notes for session 2 |
 | 6 | `d8036b7` | feat(wordlist-role-partitioning): `--role-tokens` per-role attention override |
 | 7 | `fd75bbc` | feat(wordlist-role-partitioning): HKDF seed derivation for production extraction |
-| 8 | `9233978` | docs(HANDOFF): final commit-list refresh — role-tokens + HKDF |
+| 8 | `9233978` | docs(HANDOFF): commit-list refresh — role-tokens + HKDF |
 | 9 | `9e78649` | docs(v2): preliminary multi-language wordlist density measurements |
 | 10 | `3e89366` | docs(v2): fill in multi-language filter+bench numbers (de/es/fr) |
-| 11 | (this commit) | docs(HANDOFF): commit-list refresh + multi-language notes |
+| 11 | `8b1f078` | docs(HANDOFF): commit-list refresh + multi-language notes |
+| 12 | `23db1c8` | docs(v2): multi-language per-language role-fit check (all OVERFLOW alone) |
+| 13 | `be27bca` | feat(wordlist-density-analysis): `--unicode-lowercase` mode for phase-4 exploration |
+| 14 | (this commit) | docs(HANDOFF): final commit-list refresh — fit check + Unicode mode |
 
 ### Commit 4 — Per-role disjoint-subset extractor
 
@@ -265,6 +268,46 @@ Key findings recorded in the doc:
 Downstream open items filed in the doc's "Follow-up work" list:
 loader Unicode relax, diacritics normalisation, per-language
 role-partitioning fit check.
+
+### Commit 12 — Per-language role-partitioning fit check
+
+Closes session-2 refreshed priority 11.  Ran
+`tools/wordlist-role-partitioning --wordlist-size <lang> --wordlist-
+mean-tokens <mean>` for each of the filtered German / Spanish /
+French wordlists.  Every single-language pool OVERFLOWS the
+provisional-v2 role table under laptop-default posture — the
+identifier role (13.7 k words) fits everywhere but the
+compound_n=3 decoy (130 k) and direction_marker (70 k) roles do
+not.  The doc records three operator responses:
+
+1. Cross-language union for the large roles only.
+2. Per-language rotation with a shrunken per-epoch role table.
+3. Relax the birthday-bound collision target to 1e-3.
+
+Recommendation baked in: option 1 preserves the strongest
+posture and composes cleanly with the extractor's already-in-
+place per-role `--extract-seed-file` + label workflow.
+
+### Commit 13 — `--unicode-lowercase` opt-in
+
+Closes session-2 refreshed priority 10.
+`tools/wordlist-density-analysis/src/load.rs` grew a `Mode` enum
+with `AsciiLowercase` (default, matches the runtime invariant)
+and `UnicodeLowercase` (opt-in).  New CLI flag
+`--unicode-lowercase`.  6 new load tests (accept/reject matrix
+across ASCII/Unicode diacritics/upper/digit/duplicate cases);
+default-clippy sweep still clean.
+
+Verified end-to-end on the French list: after dropping
+contractions via `perl -CS -ne '/^\p{Ll}+$/'`, Unicode mode loads
+46 792 entries vs 35 433 pure-ASCII — +32 % pool at a cost of
++0.23 mean cl100k tokens per word (2.62 vs 2.39).  Trade-off
+documented in the multi-lang notes.
+
+The runtime `crates/v2-babbleon-core::wordlist` loader is
+UNCHANGED; the tool's Unicode mode is analysis-side only.
+Wiring a runtime relax is a separate operator-review-gated diff
+because it changes Babbleon's public compound alphabet.
 
 ### Commit 1 — `wordlist-role-partitioning` scaffold + full tool
 
@@ -470,29 +513,36 @@ contested design.
    numbers for German, Spanish, French are in
    `docs/v2/multi-language-density-notes.md`.  Followup work
    filed at the bottom of that doc.
-10. **Relax `[a-z]+` validator to Unicode lowercase in
-    `tools/wordlist-density-analysis/src/load.rs`.**  Would let
-    the density tool score full HermitDave lists (currently 30 %
-    of French entries are dropped by the ASCII rule).  The
-    matching change in `crates/v2-babbleon-core::wordlist` is a
-    separate operator-review-gated diff — see the multi-
-    language notes doc for the tradeoff.  Autonomous-safe for
-    the density-analysis tool because it does not ship into the
-    runtime.
-11. **Per-language role-partitioning fit check.**  Run
-    `tools/wordlist-role-partitioning` with the German /
-    Spanish / French filtered wordlist sizes and confirm the
-    role table's aggregate fits.  Autonomous-safe once the
-    numbers are on disk.  Multiplies into a "which multi-
-    language mix fits both attention and pool budgets?"
-    optimisation.
+10. **Density-analysis Unicode-lowercase opt-in — DONE (commit
+    13, `be27bca`).**  `--unicode-lowercase` flag lands the
+    Mode::UnicodeLowercase branch on the density tool.  Follow-
+    up: the runtime `crates/v2-babbleon-core::wordlist` still
+    enforces `[a-z]+`; changing that alters Babbleon's public
+    compound alphabet and is operator-review-gated.
+11. **Per-language role-partitioning fit check — DONE (commit
+    12, `23db1c8`).**  All three non-English filtered wordlists
+    overflow the provisional role table alone; the
+    cross-language union pattern is now the leading design.
 12. **Diacritics normalisation shim.**  If the operator prefers
-    to KEEP the `[a-z]+` runtime invariant, a shim that
+    to keep the `[a-z]+` runtime invariant, a shim that
     NFKD-decomposes and drops combining marks (`café` →
-    `cafe`) would preserve much of the pool at the cost of
+    `cafe`) would preserve most of the pool at the cost of
     losing language-native word shape.  Small standalone tool
     or a `--normalise-diacritics` flag on the density tool.
     Autonomous-safe.
+13. **Cross-language union extractor extension.**  The
+    extractor currently takes a single wordlist.  Follow-up
+    would let it concatenate + shuffle across `--wordlist
+    <path>` inputs BEFORE the disjoint draw, so the operator
+    can implement the "primary+secondary language" pattern
+    without stitching the files themselves.  Autonomous-safe;
+    trivial to wire on top of the existing extract module.
+14. **Multi-seed compound-cost benchmark for non-English
+    filters.**  The multi-language doc's per-language filter
+    numbers are single-seed (seed=1); the English baseline it
+    compares against is 3-seed mean.  Autonomous-safe to
+    replay with seed=1,2,3 and record σ; would tighten the
+    doc's ±0.05-token caveat.
 
 ### Process notes for next autonomous session
 
