@@ -111,6 +111,56 @@ seed-to-seed spread at σ ≈ 0.02 tokens on cl100k `intersect[3, 5]`.
    the cost of a small attention discount — an obfuscation
    analogue of the language-rotation defence.
 
+## Per-language role-partitioning fit check
+
+Running `tools/wordlist-role-partitioning` with each filtered
+non-English wordlist size (laptop-default posture, provisional-
+v2 role table):
+
+| Wordlist                    | Size   | Total pool needed | Utilization | Verdict |
+|-----------------------------|-------:|------------------:|------------:|:-------:|
+| English baseline            | 369 652 |          215 387  |      58.3 % | FITS    |
+| English `intersect[3, 5]`   | 223 009 |          215 387  |      96.6 % | FITS    |
+| German `intersect[3, 5]`    |  17 159 |          215 387  |    1 255 %  | OVERFLOW |
+| Spanish `intersect[3, 5]`   |  15 485 |          215 387  |    1 391 %  | OVERFLOW |
+| French `intersect[3, 5]`    |  11 173 |          215 387  |    1 928 %  | OVERFLOW |
+
+**Design implication.**  No non-English filtered wordlist can
+host the provisional-v2 role table on its own under the laptop-
+default posture — the ~130 k-word decoy role and the ~70 k-word
+direction_marker role dwarf every non-English pool.  The
+identifier role (13.7 k words) fits everywhere.
+
+Three responses available to the operator:
+
+1. **Pooled cross-language allocation for the large roles.**
+   Union the English + German + Spanish + French filtered pools
+   (~267 k words) and let the decoy / direction_marker roles
+   draw from the union.  Identifier / whitespace / keyword /
+   prompt_injection stay in a single language's subset.  This
+   is the "primary/secondary" idea above, formalised.
+2. **Per-language rotation with a shrunken role table.**  Give
+   each epoch a single language and a smaller role table (drop
+   decoy from the epoch, keep identifier + keyword + whitespace).
+   Simpler; costs the decoy layer's obfuscation gain for that
+   epoch.
+3. **Relax the birthday-bound collision target from 1e-6 to
+   1e-3.**  At 1e-3 the decoy role's pool requirement drops
+   dramatically; likely enough to fit a single non-English
+   language.  Requires operator sign-off on the looser security
+   posture.  Autonomous-safe to measure — a follow-up run of
+   `wordlist-role-partitioning --collision-probability 1e-3
+   --wordlist-size <language>` would produce the numbers.
+
+Option 1 preserves the strongest posture and is what the
+follow-up wiring diff (HANDOFF session-2 priority 8) can bake in:
+each role has its own `include_str!` file, and the operator
+chooses which language(s) contribute to each role file at
+extraction time via a per-role `--extract-seed-file` / label
+combination.  The existing extractor already supports one
+language per invocation; a follow-up would let the operator
+concatenate + shuffle across languages before extraction.
+
 ## Design implications for the multi-language pool
 
 1. **The distribution shape is language-preserving.**  Every
