@@ -24,9 +24,9 @@ lands, push here)
 
 Date: 2026-07-02 (user-asleep session — claude-opus-4-7)
 
-Last commit before this handoff section: `7dd5913` —
-chore(v2): clear default-clippy warnings across all v2 lib crates.
-See the 2026-07-02 block immediately below for context.
+Last commit before this handoff section: `d04a0c3` —
+feat(wordlist-density-analysis): --intersect-tokenizers filter
+mode.  See the 2026-07-02 block immediately below for context.
 
 ---
 
@@ -61,7 +61,7 @@ So of the five listed, three were blocked on operator gates, one
 was dropped, and one (priority 4) was the natural autonomous
 pickup.  That is what this session shipped.
 
-### Net commits this session: 5 (+ this refresh)
+### Net commits this session: 7 (+ this refresh)
 
 | # | Hash | Subject |
 |---|---|---|
@@ -70,7 +70,9 @@ pickup.  That is what this session shipped.
 | 3 | `ff34c0f` | docs(HANDOFF,TODO): record 2026-07-02 session — wordlist density analysis tool |
 | 4 | `06f7aea` | docs(wordlist-density-analysis): compound-cost delta filtered vs baseline |
 | 5 | `7dd5913` | chore(v2): clear default-clippy warnings across all v2 lib crates |
-| 6 | (this commit) | docs(HANDOFF): commit-list refresh + compound-cost + clippy sweep notes |
+| 6 | `1460156` | docs(HANDOFF): commit-list refresh + compound-cost + clippy sweep notes |
+| 7 | `d04a0c3` | feat(wordlist-density-analysis): --intersect-tokenizers filter mode |
+| 8 | (this commit) | docs(HANDOFF): commit-list refresh + intersection filter notes + revised recommendation |
 
 ### Commit 1 — `wordlist-density-analysis` scaffold
 
@@ -163,6 +165,33 @@ every wordlist — filter and no-whitespace-penalty are independent
 signals.  The full table plus per-seed spreads live in
 `tools/wordlist-density-analysis/RESULTS.md`.
 
+### Commit 7 — Intersection filter mode
+
+`--intersect-tokenizers` applies the same `[L, H]` band under both
+cl100k and o200k and keeps only words that pass both.  New API in
+`filter`:  `IntersectedResult { primary, secondary, kept,
+dropped_by_secondary_only }` and a top-level
+`intersect(primary, secondary) -> IntersectedResult`.  The
+intersection manifest lists both filters' full stats plus the
+overall intersection totals.
+
+Measured on the production wordlist:
+
+| Filter                     | Kept    | cl100k compound | o200k compound |
+|----------------------------|--------:|----------------:|---------------:|
+| Baseline                   | 369 652 |  11.96 (—)      |  11.53 (—)     |
+| cl100k [3, 5]             | 244 804 |  13.60 (+13.7 %)|  12.97 (+12.5 %)|
+| o200k [3, 5]              | 233 476 |  13.74 (+14.9 %)|  13.38 (+16.0 %)|
+| **intersect [3, 5]**       | 223 009 | **13.80 (+15.4 %)** | **13.38 (+16.1 %)** |
+
+The intersection wins on both compound-cost axes and costs only
+~8.9 % relative shrinkage vs `cl100k [3, 5]`.  It is now the
+leading recommendation for the follow-up wiring session; the two
+single-tokenizer bands remain listed for the operator who cares
+more about pool size than tokenizer robustness.
+
+Test count 28 → 30 (two new intersect tests).
+
 ### Commit 5 — Clippy cleanup across v2 lib crates
 
 Four small hygiene fixes together clear every v2 lib crate's
@@ -226,19 +255,24 @@ contested design.
    must supply API keys and approve the run.  This is the gate
    that unblocks priority 2 below.
 2. **Wire chosen filtered wordlist into `v2-babbleon-core`.**
-   Blocked on priority 1 producing a delta.  Diff shape:
-   1. Emit the filtered wordlist file from
+   Blocked on priority 1 producing a delta.  Leading recommendation
+   is `intersect [3, 5]` — 223 009 words, +15.4 % / +16.1 %
+   compound cost on cl100k / o200k — with `cl100k [3, 5]`
+   (244 804 words) as the fallback if the identifier role's pool
+   needs the extra size.  Diff shape:
+   1. Emit the wordlist file from
       `tools/wordlist-density-analysis/` at the operator-chosen
-      band into e.g. `crates/babbleon/wordlist/words-cl100k-3-5.txt`
-      (do NOT overwrite the baseline; keep both for the bench).
+      band into e.g.
+      `crates/babbleon/wordlist/words-intersect-3-5.txt` (do NOT
+      overwrite the baseline; keep both for the bench).
    2. Point `v2-babbleon-core::wordlist::ENGLISH_BASELINE`'s
       `include_str!` at the new file OR add a `english_filtered()`
       constructor beside `english_baseline()` and pick per role
       (see `docs/v2/phase0-research-notes.md` §11).
    3. Update the wordlist README with the filter provenance
-      (tokenizer, cutoffs, drop counts) so the checked-in file's
-      shape is auditable.  This session's `RESULTS.md` is the
-      reference for the numbers.
+      (tokenizer, cutoffs, drop counts, intersection or single)
+      so the checked-in file's shape is auditable.  This session's
+      `RESULTS.md` is the reference for the numbers.
 3. **Corpus-lifecycle seccomp.**  Carried over; operator review
    recommended.  See HANDOFF 2026-06-26 (night) for the three
    design paths.
