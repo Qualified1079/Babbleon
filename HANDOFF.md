@@ -24,17 +24,17 @@ lands, push here)
 
 Date: 2026-07-02 (user-asleep session — claude-opus-4-7)
 
-Last commit before this handoff section: `f99559d` —
-feat(wordlist-density-analysis): absolute-token cutoffs + measured
-results.  See the 2026-07-02 block immediately below for context.
+Last commit before this handoff section: `7dd5913` —
+chore(v2): clear default-clippy warnings across all v2 lib crates.
+See the 2026-07-02 block immediately below for context.
 
 ---
 
-## 2026-07-02 — sleeping-operator: wordlist density analysis tool
+## 2026-07-02 — sleeping-operator: wordlist density analysis tool + v2 clippy sweep
 
 Author: Claude Opus 4.7 (autonomous overnight continuation).
-Branch: `claude/magical-turing-mele8c`.  3 commits (this refresh
-will be #4), all green tests, no new default-workspace deps (new
+Branch: `claude/magical-turing-mele8c`.  5 commits (this refresh
+will be #6), all green tests, no new default-workspace deps (new
 standalone-workspace crate under `tools/`).
 
 ### Entry state
@@ -61,13 +61,16 @@ So of the five listed, three were blocked on operator gates, one
 was dropped, and one (priority 4) was the natural autonomous
 pickup.  That is what this session shipped.
 
-### Net commits this session: 3 (+ this refresh)
+### Net commits this session: 5 (+ this refresh)
 
 | # | Hash | Subject |
 |---|---|---|
 | 1 | `3fbafab` | feat(wordlist-density-analysis): standalone tool to score + filter the wordlist by BPE density |
 | 2 | `f99559d` | feat(wordlist-density-analysis): absolute-token cutoffs + measured results |
-| 3 | (this commit) | docs(HANDOFF,TODO): record 2026-07-02 session — wordlist density analysis tool |
+| 3 | `ff34c0f` | docs(HANDOFF,TODO): record 2026-07-02 session — wordlist density analysis tool |
+| 4 | `06f7aea` | docs(wordlist-density-analysis): compound-cost delta filtered vs baseline |
+| 5 | `7dd5913` | chore(v2): clear default-clippy warnings across all v2 lib crates |
+| 6 | (this commit) | docs(HANDOFF): commit-list refresh + compound-cost + clippy sweep notes |
 
 ### Commit 1 — `wordlist-density-analysis` scaffold
 
@@ -138,6 +141,57 @@ tokenizable entries plus the 23 650+ rare 6+-token entries and
 leaves a healthy pool for the identifier role once multilingual
 wordlists (TODO.md phase 4, HermitDave/FrequencyWords) compound.
 
+### Commit 4 — Compound-cost delta measurement
+
+Ran `tools/tokenizer-benchmark` against every filtered wordlist
+from commit 2 plus the baseline, three seeds each, 2000 samples
+per seed at `--compound-n 4`.  Numbers are stable across seeds
+(σ ~0.02 tokens on cl100k for cl100k [3, 5]) and give the direct
+decision-support signal for the wiring change:
+
+|                       Wordlist |  cl100k mean |    Δ cl100k |
+|-------------------------------:|-------------:|------------:|
+|             Baseline (369 652) |        11.96 |           — |
+|       cl100k [3, 4] (225 886) |        13.11 |     +9.6 %  |
+|       cl100k [3, 5] (244 804) |        13.60 |    +13.7 %  |
+|        o200k [3, 4] (218 857) |        13.36 |    +11.7 %  |
+|        o200k [3, 5] (233 476) |        13.74 |    +14.9 %  |
+
+Every filtered subset raises the absolute compound token cost by
+≥8.8 %.  The compound-to-spaced ratio (~1.07×) is unchanged across
+every wordlist — filter and no-whitespace-penalty are independent
+signals.  The full table plus per-seed spreads live in
+`tools/wordlist-density-analysis/RESULTS.md`.
+
+### Commit 5 — Clippy cleanup across v2 lib crates
+
+Four small hygiene fixes together clear every v2 lib crate's
+default-clippy output.  Before: 11 warnings across 6 crates
+(bunched because 5 of them echo a truncation warning from a
+shared dep).  After: 0.
+
+- `crates/v2-babbleon-daemon-protocol/src/protocol.rs:907` — the
+  guarded `raw as u32` cast in `parse_optional_format_version`
+  replaced with `u32::try_from(raw).expect(...)`, so the
+  invariant (`raw <= MAX_FORMAT_VERSION_WIRE`, itself a `u32`) is
+  machine-checked instead of comment-checked.  One fix, five
+  downstream crates cleared.
+- `crates/v2-babbleon-resilience-bench/src/scramble_pipeline.rs:110`
+  — dropped a needless `&` on `id_wordlist` in the
+  `MappingBuilder::new` call.
+- `crates/v2-babbleon-resilience-bench/src/evaluator.rs:85` —
+  added the missing `# Errors` docstring section on
+  `Evaluator::query_in_dir`, pointing at the delegated `query`'s
+  concrete error set.
+- `crates/v2-babbleon-resilience-bench/src/layer_config.rs:46` —
+  `LayerConfig` has 7+ named-bool layer toggles by design;
+  suppressed `struct_excessive_bools` with a rationale comment
+  naming the readability tradeoff at the many call sites.
+
+Verified: `cargo test -p v2-babbleon-daemon-protocol --lib
+--release` = 76 pass; `cargo test -p v2-babbleon-resilience-bench
+--lib --release` = 154 pass.
+
 ### Stats
 
 | Metric | Before | After | Δ |
@@ -148,6 +202,7 @@ wordlists (TODO.md phase 4, HermitDave/FrequencyWords) compound.
 | Default-workspace tests | 0 impact | 0 impact | 0 |
 | `forbid(unsafe_code)` violations | 0 | 0 | 0 |
 | Full-pass scoring wall-clock | n/a | 1.7 s | n/a |
+| v2 lib crates with clippy warnings | 6 (11 total) | 0 (0 total) | −11 |
 
 ### Architectural property landed
 
