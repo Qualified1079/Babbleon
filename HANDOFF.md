@@ -63,7 +63,7 @@ were:
 So of the five, three are still blocked on operator gates, one is
 deferred, and one (priority 5) was the natural autonomous pickup.
 
-### Net commits this session: 19 (+ this refresh)
+### Net commits this session: 22 (+ this refresh)
 
 | # | Hash | Subject |
 |---|---|---|
@@ -86,7 +86,10 @@ deferred, and one (priority 5) was the natural autonomous pickup.
 | 17 | `6518d6a` | feat(wordlist-density-analysis): `--normalise-diacritics` shim for multi-lang under `[a-z]+` |
 | 18 | `161c326` | docs(HANDOFF): commit-list refresh — variance + union + normalise |
 | 19 | `b97ba64` | feat(tokenizer-benchmark): `--include-smaller` for r50k+p50k superlinear test |
-| 20 | (this commit) | docs(HANDOFF,TODO): superlinear hypothesis closed with null result |
+| 20 | `52817f5` | docs(HANDOFF,TODO): superlinear hypothesis closed with null result |
+| 21 | `92e0c7e` | feat(wordlist-role-partitioning): `--verify-extracted` auditor subcommand |
+| 22 | `7beaadb` | docs(README): refresh Layout section with v2 crates + new tools |
+| 23 | (this commit) | docs(HANDOFF): final commit-list refresh — verify + README |
 
 ### Commit 4 — Per-role disjoint-subset extractor
 
@@ -383,6 +386,38 @@ because Codex's Compound-tokenizer differences are in the
 non-textual token classes, and the Babbleon wordlist lands in
 the shared text register.
 
+### Commit 21 — `--verify-extracted` auditor subcommand
+
+Small operator polish.  Reads the `MANIFEST.txt` an
+`--extract-to` run left behind, re-loads every `<role>.txt`,
+cross-checks each role's line count against the manifest, and
+re-verifies disjointness across all files.  Errors out on the
+first mismatch (count wrong OR word appears in >1 file) with a
+message naming the offending role + file + word.
+
+CLI: `wordlist-role-partitioning --verify-extracted <dir>`.
+Mutually exclusive with `--extract-to`.  Three new unit tests
+(happy path, count mismatch detection, disjoint violation
+detection).  Test count 69 → 72.  Zero clippy warnings.
+
+Verified with the four fixture extractions this session
+produced (`/tmp/rp-hkdf`, `/tmp/rp-union`, ...) — all validate.
+Injected-defect tests (extra word, duplicate injection, word
+swap) all get caught with the specific error naming the
+offense.
+
+### Commit 22 — README Layout refresh
+
+The top-level `README.md` §"Layout" was missing four tools
+this branch has landed since v1: `preprocessor-benchmark`,
+`ebpf`, `wordlist-density-analysis`, and this session's
+`wordlist-role-partitioning`.  Also collapsed the crate list
+to `crates/babbleon*/` (v1) plus the significant v2 crates,
+with a `crates/v2-babbleon*/` catch-all for the remaining
+launcher/PAM/login-shell/artefacts crates.  No changes below
+the Layout heading — the Status paragraph's L2–L12 pipeline
+description tracks the runtime unchanged.
+
 ### Commit 1 — `wordlist-role-partitioning` scaffold + full tool
 
 Closes TODO.md § "Algorithmic derivation of per-role wordlist pool
@@ -630,6 +665,32 @@ contested design.
     let the same harness produce the numbers.  Autonomous-safe
     once the model files are on disk.  Licence check needed
     per family.
+
+### Where session 2 stopped
+
+Session 2's autonomous-safe backlog for the tool + measurement
+tier is now empty — every self-contained follow-up filed above
+either closed this session or is BLOCKED on operator input
+(adversarial-LLM re-test, seccomp review, runtime wiring
+review, open-weights model bundling).  The remaining sensible
+autonomous moves belong to a follow-up session with more
+context:
+
+- **Consume** this session's numbers (session-2 refreshed
+  priority 2 — wire filtered wordlist into
+  `v2-babbleon-core::wordlist`) once priority 1's LLM baseline
+  is on the table.
+- **Extend** the resilience-bench harness with the smaller-
+  model tokenizers (priority 15 closed; the same wiring could
+  land in resilience-bench so per-run reports include the
+  vocab-size sensitivity axis).
+- **Compose** the tools end-to-end into a single "score →
+  filter → allocate → extract → verify" wrapper shell script
+  or Rust orchestrator, so a phase-4 operator can go from
+  "which wordlist file(s) do I have" to "checked-in per-role
+  wordlist artefacts" in one command.  Autonomous-safe.  Would
+  live at `tools/wordlist-role-partitioning/scripts/end-to-
+  end.sh` or a new `tools/wordlist-pipeline/` sibling.
 
 ### Process notes for next autonomous session
 
