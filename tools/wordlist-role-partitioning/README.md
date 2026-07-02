@@ -114,6 +114,22 @@ alongside the text summary:
 cargo run --release -- --report-out RESULTS.md
 ```
 
+Compute the attention-cost multiplier vs the wordlist's baseline
+by plugging in tokenizer-benchmark measurements per role:
+
+```
+cargo run --release -- \
+  --role-tokens identifier=13.80 \
+  --role-tokens decoy=12.50
+```
+
+Each `--role-tokens name=value` pair sets
+`Role.tokens_per_compound` for that role.  The `Attention×`
+column then reports `(role_tokens / wordlist.mean_tokens)²` — the
+leading-order transformer-attention gain from swapping to a
+denser wordlist for that role.  Numbers come from
+`tools/tokenizer-benchmark/RESULTS.md`.
+
 Extract disjoint per-role wordlist subsets into an output
 directory:
 

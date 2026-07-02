@@ -72,6 +72,38 @@ impl RolePreset {
     }
 }
 
+fn parse_role_tokens_arg(raw: &str) -> Result<(String, f64), String> {
+    let (name, value) = raw
+        .split_once('=')
+        .ok_or_else(|| format!("expected `name=value`, got {raw:?}"))?;
+    let value: f64 = value
+        .parse()
+        .map_err(|e| format!("invalid tokens value for role {name}: {e}"))?;
+    if !value.is_finite() || value < 0.0 {
+        return Err(format!("tokens value for role {name} must be finite and non-negative"));
+    }
+    Ok((name.to_string(), value))
+}
+
+fn apply_role_tokens_overrides(
+    roles: &mut [Role],
+    overrides: &[(String, f64)],
+) -> Result<(), String> {
+    for (name, value) in overrides {
+        let matched = roles.iter_mut().find(|r| r.name == *name);
+        match matched {
+            Some(role) => role.tokens_per_compound = Some(*value),
+            None => {
+                let available: Vec<&str> = roles.iter().map(|r| r.name.as_str()).collect();
+                return Err(format!(
+                    "unknown role {name:?} for --role-tokens; available: {available:?}"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 #[derive(Parser)]
 #[command(
     version,
@@ -95,6 +127,16 @@ struct Args {
     /// Which role table to use.
     #[arg(long, value_enum, default_value_t = RolePreset::ProvisionalV2)]
     roles: RolePreset,
+
+    /// Per-role tokens-per-compound overrides.  Repeated `--role-tokens
+    /// name=value` pairs each set `Role.tokens_per_compound` for the
+    /// matching role.  Unknown names error out.  Attention multiplier
+    /// = `(role_value / wordlist.baseline_mean_tokens)^2`, so setting
+    /// e.g. `--role-tokens identifier=13.80 --wordlist-mean-tokens
+    /// 11.96` reports the intersect-vs-baseline attention gain for
+    /// the identifier role directly.
+    #[arg(long = "role-tokens", value_parser = parse_role_tokens_arg)]
+    role_tokens: Vec<(String, f64)>,
 
     /// Switch to the `paranoid_default` attacker preset (1e-12
     /// lifetime collision probability, 2 000 events/epoch, 8 760-
@@ -180,7 +222,9 @@ fn main() -> Result<()> {
             .unwrap_or(default_attacker.secret_lifetime_epochs),
     };
 
-    let roles = args.roles.resolve();
+    let mut roles = args.roles.resolve();
+    apply_role_tokens_overrides(&mut roles, &args.role_tokens)
+        .map_err(|e| anyhow::anyhow!("--role-tokens: {e}"))?;
     let table = AllocationTable::compute(&roles, &attacker, &wordlist);
 
     if !args.quiet {
@@ -281,4 +325,62 @@ fn extract_and_write(
         println!("  wrote manifest to {}", manifest_path.display());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{apply_role_tokens_overrides, parse_role_tokens_arg};
+    use crate::params::Role;
+
+    #[test]
+    fn parse_role_tokens_arg_accepts_valid_input() {
+        let (name, value) = parse_role_tokens_arg("identifier=13.80").unwrap();
+        assert_eq!(name, "identifier");
+        assert!((value - 13.80).abs() < 1e-9);
+    }
+
+    #[test]
+    fn parse_role_tokens_arg_rejects_missing_equals() {
+        assert!(parse_role_tokens_arg("identifier13.80").is_err());
+    }
+
+    #[test]
+    fn parse_role_tokens_arg_rejects_non_numeric_value() {
+        assert!(parse_role_tokens_arg("identifier=abc").is_err());
+    }
+
+    #[test]
+    fn parse_role_tokens_arg_rejects_negative_value() {
+        assert!(parse_role_tokens_arg("identifier=-1").is_err());
+    }
+
+    #[test]
+    fn parse_role_tokens_arg_rejects_nan_value() {
+        assert!(parse_role_tokens_arg("identifier=nan").is_err());
+    }
+
+    #[test]
+    fn apply_overrides_sets_the_role_field() {
+        let mut roles = Role::provisional_v2_table();
+        apply_role_tokens_overrides(&mut roles, &[("identifier".into(), 13.80)]).unwrap();
+        let ident = roles.iter().find(|r| r.name == "identifier").unwrap();
+        assert_eq!(ident.tokens_per_compound, Some(13.80));
+    }
+
+    #[test]
+    fn apply_overrides_rejects_unknown_role() {
+        let mut roles = Role::provisional_v2_table();
+        let err = apply_role_tokens_overrides(&mut roles, &[("nonesuch".into(), 5.0)]);
+        assert!(err.is_err(), "expected unknown-role error");
+        let msg = err.err().unwrap();
+        assert!(msg.contains("nonesuch"), "error message missing role name: {msg}");
+    }
+
+    #[test]
+    fn apply_overrides_leaves_other_roles_untouched() {
+        let mut roles = Role::provisional_v2_table();
+        apply_role_tokens_overrides(&mut roles, &[("identifier".into(), 13.80)]).unwrap();
+        let decoy = roles.iter().find(|r| r.name == "decoy").unwrap();
+        assert_eq!(decoy.tokens_per_compound, None);
+    }
 }
