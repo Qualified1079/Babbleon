@@ -14,3 +14,4 @@ description = "Score the Babbleon wordlist by BPE tokenization density and filte
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 tiktoken-rs = "0.5"
+unicode-normalization = "0.1"

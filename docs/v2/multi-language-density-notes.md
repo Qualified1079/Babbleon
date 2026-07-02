@@ -187,6 +187,34 @@ Wiring a matching relax into the runtime is a separate
 operator-review-gated diff — it changes the observable Babbleon
 compound alphabet, which is a public surface.
 
+## Follow-up — `--normalise-diacritics` shim
+
+Same commit train delivered a second option:
+`--normalise-diacritics` runs each entry through NFKD, drops
+combining marks, and folds the handful of Latin ligatures that
+Unicode does not decompose on its own (`œ` → `oe`, `æ` → `ae`,
+`ß` → `ss`, `ø` → `o`, `ð` → `d`, `þ` → `th`).  The output
+matches `[a-z]+`, so the shim composes with the DEFAULT ASCII-
+lowercase validator — the operator keeps the runtime invariant
+AND gains most of the multi-language pool.
+
+French comparison across the three modes:
+
+| Mode                          | Entries | cl100k mean | o200k mean |
+|-------------------------------|--------:|------------:|-----------:|
+| Default (pure-ASCII filter)   |  35 433 |        2.39 |       2.26 |
+| `--normalise-diacritics`      |  43 990 |        2.46 |       2.33 |
+| `--unicode-lowercase`         |  46 792 |        2.62 |       2.42 |
+
+**Recommendation for phase-4 wiring.**
+`--normalise-diacritics` is the *runtime-compatible* winner: 24 %
+more corpus than pure-ASCII at a +0.07-token cost, no public-
+surface change to Babbleon's compound alphabet.  Reserve
+`--unicode-lowercase` for exploratory measurement of what
+relaxing the runtime invariant would buy (an additional 6 % pool
+at a further +0.16-token cost, plus a public-alphabet change
+that touches the resilience-bench and other public artefacts).
+
 ## Design implications for the multi-language pool
 
 1. **The distribution shape is language-preserving.**  Every

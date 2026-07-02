@@ -23,6 +23,7 @@ use anyhow::{bail, Context, Result};
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
+use unicode_normalization::UnicodeNormalization;
 
 /// Which character set the loader will accept.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -47,19 +48,40 @@ impl Wordlist {
     /// module) do not need to plumb a mode argument.
     #[allow(dead_code)]
     pub fn from_path(path: &Path) -> Result<Self> {
-        Self::from_path_with_mode(path, Mode::AsciiLowercase)
+        Self::from_path_with_mode(path, Mode::AsciiLowercase, false)
     }
 
-    /// Load and validate a wordlist file in the given mode.
-    pub fn from_path_with_mode(path: &Path, mode: Mode) -> Result<Self> {
+    /// Load and validate a wordlist file.  When
+    /// `normalise_diacritics` is true, each entry is NFKD-decomposed
+    /// and combining marks are dropped BEFORE validation, so `café`
+    /// under `AsciiLowercase` mode becomes `cafe` and passes.
+    /// Duplicates arising from normalisation are dropped
+    /// (first-occurrence wins) rather than erroring so a
+    /// multi-language corpus loads gracefully.
+    pub fn from_path_with_mode(
+        path: &Path,
+        mode: Mode,
+        normalise_diacritics: bool,
+    ) -> Result<Self> {
         let raw = fs::read_to_string(path)
             .with_context(|| format!("read wordlist {}", path.display()))?;
-        let words: Vec<String> = raw
+        let mut words: Vec<String> = raw
             .lines()
             .map(str::trim)
             .filter(|line| !line.is_empty())
             .map(str::to_owned)
             .collect();
+        if normalise_diacritics {
+            let mut seen: HashSet<String> = HashSet::with_capacity(words.len());
+            let mut kept: Vec<String> = Vec::with_capacity(words.len());
+            for w in words.drain(..) {
+                let normalised = strip_combining_marks(&w);
+                if !normalised.is_empty() && seen.insert(normalised.clone()) {
+                    kept.push(normalised);
+                }
+            }
+            words = kept;
+        }
         validate(&words, mode)?;
         Ok(Self { words })
     }
@@ -67,6 +89,32 @@ impl Wordlist {
     pub fn len(&self) -> usize {
         self.words.len()
     }
+}
+
+/// NFKD-decompose `w`, drop combining marks
+/// (`char::is_mark_nonspacing`), and fold the handful of Latin
+/// ligatures Unicode does not decompose on its own (`œ` → `oe`,
+/// `æ` → `ae`, `ß` → `ss`, `ø` → `o`).  `café` → `cafe`,
+/// `naïve` → `naive`, `köln` → `koln`, `cœur` → `coeur`, `groß`
+/// → `gross`.  Non-Latin characters that decompose to combining
+/// sequences (e.g. Devanagari) collapse to their base glyph.
+fn strip_combining_marks(w: &str) -> String {
+    let mut out = String::with_capacity(w.len());
+    for c in w.nfkd() {
+        if unicode_normalization::char::is_combining_mark(c) {
+            continue;
+        }
+        match c {
+            'œ' => out.push_str("oe"),
+            'æ' => out.push_str("ae"),
+            'ß' => out.push_str("ss"),
+            'ø' => out.push('o'),
+            'ð' => out.push('d'),
+            'þ' => out.push_str("th"),
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 fn validate(words: &[String], mode: Mode) -> Result<()> {
@@ -162,14 +210,14 @@ mod tests {
     #[test]
     fn unicode_mode_accepts_diacritics() {
         let path = write_tmp("dia-uni", "cafe\ncafé\nnaïve\nköln\n");
-        let wl = Wordlist::from_path_with_mode(&path, Mode::UnicodeLowercase).unwrap();
+        let wl = Wordlist::from_path_with_mode(&path, Mode::UnicodeLowercase, false).unwrap();
         assert_eq!(wl.words, vec!["cafe", "café", "naïve", "köln"]);
     }
 
     #[test]
     fn unicode_mode_still_rejects_uppercase() {
         let path = write_tmp("uni-upper", "alpha\nBeta\n");
-        let err = Wordlist::from_path_with_mode(&path, Mode::UnicodeLowercase)
+        let err = Wordlist::from_path_with_mode(&path, Mode::UnicodeLowercase, false)
             .unwrap_err()
             .to_string();
         assert!(err.contains("Beta"), "actual: {err}");
@@ -178,7 +226,7 @@ mod tests {
     #[test]
     fn unicode_mode_still_rejects_digits() {
         let path = write_tmp("uni-digit", "alpha\nbeta2\n");
-        let err = Wordlist::from_path_with_mode(&path, Mode::UnicodeLowercase)
+        let err = Wordlist::from_path_with_mode(&path, Mode::UnicodeLowercase, false)
             .unwrap_err()
             .to_string();
         assert!(err.contains("beta2"), "actual: {err}");
@@ -187,10 +235,53 @@ mod tests {
     #[test]
     fn unicode_mode_rejects_duplicates() {
         let path = write_tmp("uni-dup", "café\ncafé\n");
-        let err = Wordlist::from_path_with_mode(&path, Mode::UnicodeLowercase)
+        let err = Wordlist::from_path_with_mode(&path, Mode::UnicodeLowercase, false)
             .unwrap_err()
             .to_string();
         assert!(err.contains("café"), "actual: {err}");
         assert!(err.contains("more than once"), "actual: {err}");
+    }
+
+    #[test]
+    fn strip_combining_marks_normalises_accents() {
+        assert_eq!(super::strip_combining_marks("café"), "cafe");
+        assert_eq!(super::strip_combining_marks("naïve"), "naive");
+        assert_eq!(super::strip_combining_marks("köln"), "koln");
+        // Pure ASCII is a no-op.
+        assert_eq!(super::strip_combining_marks("alpha"), "alpha");
+    }
+
+    #[test]
+    fn strip_combining_marks_folds_common_ligatures() {
+        assert_eq!(super::strip_combining_marks("cœur"), "coeur");
+        assert_eq!(super::strip_combining_marks("æther"), "aether");
+        assert_eq!(super::strip_combining_marks("groß"), "gross");
+        assert_eq!(super::strip_combining_marks("bjørn"), "bjorn");
+    }
+
+    #[test]
+    fn normalisation_lets_ascii_mode_accept_diacritics() {
+        let path = write_tmp("norm-ascii", "cafe\ncafé\nnaïve\nköln\n");
+        // `cafe` and `café` collide after normalisation; the first
+        // occurrence wins (first-occurrence dedupe).
+        let wl = Wordlist::from_path_with_mode(&path, Mode::AsciiLowercase, true).unwrap();
+        assert_eq!(wl.words, vec!["cafe", "naive", "koln"]);
+    }
+
+    #[test]
+    fn normalisation_drops_duplicates_silently() {
+        let path = write_tmp("norm-dup", "cafe\ncafé\n");
+        // `café` normalises to `cafe` which we already saw → drop.
+        let wl = Wordlist::from_path_with_mode(&path, Mode::AsciiLowercase, true).unwrap();
+        assert_eq!(wl.words, vec!["cafe"]);
+    }
+
+    #[test]
+    fn normalisation_still_flags_non_diacritic_illegals() {
+        let path = write_tmp("norm-uppercase", "alpha\nBeta\n");
+        let err = Wordlist::from_path_with_mode(&path, Mode::AsciiLowercase, true)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Beta"), "actual: {err}");
     }
 }

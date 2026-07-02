@@ -144,6 +144,15 @@ struct Args {
     /// `docs/v2/multi-language-density-notes.md`.
     #[arg(long, default_value_t = false)]
     unicode_lowercase: bool,
+
+    /// Opt-in: NFKD-decompose each entry and drop combining marks
+    /// before validation (`café` → `cafe`).  Composes cleanly with
+    /// the default `AsciiLowercase` mode so the runtime `[a-z]+`
+    /// invariant stays satisfied while a multi-language corpus
+    /// still loads.  Duplicates arising from normalisation are
+    /// dropped silently (first-occurrence wins).
+    #[arg(long, default_value_t = false)]
+    normalise_diacritics: bool,
 }
 
 fn main() -> Result<()> {
@@ -154,14 +163,16 @@ fn main() -> Result<()> {
     } else {
         Mode::AsciiLowercase
     };
-    let wordlist = Wordlist::from_path_with_mode(&args.wordlist, mode)
-        .with_context(|| format!("load {}", args.wordlist.display()))?;
+    let wordlist =
+        Wordlist::from_path_with_mode(&args.wordlist, mode, args.normalise_diacritics)
+            .with_context(|| format!("load {}", args.wordlist.display()))?;
     if !args.quiet {
         println!(
-            "Loaded {} words from {} (mode={:?})",
+            "Loaded {} words from {} (mode={:?}, normalise_diacritics={})",
             wordlist.len(),
             args.wordlist.display(),
-            mode
+            mode,
+            args.normalise_diacritics
         );
     }
 
