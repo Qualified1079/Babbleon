@@ -499,10 +499,18 @@ composes with the phase-3 five-layer base; they don't replace it.
       added.
 - [ ] **Tokenizer benchmark — Claude tokenizer.**  Via the
       count-tokens API.  Single number; cheap.
-- [ ] **Wordlist post-filter by tokenization density.**  v2 mapping
+- [~] **Wordlist post-filter by tokenization density.**  v2 mapping
       change: pick wordlist entries that score in the mid-tail of
-      cl100k/o200k token density.  Probably small empirical benefit,
-      worth prototyping before committing.
+      cl100k/o200k token density.  Analysis tool +
+      density measurement landed 2026-07-02 in
+      `tools/wordlist-density-analysis/` (see `RESULTS.md` there for
+      the full filter matrix).  Distribution is peaked (73-76% of
+      the corpus at 2-3 tokens), so absolute-token cutoffs are the
+      natural knob.  Baseline recommendations for the wiring change:
+      cl100k [3, 5] (244 804 kept, 66.2%) or cl100k [3, 4] (225 886
+      kept, 61.1%).  Blocked on the adversarial-LLM re-test
+      producing a baseline before we commit to one filter over the
+      other or over the current 369 652-entry baseline.
 
 ## HTML scrambler
 

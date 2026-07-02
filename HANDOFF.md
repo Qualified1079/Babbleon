@@ -22,11 +22,204 @@ Branch (push target): `claude/magical-turing-mele8c` (operator
 intends to rename to `v1-maintenance` out-of-band; until that
 lands, push here)
 
-Date: 2026-06-27 (user-asleep session — claude-opus-4-7)
+Date: 2026-07-02 (user-asleep session — claude-opus-4-7)
 
-Last commit before this handoff section: `405d7fe` —
-test(v2-babbleon-daemon): daemon-driven variable-mode L2 round-trip.
-See the 2026-06-27 block immediately below for context.
+Last commit before this handoff section: `f99559d` —
+feat(wordlist-density-analysis): absolute-token cutoffs + measured
+results.  See the 2026-07-02 block immediately below for context.
+
+---
+
+## 2026-07-02 — sleeping-operator: wordlist density analysis tool
+
+Author: Claude Opus 4.7 (autonomous overnight continuation).
+Branch: `claude/magical-turing-mele8c`.  3 commits (this refresh
+will be #4), all green tests, no new default-workspace deps (new
+standalone-workspace crate under `tools/`).
+
+### Entry state
+
+Branch tip on entry was `0e655d1` — "feat(v2-resilience-bench): wire
+variable-alias-count presets into CLI".  Workspace clean.  The
+2026-06-27 refreshed next-session priorities were:
+
+1. Adversarial-LLM re-test with variable ALIAS_COUNT — operator-
+   gated (NOT autonomous).  Blocked here.
+2. Layer 11 defensive prompt injection — dropped from the phase-4
+   backlog in commit `98c8ddc` between the last session and this
+   one; no longer a live item.
+3. Corpus-lifecycle seccomp — operator review recommended.
+   Blocked here.
+4. Wordlist post-filter by tokenization density — **autonomous-safe
+   analysis**; deferred in the 2026-06-27 block "until priority 1
+   produces a baseline number", but the analysis + tool are prereq
+   work that the priority-1 session will consume.  This is what
+   this session did.
+5. `PermutationCache` LRU sizing audit — done in `1e5040d`.
+
+So of the five listed, three were blocked on operator gates, one
+was dropped, and one (priority 4) was the natural autonomous
+pickup.  That is what this session shipped.
+
+### Net commits this session: 3 (+ this refresh)
+
+| # | Hash | Subject |
+|---|---|---|
+| 1 | `3fbafab` | feat(wordlist-density-analysis): standalone tool to score + filter the wordlist by BPE density |
+| 2 | `f99559d` | feat(wordlist-density-analysis): absolute-token cutoffs + measured results |
+| 3 | (this commit) | docs(HANDOFF,TODO): record 2026-07-02 session — wordlist density analysis tool |
+
+### Commit 1 — `wordlist-density-analysis` scaffold
+
+New standalone workspace at `tools/wordlist-density-analysis/`,
+same pattern as `tools/tokenizer-benchmark/` so `tiktoken-rs` and
+its embedded BPE tables stay out of the default Babbleon workspace
+build.
+
+Compartmentalized modules (each with its own tests, so a break in
+one is targeted):
+
+- `load` — read + validate the wordlist (`[a-z]+`, unique,
+  non-empty); mirrors `v2-babbleon-core::wordlist::validate_entries`
+  so a filter that survives this loader also survives the runtime
+  loader.
+- `score` — tokenizer wrapper + per-word `WordScore` emission under
+  cl100k_base + o200k_base.
+- `stats` — sorted `Distribution` with nearest-rank percentiles +
+  bucketed histogram.
+- `filter` — percentile-band `FilterSpec` + `FilterResult` with
+  cutoffs and drop counts.  Preserves input order in the kept
+  vector so downstream diffs remain readable.
+- `report` — stdout summary + CSV + manifest emitters.
+- `main` — CLI orchestration only.
+
+25 unit tests passed at this commit; the tool successfully scored
+the 369 652-entry baseline wordlist in ~1.7 s.
+
+### Commit 2 — Absolute-token cutoffs + measurement docs
+
+Running the tool on the real corpus surfaced a distribution
+detail worth naming explicitly: **73–76 % of the corpus sits at
+2–3 tokens under both cl100k and o200k**.  Peaked, not tail-heavy.
+Percentile-band filters collapse to a few discrete token-count
+values on this distribution — a `[30, 70]` band on cl100k resolves
+to token cutoffs `[2, 4]` and keeps 91.75 % of the corpus, which
+is not the selectivity the "mid-tail" percentile intuition
+suggests.
+
+Refactored `FilterSpec` to accept a `Bound { Percentile(f64),
+Tokens(usize) }` on each side.  Absolute token cutoffs are now the
+natural knob (`--min-tokens 3 --max-tokens 5`); percentile still
+works and both may mix.  `apply()` returns `Result` because a
+mixed bound may resolve `low > high`, which the filter must reject
+rather than silently return an empty list.
+
+Tests grew from 25 to 28 (new: absolute-tokens filter, mixed-bound
+percentile+tokens, resolved-cutoff-invalid).
+
+Added `RESULTS.md` with the full scoring pass + filter matrix
+across both tokenizers and `[L, H]` bands in `[3, 4] .. [4, 5]`:
+
+| tokenizer | [L, H] | kept    | kept %  |
+|-----------|--------|--------:|--------:|
+| cl100k    | [3, 4] | 225 886 |  61.1 % |
+| cl100k    | [3, 5] | 244 804 |  66.2 % |
+| cl100k    | [4, 4] |  69 098 |  18.7 % |
+| cl100k    | [4, 5] |  88 016 |  23.8 % |
+| o200k     | [3, 4] | 218 857 |  59.2 % |
+| o200k     | [3, 5] | 233 476 |  63.2 % |
+| o200k     | [4, 4] |  61 694 |  16.7 % |
+| o200k     | [4, 5] |  76 313 |  20.6 % |
+
+The recommendation in `RESULTS.md` (for the follow-up wiring session
+gated on the adversarial-LLM re-test) is **cl100k [3, 5]** or
+**cl100k [3, 4]** — either drops the 6 844 one-token trivially-
+tokenizable entries plus the 23 650+ rare 6+-token entries and
+leaves a healthy pool for the identifier role once multilingual
+wordlists (TODO.md phase 4, HermitDave/FrequencyWords) compound.
+
+### Stats
+
+| Metric | Before | After | Δ |
+|---|---|---|---|
+| New tool subpackage | 0 | 1 | +1 (`tools/wordlist-density-analysis/`) |
+| Tool unit tests | 0 | 28 | +28 |
+| Default-workspace deps | unchanged | unchanged | 0 |
+| Default-workspace tests | 0 impact | 0 impact | 0 |
+| `forbid(unsafe_code)` violations | 0 | 0 | 0 |
+| Full-pass scoring wall-clock | n/a | 1.7 s | n/a |
+
+### Architectural property landed
+
+The wordlist filter now has a **measured** density distribution
+plus a **compartmentalized** filter tool.  The follow-up wiring
+change into `v2-babbleon-core::wordlist` is now a scoped,
+reviewable diff that the operator can drive:  it needs (a) the
+adversarial-LLM baseline, (b) a chosen filter spec from
+`RESULTS.md`, and (c) the `include_str!` bump to a filtered
+wordlist file.  All three are separate concerns.
+
+### Refreshed next-session priorities
+
+Ordered by leverage.  Items requiring operator review are called
+out so an autonomous-session bot does not silently build on a
+contested design.
+
+1. **Adversarial-LLM re-test — carried over.**  Baseline number
+   for the variable-alias-count regime plus at least one filtered
+   wordlist from this session's tool.  NOT autonomous — operator
+   must supply API keys and approve the run.  This is the gate
+   that unblocks priority 2 below.
+2. **Wire chosen filtered wordlist into `v2-babbleon-core`.**
+   Blocked on priority 1 producing a delta.  Diff shape:
+   1. Emit the filtered wordlist file from
+      `tools/wordlist-density-analysis/` at the operator-chosen
+      band into e.g. `crates/babbleon/wordlist/words-cl100k-3-5.txt`
+      (do NOT overwrite the baseline; keep both for the bench).
+   2. Point `v2-babbleon-core::wordlist::ENGLISH_BASELINE`'s
+      `include_str!` at the new file OR add a `english_filtered()`
+      constructor beside `english_baseline()` and pick per role
+      (see `docs/v2/phase0-research-notes.md` §11).
+   3. Update the wordlist README with the filter provenance
+      (tokenizer, cutoffs, drop counts) so the checked-in file's
+      shape is auditable.  This session's `RESULTS.md` is the
+      reference for the numbers.
+3. **Corpus-lifecycle seccomp.**  Carried over; operator review
+   recommended.  See HANDOFF 2026-06-26 (night) for the three
+   design paths.
+4. **Multi-language wordlists.**  TODO.md phase 4 open.  Once the
+   density filter is measured and wired, layering multi-language
+   pools on top is the next multiplicative gain.  Autonomous-safe
+   for the *analysis* (score HermitDave/FrequencyWords under both
+   tokenizers, produce a per-language density profile) using this
+   session's `wordlist-density-analysis` tool; wiring requires
+   operator review of the license and role-partitioning plan.
+5. **Wordlist role-partitioning formula.**  TODO.md open:
+   "Algorithmic derivation of per-role wordlist pool sizes."  This
+   session's numbers give the first empirical anchor.  A formula
+   `N_role = f(rotation_hz, work_factor, compound_n)` would let
+   the density filter and the role budget be tuned jointly rather
+   than by back-of-envelope.
+
+### Process notes for next autonomous session
+
+- The tool is **standalone-workspace** — `tools/wordlist-density-
+  analysis/` has its own `[workspace]` block in Cargo.toml, so
+  `cargo build`/`cargo test` from that directory does not touch
+  the main workspace.  Run all commands from inside the tool's
+  directory (`cd tools/wordlist-density-analysis && cargo test
+  --release`) — invoking `cargo` from the repo root triggers a
+  full Babbleon-workspace build even though the tool is
+  standalone, because cargo walks upward looking for a workspace
+  root and finds the outer one first.
+- `cargo test --workspace` is still forbidden per `CLAUDE.md §4`.
+  This session's tool build is a separate workspace so it does
+  not interact with that rule; the outer workspace tests remain
+  green because nothing in `crates/` changed.
+- The peaked distribution finding means percentile-based filter
+  intuitions from other domains do not transfer.  Future wordlist
+  analysis should probe the histogram *before* choosing a filter
+  strategy, not after.
 
 ---
 
