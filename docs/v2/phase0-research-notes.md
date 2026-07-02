@@ -262,6 +262,25 @@ which words are in the marker pool for the same epoch.
 **No new design constraint** — provisional sizes are
 information-theoretically adequate.
 
+**2026-07-02 addendum — density-tuned identifier pool.**  The
+identifier role has since been analysed for tokenization density
+(see `tools/wordlist-density-analysis/RESULTS.md`).  The peaked
+distribution of the baseline (73–76 % of the 369 652 entries sit
+at 2–3 BPE tokens under cl100k/o200k) makes a mid-tail filter
+meaningful; the leading candidate `intersect [3, 5]` keeps
+223 009 words while raising compound token cost by
++15.4 % / +16.1 % (cl100k / o200k, three-seed mean, 2000 samples
+at compound-n=4).  Even at 223 009 entries the identifier compound
+space at compound-n=4 is 223 009⁴ ≈ 2.47 × 10²¹, well above the
+information-theoretic minimum (log₂ N_tools bits) and above the
+10²² baseline by only a fraction of a bit per compound.  The
+filter therefore trades a negligible fraction of a bit of
+theoretical entropy per compound for a measurable increase in
+attacker attention cost.  Whether that increase translates into a
+crack-rate delta is the adversarial-LLM re-test's job (HANDOFF
+2026-06-27 priority 1) — this addendum only settles the entropy
+side of the ledger.
+
 ---
 
 ## Cross-cutting findings
