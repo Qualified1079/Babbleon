@@ -72,3 +72,15 @@ seed, tokenizer, and model-family the claim cites.
   (tokenization-density bias toward mid-tail tokens).  That is the
   only wordlist-side configuration that could move the ratio
   meaningfully on cl100k/o200k.
+  **Update 2026-07-02:** the mid-tail filter analysis landed in
+  `tools/wordlist-density-analysis/`.  Re-measuring compound cost
+  against each candidate filter's output confirmed that the
+  compound-to-spaced *ratio* does **not** move meaningfully
+  (~1.07× across every filter) — the filter changes the absolute
+  compound cost (+8.8 % to +16.1 % vs baseline, depending on
+  tokenizer × band), not the no-whitespace penalty.  These are
+  independent signals.  See
+  `tools/wordlist-density-analysis/RESULTS.md` for the full matrix
+  including the intersection filter, which achieved +15.4 % /
+  +16.1 % compound-cost inflation on cl100k / o200k for 223 009
+  kept entries.
