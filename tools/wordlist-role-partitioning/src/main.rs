@@ -168,10 +168,14 @@ struct Args {
     #[arg(long)]
     report_out: Option<PathBuf>,
 
-    /// Path to the raw wordlist (one lowercase-ASCII word per line).
-    /// Required for `--extract-to`.  Defaults to the v1 baseline.
-    #[arg(long, default_value = "../../crates/babbleon/wordlist/words.txt")]
-    wordlist_path: PathBuf,
+    /// Path to a raw wordlist (one lowercase-ASCII word per line).
+    /// Required for `--extract-to`.  May be repeated to union
+    /// multiple wordlists — the extractor concatenates them in
+    /// order and dedupes; per-source SHA-256 hashes land in the
+    /// extraction manifest.  Defaults to the v1 baseline when
+    /// unset.
+    #[arg(long)]
+    wordlist_path: Vec<PathBuf>,
 
     /// Extract disjoint per-role subsets into this directory.
     /// Emits one text file per role — for example
@@ -265,9 +269,14 @@ fn main() -> Result<()> {
 
     if let Some(dir) = &args.extract_to {
         let extract_input = build_extract_seed(&args)?;
+        let wordlist_paths: Vec<PathBuf> = if args.wordlist_path.is_empty() {
+            vec![PathBuf::from("../../crates/babbleon/wordlist/words.txt")]
+        } else {
+            args.wordlist_path.clone()
+        };
         extract_and_write(
             &table,
-            &args.wordlist_path,
+            &wordlist_paths,
             dir,
             &extract_input,
             args.quiet,
@@ -275,6 +284,71 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Concatenated wordlist plus per-source provenance for the
+/// manifest.
+struct UnionedWordlist {
+    /// Deduped-in-order concatenation of every source.
+    union: Vec<String>,
+    /// Manifest rows, one per source file.
+    sources: Vec<UnionSourceRow>,
+}
+
+struct UnionSourceRow {
+    path: PathBuf,
+    raw_entries: usize,
+    contributed: usize,
+    sha256_hex: String,
+}
+
+fn load_and_union_wordlists(paths: &[PathBuf], quiet: bool) -> Result<UnionedWordlist> {
+    use sha2::{Digest, Sha256};
+
+    let mut union: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    let mut sources: Vec<UnionSourceRow> = Vec::with_capacity(paths.len());
+
+    for path in paths {
+        let raw = std::fs::read_to_string(path)
+            .with_context(|| format!("read wordlist at {}", path.display()))?;
+        let raw_entries = raw.lines().filter(|w| !w.trim().is_empty()).count();
+        let mut contributed = 0usize;
+        for line in raw.lines() {
+            let w = line.trim();
+            if w.is_empty() {
+                continue;
+            }
+            if seen.insert(w.to_string()) {
+                union.push(w.to_string());
+                contributed += 1;
+            }
+        }
+        let mut hasher = Sha256::new();
+        hasher.update(raw.as_bytes());
+        let sha = hasher.finalize();
+        if !quiet {
+            println!(
+                "\nLoaded {raw_entries} words from {} ({contributed} new after dedupe)",
+                path.display(),
+            );
+        }
+        sources.push(UnionSourceRow {
+            path: path.clone(),
+            raw_entries,
+            contributed,
+            sha256_hex: format!("{sha:x}"),
+        });
+    }
+
+    if union.is_empty() {
+        anyhow::bail!("union of {} wordlists is empty", paths.len());
+    }
+    if !quiet && paths.len() > 1 {
+        println!("Union: {} words across {} sources", union.len(), paths.len());
+    }
+    Ok(UnionedWordlist { union, sources })
 }
 
 /// Bytes that will be fed to `extract::extract_disjoint_subsets` +
@@ -337,22 +411,19 @@ fn build_extract_seed(args: &Args) -> Result<ExtractSeedInput> {
 
 fn extract_and_write(
     table: &AllocationTable,
-    wordlist_path: &std::path::Path,
+    wordlist_paths: &[PathBuf],
     out_dir: &std::path::Path,
     seed_input: &ExtractSeedInput,
     quiet: bool,
 ) -> Result<()> {
-    use sha2::{Digest, Sha256};
+    let sources = load_and_union_wordlists(wordlist_paths, quiet)?;
+    // Vec<String> in insertion order.  Convert to &str borrow so
+    // extract::extract_disjoint_subsets can take it directly.
+    let words_borrow: Vec<&str> = sources.union.iter().map(String::as_str).collect();
 
-    let raw = std::fs::read_to_string(wordlist_path)
-        .with_context(|| format!("read wordlist at {}", wordlist_path.display()))?;
-    let words: Vec<&str> = raw.lines().map(str::trim).filter(|w| !w.is_empty()).collect();
-    if !quiet {
-        println!("\nLoaded {} words from {}", words.len(), wordlist_path.display());
-    }
-
-    let extraction = extract::extract_disjoint_subsets(&words, table, &seed_input.seed_bytes)
-        .map_err(|e| anyhow::anyhow!("extraction failed: {e}"))?;
+    let extraction =
+        extract::extract_disjoint_subsets(&words_borrow, table, &seed_input.seed_bytes)
+            .map_err(|e| anyhow::anyhow!("extraction failed: {e}"))?;
     extraction
         .assert_disjoint()
         .map_err(|e| anyhow::anyhow!("disjointness sanity check failed: {e}"))?;
@@ -387,14 +458,21 @@ fn extract_and_write(
     }
 
     // Emit a manifest so re-extraction is auditable.
-    let mut wordlist_hasher = Sha256::new();
-    wordlist_hasher.update(raw.as_bytes());
-    let wordlist_hash = wordlist_hasher.finalize();
     let mut manifest = String::new();
     manifest.push_str("Babbleon v2 wordlist role-partitioning — extraction manifest\n\n");
-    manifest.push_str(&format!("wordlist_path: {}\n", wordlist_path.display()));
-    manifest.push_str(&format!("wordlist_entries: {}\n", words.len()));
-    manifest.push_str(&format!("wordlist_sha256: {wordlist_hash:x}\n"));
+    manifest.push_str(&format!("union_size: {}\n", sources.union.len()));
+    manifest.push_str(&format!("source_count: {}\n", sources.sources.len()));
+    manifest.push_str("\nsources (path,raw_entries,contributed,sha256):\n");
+    for src in &sources.sources {
+        manifest.push_str(&format!(
+            "  {},{},{},{}\n",
+            src.path.display(),
+            src.raw_entries,
+            src.contributed,
+            src.sha256_hex,
+        ));
+    }
+    manifest.push('\n');
     match &seed_input.source {
         ExtractSeedSource::String(s) => {
             manifest.push_str("seed_source: string\n");

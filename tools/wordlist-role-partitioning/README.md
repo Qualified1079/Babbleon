@@ -139,6 +139,23 @@ cargo run --release -- \
   --extract-seed "my-per-host-seed"
 ```
 
+Union multiple wordlists (e.g. English baseline + Spanish +
+German) before the disjoint draw — same `--wordlist-path` arg
+repeated:
+
+```
+cargo run --release -- \
+  --extract-to /tmp/rp-union \
+  --wordlist-path ../../crates/babbleon/wordlist/words.txt \
+  --wordlist-path /tmp/es_ascii.txt \
+  --wordlist-path /tmp/de_ascii.txt
+```
+
+The extractor concatenates the sources in argument order,
+dedupes, and draws from the union.  The manifest records each
+source's SHA-256 + contributed-after-dedupe count, so the
+cross-language mix is auditable.
+
 Extract using a real per-host secret + domain-separator label
 (production path — the secret never appears on the command line):
 
