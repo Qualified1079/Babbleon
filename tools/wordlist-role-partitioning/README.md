@@ -114,6 +114,24 @@ alongside the text summary:
 cargo run --release -- --report-out RESULTS.md
 ```
 
+Extract disjoint per-role wordlist subsets into an output
+directory:
+
+```
+cargo run --release -- \
+  --extract-to /tmp/rp-extract \
+  --extract-seed "my-per-host-seed"
+```
+
+The output directory receives one text file per role
+(`identifier.txt`, `decoy.txt`, ...) plus a `MANIFEST.txt` with
+the wordlist SHA-256, the seed, and per-role sizes.  Extraction
+is deterministic: the same wordlist + same seed + same allocation
+yield byte-for-byte identical subsets, so the operator can commit
+the emitted files into the runtime and reproduce them at will.
+Disjointness is guaranteed by construction (Fisher-Yates over
+remaining indices) and re-checked before the files are written.
+
 ## Module layout
 
 Compartmentalized so a break in one module is targeted (same
@@ -127,6 +145,9 @@ discipline as `tools/wordlist-density-analysis/`):
 - `allocation` — `AllocationTable::compute(roles, attacker,
   wordlist) -> AllocationTable`; carries the fit verdict and
   headroom.
+- `extract` — `extract_disjoint_subsets(wordlist, table, seed) ->
+  Extraction`; deterministic SHA-256 + ChaCha20 Fisher-Yates
+  producing byte-for-byte reproducible per-role wordlist files.
 - `report` — `render_text` + `render_markdown`.
 - `main` — CLI orchestration only.
 

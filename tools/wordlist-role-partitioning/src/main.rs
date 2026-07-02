@@ -28,6 +28,7 @@
 
 mod allocation;
 mod entropy;
+mod extract;
 mod params;
 mod report;
 
@@ -124,6 +125,28 @@ struct Args {
     #[arg(long)]
     report_out: Option<PathBuf>,
 
+    /// Path to the raw wordlist (one lowercase-ASCII word per line).
+    /// Required for `--extract-to`.  Defaults to the v1 baseline.
+    #[arg(long, default_value = "../../crates/babbleon/wordlist/words.txt")]
+    wordlist_path: PathBuf,
+
+    /// Extract disjoint per-role subsets into this directory.
+    /// Emits one text file per role — for example
+    /// `identifier.txt`, `decoy.txt`, ... — plus a `MANIFEST.txt`
+    /// with the seed, wordlist hash, and per-role sizes.  The
+    /// directory must not already contain per-role files; the tool
+    /// refuses to overwrite.
+    #[arg(long)]
+    extract_to: Option<PathBuf>,
+
+    /// Seed bytes for the extractor's PRNG.  Passed as a UTF-8
+    /// string; SHA-256'd internally.  If unset, the tool uses a
+    /// fixed developer default so reruns without a seed are
+    /// deterministic (and match published RESULTS).  Production
+    /// use MUST supply a per-host secret here.
+    #[arg(long, default_value = "babbleon-role-partitioning-dev-seed")]
+    extract_seed: String,
+
     /// Skip the stdout summary; useful when scripting `--report-out`.
     #[arg(long, default_value_t = false)]
     quiet: bool,
@@ -173,5 +196,89 @@ fn main() -> Result<()> {
         }
     }
 
+    if let Some(dir) = &args.extract_to {
+        extract_and_write(&table, &args.wordlist_path, dir, &args.extract_seed, args.quiet)?;
+    }
+
+    Ok(())
+}
+
+fn extract_and_write(
+    table: &AllocationTable,
+    wordlist_path: &std::path::Path,
+    out_dir: &std::path::Path,
+    seed: &str,
+    quiet: bool,
+) -> Result<()> {
+    use sha2::{Digest, Sha256};
+
+    let raw = std::fs::read_to_string(wordlist_path)
+        .with_context(|| format!("read wordlist at {}", wordlist_path.display()))?;
+    let words: Vec<&str> = raw.lines().map(str::trim).filter(|w| !w.is_empty()).collect();
+    if !quiet {
+        println!("\nLoaded {} words from {}", words.len(), wordlist_path.display());
+    }
+
+    let extraction = extract::extract_disjoint_subsets(&words, table, seed.as_bytes())
+        .map_err(|e| anyhow::anyhow!("extraction failed: {e}"))?;
+    extraction
+        .assert_disjoint()
+        .map_err(|e| anyhow::anyhow!("disjointness sanity check failed: {e}"))?;
+
+    std::fs::create_dir_all(out_dir)
+        .with_context(|| format!("create output dir {}", out_dir.display()))?;
+
+    // Refuse to overwrite existing per-role files — the operator
+    // must delete them intentionally if they want to re-extract.
+    for subset in &extraction.subsets {
+        let path = out_dir.join(format!("{}.txt", subset.role_name));
+        if path.exists() {
+            anyhow::bail!(
+                "refusing to overwrite {} — delete it first if intentional",
+                path.display()
+            );
+        }
+    }
+
+    for subset in &extraction.subsets {
+        let path = out_dir.join(format!("{}.txt", subset.role_name));
+        let mut body = String::with_capacity(subset.words.iter().map(|w| w.len() + 1).sum());
+        for w in &subset.words {
+            body.push_str(w);
+            body.push('\n');
+        }
+        std::fs::write(&path, body)
+            .with_context(|| format!("write role subset to {}", path.display()))?;
+        if !quiet {
+            println!("  wrote {} words to {}", subset.words.len(), path.display());
+        }
+    }
+
+    // Emit a manifest so re-extraction is auditable.
+    let mut wordlist_hasher = Sha256::new();
+    wordlist_hasher.update(raw.as_bytes());
+    let wordlist_hash = wordlist_hasher.finalize();
+    let mut manifest = String::new();
+    manifest.push_str("Babbleon v2 wordlist role-partitioning — extraction manifest\n\n");
+    manifest.push_str(&format!("wordlist_path: {}\n", wordlist_path.display()));
+    manifest.push_str(&format!("wordlist_entries: {}\n", words.len()));
+    manifest.push_str(&format!("wordlist_sha256: {wordlist_hash:x}\n"));
+    manifest.push_str(&format!("seed_utf8: {seed:?}\n"));
+    manifest.push_str(&format!("total_extracted_words: {}\n", extraction.total_words()));
+    manifest.push_str("\nrole,size,file\n");
+    for subset in &extraction.subsets {
+        manifest.push_str(&format!(
+            "{},{},{}.txt\n",
+            subset.role_name,
+            subset.words.len(),
+            subset.role_name,
+        ));
+    }
+    let manifest_path = out_dir.join("MANIFEST.txt");
+    std::fs::write(&manifest_path, manifest)
+        .with_context(|| format!("write manifest to {}", manifest_path.display()))?;
+    if !quiet {
+        println!("  wrote manifest to {}", manifest_path.display());
+    }
     Ok(())
 }
