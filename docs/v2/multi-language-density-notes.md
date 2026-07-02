@@ -67,16 +67,25 @@ against each raw + filtered wordlist:
 | **English baseline**        | 369 652 |       11.96 |      11.53 |                            — |                           — |
 | English `intersect[3, 5]`   | 223 009 |       13.60 |      12.97 |                      +13.7 % |                     +12.5 % |
 | German (pure-ASCII)         |  42 179 |       10.96 |       9.81 |                       −8.4 % |                     −14.9 % |
-| German `intersect[3, 5]`    |  17 159 |       14.05 |      12.84 |                     **+17.5 %** |                     +11.4 % |
+| German `intersect[3, 5]`    |  17 159 |       14.02 |      12.78 |                     **+17.2 %** |                     +10.8 % |
 | Spanish (pure-ASCII)        |  40 236 |       10.12 |       9.47 |                      −15.4 % |                     −17.9 % |
-| Spanish `intersect[3, 5]`   |  15 485 |       12.87 |      12.20 |                       +7.6 % |                      +5.8 % |
+| Spanish `intersect[3, 5]`   |  15 485 |       12.86 |      12.20 |                       +7.5 % |                      +5.8 % |
 | French (pure-ASCII)         |  35 433 |        9.47 |       8.93 |                      −20.8 % |                     −22.5 % |
-| French `intersect[3, 5]`    |  11 173 |       12.57 |      12.09 |                       +5.1 % |                      +4.9 % |
+| French `intersect[3, 5]`    |  11 173 |       12.55 |      12.05 |                       +4.9 % |                      +4.5 % |
 
-Numbers are single-seed (seed=1); the English baseline row from
-`tools/wordlist-density-analysis/RESULTS.md` is a 3-seed mean, so
-strict comparability sits at ±0.05 tokens.  Session-1 measured
-seed-to-seed spread at σ ≈ 0.02 tokens on cl100k `intersect[3, 5]`.
+**Filtered non-English numbers are 3-seed means** (seeds 1, 2, 3;
+2000 samples each; `tokenizer-benchmark --compound-n 4`).  Per-
+row σ measured this session:
+
+- German `intersect[3, 5]`: σ_cl100k = 0.025, σ_o200k = 0.051
+- Spanish `intersect[3, 5]`: σ_cl100k = 0.015, σ_o200k = 0.006
+- French `intersect[3, 5]`: σ_cl100k = 0.021, σ_o200k = 0.032
+
+Every σ sits within the ±0.05-token comparability band; no
+design conclusion above changes under multi-seed averaging.
+Unfiltered rows and the two English rows carry over from the
+prior sessions unchanged (single-seed for the non-English pure-
+ASCII, 3-seed for the English rows).
 
 ## What the numbers say
 
