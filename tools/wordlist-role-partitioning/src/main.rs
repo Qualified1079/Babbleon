@@ -216,6 +216,15 @@ struct Args {
     #[arg(long)]
     extract_domain_label: Option<String>,
 
+    /// Verify a previously-extracted directory.  Reads MANIFEST.txt,
+    /// re-loads every `<role>.txt`, checks that each role's line
+    /// count matches the manifest, and re-verifies disjointness
+    /// across all files.  Exits non-zero on any mismatch.  Nice
+    /// operator audit for a checked-in extraction.  Mutually
+    /// exclusive with `--extract-to`.
+    #[arg(long, conflicts_with = "extract_to")]
+    verify_extracted: Option<PathBuf>,
+
     /// Skip the stdout summary; useful when scripting `--report-out`.
     #[arg(long, default_value_t = false)]
     quiet: bool,
@@ -283,6 +292,91 @@ fn main() -> Result<()> {
         )?;
     }
 
+    if let Some(dir) = &args.verify_extracted {
+        verify_extracted_dir(dir, args.quiet)?;
+    }
+
+    Ok(())
+}
+
+/// Read `<dir>/MANIFEST.txt`, parse the `role,size,file` block, then
+/// re-load every listed file and cross-check the line counts against
+/// the manifest.  Also re-verify disjointness across all files.
+/// Errors out on the first mismatch.
+fn verify_extracted_dir(dir: &std::path::Path, quiet: bool) -> Result<()> {
+    let manifest_path = dir.join("MANIFEST.txt");
+    let manifest = std::fs::read_to_string(&manifest_path)
+        .with_context(|| format!("read manifest {}", manifest_path.display()))?;
+
+    // The role block starts with a line beginning `role,size,file`
+    // and consists of `name,count,filename` rows until an empty line
+    // or end of file.
+    let mut rows: Vec<(String, usize, String)> = Vec::new();
+    let mut in_block = false;
+    for line in manifest.lines() {
+        if line.starts_with("role,size,file") {
+            in_block = true;
+            continue;
+        }
+        if !in_block {
+            continue;
+        }
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            break;
+        }
+        let parts: Vec<&str> = trimmed.split(',').collect();
+        if parts.len() != 3 {
+            anyhow::bail!("malformed manifest row: {trimmed:?}");
+        }
+        let size: usize = parts[1]
+            .parse()
+            .with_context(|| format!("parse size in row {trimmed:?}"))?;
+        rows.push((parts[0].to_string(), size, parts[2].to_string()));
+    }
+    if rows.is_empty() {
+        anyhow::bail!(
+            "manifest {} has no role rows (expected `role,size,file` block)",
+            manifest_path.display()
+        );
+    }
+
+    let mut all_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut total_verified = 0usize;
+    for (role, expected_size, filename) in &rows {
+        let path = dir.join(filename);
+        let content = std::fs::read_to_string(&path)
+            .with_context(|| format!("read role file {}", path.display()))?;
+        let words: Vec<&str> = content
+            .lines()
+            .map(str::trim)
+            .filter(|w| !w.is_empty())
+            .collect();
+        if words.len() != *expected_size {
+            anyhow::bail!(
+                "role {role}: file {} has {} words, manifest says {}",
+                path.display(),
+                words.len(),
+                expected_size,
+            );
+        }
+        for w in &words {
+            if !all_seen.insert(w.to_string()) {
+                anyhow::bail!(
+                    "role {role}: word {w:?} in {} also appears in an earlier role file",
+                    path.display(),
+                );
+            }
+        }
+        total_verified += words.len();
+        if !quiet {
+            println!("  verified {role}: {} words in {}", words.len(), path.display());
+        }
+    }
+
+    if !quiet {
+        println!("\nVerified {total_verified} words across {} roles.  OK.", rows.len());
+    }
     Ok(())
 }
 
@@ -563,5 +657,67 @@ mod tests {
         apply_role_tokens_overrides(&mut roles, &[("identifier".into(), 13.80)]).unwrap();
         let decoy = roles.iter().find(|r| r.name == "decoy").unwrap();
         assert_eq!(decoy.tokens_per_compound, None);
+    }
+
+    #[test]
+    fn verify_extracted_accepts_a_well_formed_directory() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("rp-verify-ok-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut manifest = std::fs::File::create(dir.join("MANIFEST.txt")).unwrap();
+        writeln!(manifest, "some_header: 1").unwrap();
+        writeln!(manifest).unwrap();
+        writeln!(manifest, "role,size,file").unwrap();
+        writeln!(manifest, "alpha,3,alpha.txt").unwrap();
+        writeln!(manifest, "beta,2,beta.txt").unwrap();
+        drop(manifest);
+
+        std::fs::write(dir.join("alpha.txt"), "one\ntwo\nthree\n").unwrap();
+        std::fs::write(dir.join("beta.txt"), "four\nfive\n").unwrap();
+
+        super::verify_extracted_dir(&dir, true).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn verify_extracted_detects_count_mismatch() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("rp-verify-count-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut manifest = std::fs::File::create(dir.join("MANIFEST.txt")).unwrap();
+        writeln!(manifest, "role,size,file").unwrap();
+        writeln!(manifest, "alpha,3,alpha.txt").unwrap();
+        drop(manifest);
+
+        std::fs::write(dir.join("alpha.txt"), "one\ntwo\n").unwrap();
+        let err = super::verify_extracted_dir(&dir, true).unwrap_err().to_string();
+        assert!(err.contains("has 2 words"), "actual: {err}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn verify_extracted_detects_disjoint_violation() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("rp-verify-dup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut manifest = std::fs::File::create(dir.join("MANIFEST.txt")).unwrap();
+        writeln!(manifest, "role,size,file").unwrap();
+        writeln!(manifest, "alpha,2,alpha.txt").unwrap();
+        writeln!(manifest, "beta,2,beta.txt").unwrap();
+        drop(manifest);
+
+        std::fs::write(dir.join("alpha.txt"), "one\ntwo\n").unwrap();
+        // "two" is in both files — same size, but disjoint check fails
+        std::fs::write(dir.join("beta.txt"), "two\nthree\n").unwrap();
+
+        let err = super::verify_extracted_dir(&dir, true).unwrap_err().to_string();
+        assert!(err.contains("also appears"), "actual: {err}");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
