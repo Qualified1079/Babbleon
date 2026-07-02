@@ -63,7 +63,7 @@ were:
 So of the five, three are still blocked on operator gates, one is
 deferred, and one (priority 5) was the natural autonomous pickup.
 
-### Net commits this session: 22 (+ this refresh)
+### Net commits this session: 24 (+ this refresh)
 
 | # | Hash | Subject |
 |---|---|---|
@@ -89,7 +89,9 @@ deferred, and one (priority 5) was the natural autonomous pickup.
 | 20 | `52817f5` | docs(HANDOFF,TODO): superlinear hypothesis closed with null result |
 | 21 | `92e0c7e` | feat(wordlist-role-partitioning): `--verify-extracted` auditor subcommand |
 | 22 | `7beaadb` | docs(README): refresh Layout section with v2 crates + new tools |
-| 23 | (this commit) | docs(HANDOFF): final commit-list refresh — verify + README |
+| 23 | `0e91d11` | docs(HANDOFF): commit-list refresh — verify + README |
+| 24 | `cd03fe2` | feat(wordlist-role-partitioning): `end-to-end.sh` pipeline harness |
+| 25 | (this commit) | docs(HANDOFF): stopping-point note — pipeline composed end-to-end |
 
 ### Commit 4 — Per-role disjoint-subset extractor
 
@@ -685,12 +687,32 @@ context:
   land in resilience-bench so per-run reports include the
   vocab-size sensitivity axis).
 - **Compose** the tools end-to-end into a single "score →
-  filter → allocate → extract → verify" wrapper shell script
-  or Rust orchestrator, so a phase-4 operator can go from
-  "which wordlist file(s) do I have" to "checked-in per-role
-  wordlist artefacts" in one command.  Autonomous-safe.  Would
-  live at `tools/wordlist-role-partitioning/scripts/end-to-
-  end.sh` or a new `tools/wordlist-pipeline/` sibling.
+  filter → allocate → extract → verify" wrapper — DONE (commit
+  24, `cd03fe2`).  `tools/wordlist-role-partitioning/scripts/
+  end-to-end.sh <output-dir> <secret-file> <domain-label>
+  <wordlist1> [wordlist2 ...]`.  Verified with both single-
+  language (English baseline, 223 009 filtered → 215 387
+  extracted) and 4-language (English + Spanish + German +
+  French, 261 274 unioned → 215 387 extracted) fixtures.  Env
+  vars `MIN_TOKENS` / `MAX_TOKENS` / `NORMALISE_DIACRITICS`
+  override the density-filter knobs.
+
+### Final stopping-point note
+
+Every autonomous-safe follow-on filed above has now landed on
+this branch:  the role-partitioning calculator (commit 1), its
+disjoint extractor (4), HKDF seed derivation (7), attention-
+cost overrides (6), cross-language union (16), the density-
+analysis Unicode + diacritics-normalisation opt-ins (13, 17),
+per-language filter benches with 3-seed σ (15), the smaller-
+model tokenizer null result (19), and the end-to-end composer
+(24).  The remaining items on the priority list are all
+BLOCKED on operator input (adversarial-LLM re-test, seccomp
+review, runtime-side wiring review, SentencePiece model
+bundling).  The next session should either (a) unblock one of
+those with the operator's decision, or (b) go deep on
+resilience-bench extensions once the LLM baseline is on the
+table.
 
 ### Process notes for next autonomous session
 
