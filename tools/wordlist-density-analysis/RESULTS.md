@@ -119,6 +119,60 @@ against both the baseline and at least one filtered wordlist before
 we can attribute a crack-rate delta to the density filter rather
 than to noise.
 
+## Compound-cost delta vs baseline
+
+The Babbleon scrambler emits N-word compounds, not individual
+words, so the load-bearing metric is compound token cost, not
+per-word cost.  Feeding each filter output into
+`tools/tokenizer-benchmark/ --compound-n 4 --samples 2000` gives
+the direct decision-support number for the go/no-go on the wiring
+change.
+
+Mean tokens per 4-word compound, averaged over three seeds
+(`--seed {1,2,3}`, 2000 samples each), against the same seeds' runs
+on the baseline wordlist:
+
+|                       Wordlist |  cl100k mean |    Δ cl100k |   o200k mean |    Δ o200k |
+|-------------------------------:|-------------:|------------:|-------------:|-----------:|
+|             Baseline (369 652) |        11.96 |           — |        11.53 |          — |
+|       cl100k [3, 4] (225 886) |        13.11 |     +9.6 %  |        12.55 |    +8.8 %  |
+|       cl100k [3, 5] (244 804) |        13.60 |    +13.7 %  |        12.97 |   +12.5 %  |
+|        o200k [3, 4] (218 857) |        13.36 |    +11.7 %  |        13.01 |   +12.8 %  |
+|        o200k [3, 5] (233 476) |        13.74 |    +14.9 %  |        13.38 |   +16.0 %  |
+
+Ratios of compound to spaced-baseline token count are unchanged
+(~1.07× under both tokenizers across every filter and the baseline).
+The absolute compound token cost went up because the filter drops
+the trivially-tokenizable one-token entries and the merge-happy
+short entries, but the *no-whitespace penalty* is a separate signal
+that the filter does not touch.
+
+Per-seed spread on `cl100k [3, 5]` (cl100k tokenizer):
+
+| seed | cl100k mean |
+|-----:|------------:|
+|    1 |       13.63 |
+|    2 |       13.59 |
+|    3 |       13.58 |
+
+Standard deviation across three seeds is ~0.02 tokens — the delta
+vs baseline is roughly two orders of magnitude larger than run-to-
+run noise at this sample count.
+
+### What this measurement is and is not
+
+**Is:** a stable, reproducible number for how much more expensive
+each 4-word compound becomes under a given filter.  Anchors the
+"is the filter worth wiring?" question in wall-clock attacker cost.
+
+**Is not:** a measure of adversarial-LLM crack rate.  The
+adversarial re-test filed as HANDOFF priority 1 is what tells us
+whether that +13.7 % token cost actually moves a model's ability
+to reason through the scramble.  A filter that raises attention
+cost without moving crack rate is theatre; a filter that moves
+crack rate at low cost is a ship candidate.  The two must be
+reported together.
+
 ## Reproducing these numbers
 
 ```
