@@ -31,6 +31,7 @@ mod entropy;
 mod extract;
 mod params;
 mod report;
+mod seed;
 
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
@@ -181,13 +182,35 @@ struct Args {
     #[arg(long)]
     extract_to: Option<PathBuf>,
 
-    /// Seed bytes for the extractor's PRNG.  Passed as a UTF-8
-    /// string; SHA-256'd internally.  If unset, the tool uses a
-    /// fixed developer default so reruns without a seed are
-    /// deterministic (and match published RESULTS).  Production
-    /// use MUST supply a per-host secret here.
-    #[arg(long, default_value = "babbleon-role-partitioning-dev-seed")]
+    /// Seed bytes for the extractor's PRNG, passed as a UTF-8
+    /// string.  SHA-256'd internally.  If unset and no
+    /// `--extract-seed-file` is provided, the tool uses a fixed
+    /// developer default so reruns without a seed are deterministic
+    /// (and match published RESULTS).  Production use should prefer
+    /// `--extract-seed-file` + `--extract-domain-label`.
+    #[arg(long, default_value = "babbleon-role-partitioning-dev-seed",
+          conflicts_with = "extract_seed_file")]
     extract_seed: String,
+
+    /// Path to a file containing the raw per-host secret (any
+    /// bytes).  When present, the extractor derives its 32-byte
+    /// ChaCha seed via HKDF-Expand-SHA256(secret, label) where
+    /// `label = --extract-domain-label`.  This is the production
+    /// path: the secret never appears on the command line, and
+    /// the domain label lets the same secret drive both this tool
+    /// and unrelated runtime paths without cross-purpose
+    /// correlation.
+    #[arg(long, requires = "extract_domain_label")]
+    extract_seed_file: Option<PathBuf>,
+
+    /// HKDF-Expand `info` parameter — the domain-separator label
+    /// that scopes the derived seed.  Required with
+    /// `--extract-seed-file`.  Convention:
+    /// `babbleon/v2/role-partitioning/<epoch>` so consecutive
+    /// epochs deterministically produce different subsets from
+    /// the same host secret.
+    #[arg(long)]
+    extract_domain_label: Option<String>,
 
     /// Skip the stdout summary; useful when scripting `--report-out`.
     #[arg(long, default_value_t = false)]
@@ -241,17 +264,82 @@ fn main() -> Result<()> {
     }
 
     if let Some(dir) = &args.extract_to {
-        extract_and_write(&table, &args.wordlist_path, dir, &args.extract_seed, args.quiet)?;
+        let extract_input = build_extract_seed(&args)?;
+        extract_and_write(
+            &table,
+            &args.wordlist_path,
+            dir,
+            &extract_input,
+            args.quiet,
+        )?;
     }
 
     Ok(())
+}
+
+/// Bytes that will be fed to `extract::extract_disjoint_subsets` +
+/// audit metadata for the manifest.
+struct ExtractSeedInput {
+    /// Raw bytes handed to the extractor's PRNG derivation.
+    seed_bytes: Vec<u8>,
+    /// Human-readable provenance for the manifest.
+    source: ExtractSeedSource,
+}
+
+enum ExtractSeedSource {
+    /// `--extract-seed <utf8>` used.  We record the string so the
+    /// manifest is fully reproducible.  Safe for the dev seed;
+    /// production paths use `File` instead.
+    String(String),
+    /// `--extract-seed-file <path> --extract-domain-label <label>`
+    /// used.  The manifest records `path`, `label`, and the
+    /// SHA-256 of the file contents so integrity can be verified
+    /// without exposing the secret.
+    File {
+        path: PathBuf,
+        label: String,
+        secret_sha256_hex: String,
+    },
+}
+
+fn build_extract_seed(args: &Args) -> Result<ExtractSeedInput> {
+    if let Some(path) = &args.extract_seed_file {
+        let label = args
+            .extract_domain_label
+            .as_deref()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "--extract-seed-file requires --extract-domain-label (clap should have caught this)"
+                )
+            })?;
+        let secret = std::fs::read(path)
+            .with_context(|| format!("read extract seed file {}", path.display()))?;
+        let derived = seed::derive_seed_bytes(&secret, label.as_bytes());
+        use sha2::Digest;
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(&secret);
+        let secret_hash = hasher.finalize();
+        Ok(ExtractSeedInput {
+            seed_bytes: derived.to_vec(),
+            source: ExtractSeedSource::File {
+                path: path.clone(),
+                label: label.to_string(),
+                secret_sha256_hex: format!("{secret_hash:x}"),
+            },
+        })
+    } else {
+        Ok(ExtractSeedInput {
+            seed_bytes: args.extract_seed.as_bytes().to_vec(),
+            source: ExtractSeedSource::String(args.extract_seed.clone()),
+        })
+    }
 }
 
 fn extract_and_write(
     table: &AllocationTable,
     wordlist_path: &std::path::Path,
     out_dir: &std::path::Path,
-    seed: &str,
+    seed_input: &ExtractSeedInput,
     quiet: bool,
 ) -> Result<()> {
     use sha2::{Digest, Sha256};
@@ -263,7 +351,7 @@ fn extract_and_write(
         println!("\nLoaded {} words from {}", words.len(), wordlist_path.display());
     }
 
-    let extraction = extract::extract_disjoint_subsets(&words, table, seed.as_bytes())
+    let extraction = extract::extract_disjoint_subsets(&words, table, &seed_input.seed_bytes)
         .map_err(|e| anyhow::anyhow!("extraction failed: {e}"))?;
     extraction
         .assert_disjoint()
@@ -307,7 +395,22 @@ fn extract_and_write(
     manifest.push_str(&format!("wordlist_path: {}\n", wordlist_path.display()));
     manifest.push_str(&format!("wordlist_entries: {}\n", words.len()));
     manifest.push_str(&format!("wordlist_sha256: {wordlist_hash:x}\n"));
-    manifest.push_str(&format!("seed_utf8: {seed:?}\n"));
+    match &seed_input.source {
+        ExtractSeedSource::String(s) => {
+            manifest.push_str("seed_source: string\n");
+            manifest.push_str(&format!("seed_utf8: {s:?}\n"));
+        }
+        ExtractSeedSource::File {
+            path,
+            label,
+            secret_sha256_hex,
+        } => {
+            manifest.push_str("seed_source: hkdf-file\n");
+            manifest.push_str(&format!("secret_path: {}\n", path.display()));
+            manifest.push_str(&format!("secret_sha256: {secret_sha256_hex}\n"));
+            manifest.push_str(&format!("domain_label: {label:?}\n"));
+        }
+    }
     manifest.push_str(&format!("total_extracted_words: {}\n", extraction.total_words()));
     manifest.push_str("\nrole,size,file\n");
     for subset in &extraction.subsets {

@@ -13,6 +13,7 @@ description = "Compute per-role wordlist pool sizes and their entropy/attention 
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+hkdf = "0.12"
 rand = "0.8"
 rand_chacha = "0.3"
 sha2 = "0.10"

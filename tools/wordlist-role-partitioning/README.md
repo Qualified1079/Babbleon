@@ -131,7 +131,7 @@ denser wordlist for that role.  Numbers come from
 `tools/tokenizer-benchmark/RESULTS.md`.
 
 Extract disjoint per-role wordlist subsets into an output
-directory:
+directory (dev-seed path):
 
 ```
 cargo run --release -- \
@@ -139,14 +139,35 @@ cargo run --release -- \
   --extract-seed "my-per-host-seed"
 ```
 
+Extract using a real per-host secret + domain-separator label
+(production path — the secret never appears on the command line):
+
+```
+cargo run --release -- \
+  --extract-to /tmp/rp-extract \
+  --extract-seed-file /run/babbleon/host.secret \
+  --extract-domain-label "babbleon/v2/role-partitioning/epoch-42"
+```
+
+The HKDF path derives a 32-byte ChaCha seed via
+`HKDF-Expand-SHA256(file_bytes, label_bytes)` (RFC 5869), so
+different labels produce uncorrelated outputs even when the
+secret is reused (rotate the epoch to rotate the per-role files).
+`--extract-seed` and `--extract-seed-file` are mutually
+exclusive; `--extract-seed-file` requires
+`--extract-domain-label`.
+
 The output directory receives one text file per role
 (`identifier.txt`, `decoy.txt`, ...) plus a `MANIFEST.txt` with
-the wordlist SHA-256, the seed, and per-role sizes.  Extraction
-is deterministic: the same wordlist + same seed + same allocation
-yield byte-for-byte identical subsets, so the operator can commit
-the emitted files into the runtime and reproduce them at will.
-Disjointness is guaranteed by construction (Fisher-Yates over
-remaining indices) and re-checked before the files are written.
+the wordlist SHA-256, the seed source (dev string OR
+`hkdf-file` + secret SHA-256 + domain label), and per-role sizes.
+The manifest never records the raw secret.  Extraction is
+deterministic: the same wordlist + same seed input + same
+allocation yield byte-for-byte identical subsets, so the operator
+can commit the emitted files into the runtime and reproduce them
+at will.  Disjointness is guaranteed by construction
+(Fisher-Yates over remaining indices) and re-checked before the
+files are written.
 
 ## Module layout
 
@@ -164,6 +185,9 @@ discipline as `tools/wordlist-density-analysis/`):
 - `extract` — `extract_disjoint_subsets(wordlist, table, seed) ->
   Extraction`; deterministic SHA-256 + ChaCha20 Fisher-Yates
   producing byte-for-byte reproducible per-role wordlist files.
+- `seed` — RFC 5869 HKDF-Expand seed derivation over SHA-256 for
+  the production path (`--extract-seed-file` +
+  `--extract-domain-label`).
 - `report` — `render_text` + `render_markdown`.
 - `main` — CLI orchestration only.
 
