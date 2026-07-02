@@ -99,16 +99,33 @@ For the adversarial naming-layer harness against a frontier LLM, open
 
 ## Layout
 
-    crates/babbleon/           library — mapping, vault, enforcement
-    crates/babbleon-cli/       `babbleon` binary
-    crates/babbleon-ns-helper/ setuid helper (M3)
-    crates/babbleon-pam/       PAM module (M3)
-    tools/scrambler/           browser-based LLM test harness
-    tools/rotation-benchmark/  rotation cost measurement
-    tools/tokenizer-benchmark/ BPE token cost measurement
-    fuzz/                      cargo-fuzz harnesses (3 targets)
-    policies/                  AppArmor + SELinux confinement templates
-    docs/                      threat model, CWE audit, SSDF policy, ...
+    crates/babbleon*/                   v1 library + CLI + helpers (see
+                                        crates/DEPRECATED-V1.md — read-only)
+    crates/v2-babbleon-core/            v2 mapping + wordlist + key derivation
+    crates/v2-babbleon-preprocessor/    v2 six-layer scramble/unscramble pipeline
+    crates/v2-babbleon-daemon/          v2 per-host daemon + wire protocol
+    crates/v2-babbleon-vault/           v2 vault (host secret storage)
+    crates/v2-babbleon-resilience-bench/ v2 adversarial-LLM measurement harness
+    crates/v2-babbleon-python-shim/     v2 Python import-hook runtime shim
+    crates/v2-babbleon*/                remaining v2 crates: launcher, PAM,
+                                        login shell, launch artefacts
+    tools/scrambler/                    browser-based LLM test harness
+    tools/rotation-benchmark/           rotation cost measurement
+    tools/tokenizer-benchmark/          BPE token cost measurement
+                                        (`--include-smaller` for r50k/p50k)
+    tools/preprocessor-benchmark/       per-file scramble/unscramble latency
+    tools/wordlist-density-analysis/    score + filter the wordlist by BPE
+                                        density; `--unicode-lowercase` +
+                                        `--normalise-diacritics` for multi-lang
+    tools/wordlist-role-partitioning/   per-role pool-size calculator + disjoint
+                                        extractor + HKDF-derived seed
+                                        (`--extract-seed-file`,
+                                        `--verify-extracted`)
+    tools/ebpf/                         kernel-level exec-guard LSM hook (M3+)
+    fuzz/                               cargo-fuzz harnesses (3 targets)
+    policies/                           AppArmor + SELinux confinement templates
+    docs/                               threat model, CWE audit, SSDF policy, ...
+    docs/v2/                            v2 design + phase-0 research notes
 
 ## Security
 
