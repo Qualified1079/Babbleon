@@ -63,7 +63,7 @@ were:
 So of the five, three are still blocked on operator gates, one is
 deferred, and one (priority 5) was the natural autonomous pickup.
 
-### Net commits this session: 4 (+ this refresh)
+### Net commits this session: 7 (+ this refresh)
 
 | # | Hash | Subject |
 |---|---|---|
@@ -71,7 +71,10 @@ deferred, and one (priority 5) was the natural autonomous pickup.
 | 2 | `4970250` | docs(TODO,phase0-research-notes): cross-link role-partitioning tool |
 | 3 | `743397a` | docs(HANDOFF): record 2026-07-02 session 2 — role-partitioning tool |
 | 4 | `77f8599` | feat(wordlist-role-partitioning): per-role disjoint-subset extractor |
-| 5 | (this commit) | docs(HANDOFF): commit-list refresh + extractor notes |
+| 5 | `2c3c9e3` | docs(HANDOFF): commit-list refresh + extractor notes for session 2 |
+| 6 | `d8036b7` | feat(wordlist-role-partitioning): `--role-tokens` per-role attention override |
+| 7 | `fd75bbc` | feat(wordlist-role-partitioning): HKDF seed derivation for production extraction |
+| 8 | (this commit) | docs(HANDOFF): final commit-list refresh — role-tokens + HKDF |
 
 ### Commit 4 — Per-role disjoint-subset extractor
 
@@ -135,6 +138,78 @@ prompt_injection,500,prompt_injection.txt
 `sort *.txt | uniq -d` returns nothing across all six emitted
 files → disjointness confirmed at runtime.  Test count 47 → 55
 (+8 extract tests).
+
+### Commit 6 — `--role-tokens` per-role attention override
+
+Closes session-2 refreshed priority 6.  Small UX change on top of
+the existing `Role.tokens_per_compound` field: `--role-tokens
+name=value` (repeatable) lets operators plug tokenizer-benchmark
+measurements per role and immediately see the `Attention×` column
+update against the wordlist baseline.  Unknown role names error
+out with the available list.
+
+Verified end-to-end:
+
+```
+$ ./target/release/wordlist-role-partitioning \
+    --role-tokens identifier=13.80 --role-tokens decoy=12.50
+...
+  identifier            4      13682  ...  Attn× 1.33x
+  decoy                 3     129862  ...  Attn× 1.09x
+  ...
+```
+
+(13.80 / 11.96)² = 1.33 → attention gain from the intersect[3, 5]
+filter for the identifier role, matching the sensitivity table in
+`RESULTS.md`.  Test count 55 → 63 (+8 parser + apply tests).
+
+### Commit 7 — HKDF seed derivation for the extractor
+
+Closes session-2 refreshed priority 7.  Production callers now
+have an audit-clean path from "per-host secret file" to "per-role
+subset files" without exposing the secret on the command line.
+
+New module `src/seed.rs`:
+
+- `derive_seed_bytes(secret: &[u8], label: &[u8]) -> [u8; 32]` —
+  RFC 5869 HKDF-Expand over SHA-256, backed by the widely-audited
+  `hkdf` crate (single new dep, standalone-workspace only).
+- 6 unit tests covering determinism, secret variation, label
+  variation, empty-secret handling, and output-shape checks.
+
+CLI:
+
+- `--extract-seed-file <path>` — reads raw bytes from a file; the
+  secret never appears in `ps` output or shell history.
+- `--extract-domain-label <str>` — required with
+  `--extract-seed-file`; passed as HKDF `info` so different labels
+  produce uncorrelated seeds even when the secret is reused.
+- `--extract-seed <utf8>` remains as the dev-seed default; now
+  `conflicts_with = "extract_seed_file"` in clap so mis-use fails
+  early.
+
+Manifest changes:
+
+- `seed_source: string | hkdf-file`
+- `hkdf-file` variant records `secret_path`, `secret_sha256`
+  (integrity check, not the secret itself), and `domain_label`.
+
+Verified end-to-end:
+
+```
+$ ./target/release/wordlist-role-partitioning --quiet \
+    --extract-to /tmp/rp-hkdf \
+    --extract-seed-file /tmp/rp-secret \
+    --extract-domain-label "babbleon/v2/role-partitioning/epoch-42"
+$ sha256sum /tmp/rp-hkdf/identifier.txt
+52482571df715634868ce5a677b15236efa2844a80de01a60bb9fccfb639c327
+# Rerun with same secret + same label → same hash.
+# Rerun with same secret + epoch-43 label →
+40e0fd0020efdf98e77130b0c92c34dd713c0d1dd3a582de3b0fcae05f608e9c
+```
+
+Domain separation works cleanly.  Test count 63 → 69 (+6 seed
+tests).  Zero default-clippy warnings on the crate.
 
 ### Commit 1 — `wordlist-role-partitioning` scaffold + full tool
 
@@ -309,21 +384,39 @@ contested design.
    constants for each in `v2-babbleon-core::wordlist`, and pick
    per role at the appropriate scrambler layer.  Blocked on
    priority 1 producing the LLM baseline delta.
-6. **Attention-cost multiplier population.**  The tool currently
-   reports the multiplier as identity (`1.00×`) unless the
-   caller sets `Role.tokens_per_compound` explicitly.  A follow-
-   up could either (a) automatically populate it from
-   `tools/tokenizer-benchmark/RESULTS.md`'s numbers or (b) add a
-   `--tokens-per-compound-role identifier=13.80,...` CLI arg for
-   what-if analysis.  Autonomous-safe.
-7. **Extractor seed derivation from a real per-host secret.**
-   The `--extract-seed` knob currently takes a UTF-8 string.
-   Production use should derive it from the per-host secret via
-   HKDF-Expand with a domain-separator label (e.g.
-   `label="babbleon/v2/role-partitioning/<epoch>"`) so the same
-   host produces the same per-role files at the same epoch.
-   Wiring into `crates/v2-babbleon-core::key_derivation` is a
-   thin follow-up; autonomous-safe once the design commits.
+6. **Attention-cost multiplier population — DONE this session
+   (commit 6, `d8036b7`).**  `--role-tokens name=value` now
+   plumbs measured tokens/compound numbers into the calculator
+   without touching source.  Follow-up (autonomous-safe): auto-
+   populate from `tools/tokenizer-benchmark/RESULTS.md` at
+   startup instead of requiring the operator to type them in.
+7. **Extractor HKDF seed derivation — DONE this session (commit
+   7, `fd75bbc`).**  `--extract-seed-file` + `--extract-domain-
+   label` land the RFC 5869 path.  Follow-up (autonomous-safe):
+   wire the same HKDF derivation into `crates/v2-babbleon-core::
+   key_derivation` so the runtime can call the same primitive
+   without going through the tool binary — thin API-surface
+   change, no new deps for the core crate (`hkdf` already lives
+   there per grep for `use hkdf`).
+8. **Runtime-side wiring of per-role wordlist subsets.**  Now
+   that the extractor emits `identifier.txt`, `decoy.txt`, ...
+   with a MANIFEST + SHA-256 audit trail, the wiring diff into
+   `crates/v2-babbleon-core::wordlist` becomes a small,
+   reviewable change: add `include_str!` constants for each
+   role's file, plus a `Wordlist::role(name) -> &'static
+   Wordlist` accessor.  The scrambler layers then draw from
+   their own subset instead of the global one, which is the
+   phase0-§11 "cross-role disjointness" property finally
+   satisfied at runtime.  Blocked on operator review of the
+   per-role file placement (under `crates/babbleon/wordlist/
+   roles/` seems natural).
+9. **Multi-language wordlists — analysis.**  Carried over from
+   session-2's priority 4.  The density-analysis tool + the
+   role-partitioning tool now compose end-to-end, so the
+   analysis for HermitDave/FrequencyWords is a scored-and-
+   allocated pipeline once the language files are on disk.
+   Network access to GitHub raw for HermitDave files needs to
+   be verified on session start.
 
 ### Process notes for next autonomous session
 
