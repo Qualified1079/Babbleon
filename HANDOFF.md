@@ -63,7 +63,7 @@ were:
 So of the five, three are still blocked on operator gates, one is
 deferred, and one (priority 5) was the natural autonomous pickup.
 
-### Net commits this session: 7 (+ this refresh)
+### Net commits this session: 10 (+ this refresh)
 
 | # | Hash | Subject |
 |---|---|---|
@@ -74,7 +74,10 @@ deferred, and one (priority 5) was the natural autonomous pickup.
 | 5 | `2c3c9e3` | docs(HANDOFF): commit-list refresh + extractor notes for session 2 |
 | 6 | `d8036b7` | feat(wordlist-role-partitioning): `--role-tokens` per-role attention override |
 | 7 | `fd75bbc` | feat(wordlist-role-partitioning): HKDF seed derivation for production extraction |
-| 8 | (this commit) | docs(HANDOFF): final commit-list refresh — role-tokens + HKDF |
+| 8 | `9233978` | docs(HANDOFF): final commit-list refresh — role-tokens + HKDF |
+| 9 | `9e78649` | docs(v2): preliminary multi-language wordlist density measurements |
+| 10 | `3e89366` | docs(v2): fill in multi-language filter+bench numbers (de/es/fr) |
+| 11 | (this commit) | docs(HANDOFF): commit-list refresh + multi-language notes |
 
 ### Commit 4 — Per-role disjoint-subset extractor
 
@@ -210,6 +213,58 @@ $ sha256sum /tmp/rp-hkdf/identifier.txt
 
 Domain separation works cleanly.  Test count 63 → 69 (+6 seed
 tests).  Zero default-clippy warnings on the crate.
+
+### Commits 9 + 10 — Multi-language density notes
+
+Closes session-2 refreshed priority 9's "analysis" branch.
+Autonomous-safe: no runtime change, no wordlist checked into the
+repo, no license question opened.  The doc `docs/v2/
+multi-language-density-notes.md` records the density + compound-
+cost profile of the pure-ASCII HermitDave top-50k lists for
+German, Spanish, and French so a follow-up session can decide
+whether to relax the loader's `[a-z]+` invariant, and whether to
+vendor any of the three.
+
+Method:
+
+1. `curl` the raw HermitDave file per language (network worked
+   from the environment; this is worth checking again next
+   session because it depends on outbound HTTPS permissions).
+2. `awk '{print $1}' | grep -E '^[a-z]+$'` to keep the words
+   the density-analysis tool's loader accepts.  German retains
+   84 %, Spanish 80 %, French 71 % of the raw top-50k.
+3. Run `tools/wordlist-density-analysis` per language for the
+   distribution profile.
+4. Run `tools/wordlist-density-analysis --filter cl100k
+   --min-tokens 3 --max-tokens 5 --intersect-tokenizers` per
+   language to produce the filtered subset.
+5. Run `tools/tokenizer-benchmark --samples 2000 --compound-n 4
+   --seed 1` on both the raw and filtered wordlists per
+   language for the compound token-cost delta vs the English
+   baseline.
+
+Key findings recorded in the doc:
+
+- Every unfiltered non-English pool COSTS LESS attention per
+  compound than the English baseline (8–21 % less at cl100k,
+  15–23 % at o200k).  The naive "add another language"
+  strategy is a net attention discount, not a gain.
+- Every filtered non-English pool RECOVERS the deficit and
+  usually beats the English baseline unfiltered.  Filtering is
+  the primary knob, not language selection.
+- German `intersect[3, 5]` is the strongest single-language
+  addition candidate: +17.5 % cl100k compound cost vs the
+  English baseline, matching or exceeding English's own
+  `intersect[3, 5]` filter's +13.7 %.  German's compound-word
+  morphology + BPE segmentation is favorable.
+- French is the weakest candidate; also the language that loses
+  the most to the `[a-z]+` filter (71 % retention), so it
+  benefits the most from relaxing the loader to Unicode
+  lowercase before ship.
+
+Downstream open items filed in the doc's "Follow-up work" list:
+loader Unicode relax, diacritics normalisation, per-language
+role-partitioning fit check.
 
 ### Commit 1 — `wordlist-role-partitioning` scaffold + full tool
 
@@ -410,13 +465,34 @@ contested design.
    satisfied at runtime.  Blocked on operator review of the
    per-role file placement (under `crates/babbleon/wordlist/
    roles/` seems natural).
-9. **Multi-language wordlists — analysis.**  Carried over from
-   session-2's priority 4.  The density-analysis tool + the
-   role-partitioning tool now compose end-to-end, so the
-   analysis for HermitDave/FrequencyWords is a scored-and-
-   allocated pipeline once the language files are on disk.
-   Network access to GitHub raw for HermitDave files needs to
-   be verified on session start.
+9. **Multi-language wordlists — analysis DONE (commits 9, 10,
+   `9e78649` and `3e89366`).**  Density + filter + bench
+   numbers for German, Spanish, French are in
+   `docs/v2/multi-language-density-notes.md`.  Followup work
+   filed at the bottom of that doc.
+10. **Relax `[a-z]+` validator to Unicode lowercase in
+    `tools/wordlist-density-analysis/src/load.rs`.**  Would let
+    the density tool score full HermitDave lists (currently 30 %
+    of French entries are dropped by the ASCII rule).  The
+    matching change in `crates/v2-babbleon-core::wordlist` is a
+    separate operator-review-gated diff — see the multi-
+    language notes doc for the tradeoff.  Autonomous-safe for
+    the density-analysis tool because it does not ship into the
+    runtime.
+11. **Per-language role-partitioning fit check.**  Run
+    `tools/wordlist-role-partitioning` with the German /
+    Spanish / French filtered wordlist sizes and confirm the
+    role table's aggregate fits.  Autonomous-safe once the
+    numbers are on disk.  Multiplies into a "which multi-
+    language mix fits both attention and pool budgets?"
+    optimisation.
+12. **Diacritics normalisation shim.**  If the operator prefers
+    to KEEP the `[a-z]+` runtime invariant, a shim that
+    NFKD-decomposes and drops combining marks (`café` →
+    `cafe`) would preserve much of the pool at the cost of
+    losing language-native word shape.  Small standalone tool
+    or a `--normalise-diacritics` flag on the density tool.
+    Autonomous-safe.
 
 ### Process notes for next autonomous session
 
