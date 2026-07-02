@@ -183,6 +183,16 @@ process trust tier (kernel-enforced). This single decision enables:
 - **v2 wordlist filter (post-construction):** reject candidates that score in the
   high-density tail of the BPE token distribution; prefer ambiguous mid-tail
   tokens. Do **not** curate semantically — filter only on tokenization density.
+  Analysis tool + measurements live in
+  `tools/wordlist-density-analysis/` (landed 2026-07-02): the peaked
+  distribution of the baseline puts 73–76 % of entries at 2–3 tokens,
+  so absolute-token cutoffs (e.g. `--min-tokens 3 --max-tokens 5`
+  under both cl100k and o200k with `--intersect-tokenizers`) are the
+  natural knob; the leading candidate keeps 223 009 entries and
+  raises 4-word compound cost by +15.4 % / +16.1 % on cl100k / o200k.
+  See the tool's `RESULTS.md` for the full matrix.  Whether that
+  attention-cost lift moves adversarial-LLM crack rate is the
+  re-test filed as HANDOFF 2026-06-27 priority 1.
 - Uniform format everywhere → attacker can't infer "high-value" vs "long-tail"
   from name shape.
 
