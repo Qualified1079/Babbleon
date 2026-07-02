@@ -903,8 +903,12 @@ fn parse_optional_format_version(
              accepted maximum {MAX_FORMAT_VERSION_WIRE}",
         )));
     }
-    // The cast is exact: `raw <= MAX_FORMAT_VERSION_WIRE` (a `u32`).
-    Ok(raw as u32)
+    // Validated: raw ≤ MAX_FORMAT_VERSION_WIRE, itself a u32, so the
+    // narrow fits by construction.  Use try_from with expect() rather
+    // than `as u32` so the invariant is machine-checked and clippy
+    // has no truncation warning to echo into every downstream crate.
+    Ok(u32::try_from(raw)
+        .expect("format_version bounded by MAX_FORMAT_VERSION_WIRE (u32) above"))
 }
 
 /// Parse a `token-mapping` response's `epoch` and `aliases` fields.

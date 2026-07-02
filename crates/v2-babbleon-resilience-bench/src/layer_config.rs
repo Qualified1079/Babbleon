@@ -42,6 +42,15 @@ use serde::{Deserialize, Serialize};
 /// `Default::default()` returns the "L2+L3 floor" config recommended
 /// by the HANDOFF analysis: both keyword scramble and whitespace
 /// scramble on, seed byte = `0xAB`.
+///
+/// Each `bool` field toggles one production layer independently; a
+/// bitflags-style packing would hide which named layer each bit
+/// represents and force call sites to write
+/// `config.contains(Layer::L5_DECOY)` instead of
+/// `config.layer5_decoy_injection`.  The named booleans are
+/// deliberately load-bearing for readability at the many call sites
+/// under `scramble_pipeline.rs`.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LayerConfig {
     /// Apply layer-2 (Python keyword scramble) before layer 3.

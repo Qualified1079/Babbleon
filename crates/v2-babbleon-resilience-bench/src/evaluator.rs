@@ -82,6 +82,11 @@ pub trait Evaluator {
     /// `sandbox_dir` when `Some`.  The default implementation ignores
     /// `sandbox_dir` and delegates to [`Self::query`]; override it in
     /// subprocess evaluators that can actually enforce the cwd.
+    ///
+    /// # Errors
+    ///
+    /// Delegates to [`Self::query`]; see per-impl docs (e.g.
+    /// [`SubprocessEvaluator`]) for the concrete error set.
     fn query_in_dir(
         &self,
         prompt: &str,

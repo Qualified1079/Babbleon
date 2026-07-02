@@ -107,7 +107,7 @@ pub fn apply_layers(source: &str, config: LayerConfig) -> Result<String> {
 
     if config.layer2_keyword_scramble {
         let id_wordlist = Wordlist::english_baseline();
-        let builder = MappingBuilder::new(&synthetic_secret, &id_wordlist);
+        let builder = MappingBuilder::new(&synthetic_secret, id_wordlist);
         let sorted_tokens = collect_unique_tokens(&tokens);
         // Pick stride + alias_count matching the production daemon's
         // legacy vs variable regimes — see
