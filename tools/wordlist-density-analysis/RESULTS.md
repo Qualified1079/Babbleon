@@ -73,6 +73,46 @@ o200k (via `--intersect-tokenizers`).
 | **intersect** | [4, 4] |  46 523 |            12.6 % |
 | **intersect** | [4, 5] |  66 264 |            17.9 % |
 
+## Cross-reference: wordlist invariants
+
+`crates/babbleon/wordlist/README.md` names three invariants any
+wordlist (including a filter output) must uphold.  For the
+`intersect [3, 5]` candidate (223 009 entries):
+
+- **Invariant 1 (`^[a-z]+$`)** — preserved by construction; the
+  filter output is a subset of the baseline, which already
+  satisfies invariant 1.  The tool's `load` module also enforces
+  the same check so any filtered wordlist would be rejected by the
+  runtime loader if it drifted.
+- **Invariant 2 (≥ 200k safety margin)** — the wordlist README
+  cites 200 000 as the lower safety bound.  Bands crossing that
+  line under either single-tokenizer or intersection mode:
+
+  | Filter                     | Kept    | ≥ 200 k safety? |
+  |----------------------------|--------:|:---------------:|
+  | cl100k [3, 4]             | 225 886 | ✓ |
+  | cl100k [3, 5]             | 244 804 | ✓ |
+  | cl100k [4, 4]             |  69 098 | ✗ |
+  | cl100k [4, 5]             |  88 016 | ✗ |
+  | o200k [3, 4]              | 218 857 | ✓ |
+  | o200k [3, 5]              | 233 476 | ✓ |
+  | o200k [4, 4]              |  61 694 | ✗ |
+  | o200k [4, 5]              |  76 313 | ✗ |
+  | intersect [3, 4]          | 202 139 | ✓ (barely) |
+  | intersect [3, 5]          | 223 009 | ✓ |
+  | intersect [4, 4]          |  46 523 | ✗ |
+  | intersect [4, 5]          |  66 264 | ✗ |
+
+  Every `[3, H]` band clears the safety margin; every `[4, H]`
+  band busts it and would need to be paired with a multilingual
+  wordlist expansion before shipping.
+- **Invariant 3 (tokenization cost roughly uniform)** — this is
+  what the filter deliberately *tunes*.  Post-filter compound-cost
+  numbers replace the pre-filter ones in `tokenizer-benchmark/`
+  RESULTS.md; the compound-to-spaced ratio (~1.07×) remains
+  unchanged, matching the invariant's phrasing about "distribution
+  looking like natural English words".
+
 ## Findings
 
 ### 1. The distribution is peaked, not tail-heavy.
