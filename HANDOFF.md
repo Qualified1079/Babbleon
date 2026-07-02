@@ -63,7 +63,7 @@ were:
 So of the five, three are still blocked on operator gates, one is
 deferred, and one (priority 5) was the natural autonomous pickup.
 
-### Net commits this session: 14 (+ this refresh)
+### Net commits this session: 17 (+ this refresh)
 
 | # | Hash | Subject |
 |---|---|---|
@@ -80,7 +80,11 @@ deferred, and one (priority 5) was the natural autonomous pickup.
 | 11 | `8b1f078` | docs(HANDOFF): commit-list refresh + multi-language notes |
 | 12 | `23db1c8` | docs(v2): multi-language per-language role-fit check (all OVERFLOW alone) |
 | 13 | `be27bca` | feat(wordlist-density-analysis): `--unicode-lowercase` mode for phase-4 exploration |
-| 14 | (this commit) | docs(HANDOFF): final commit-list refresh — fit check + Unicode mode |
+| 14 | `27647a2` | docs(HANDOFF): commit-list refresh — fit check + Unicode mode |
+| 15 | `9600d93` | docs(v2): multi-language filter benches now 3-seed mean + σ recorded |
+| 16 | `688cd3d` | feat(wordlist-role-partitioning): union multiple `--wordlist-path` sources before extract |
+| 17 | `6518d6a` | feat(wordlist-density-analysis): `--normalise-diacritics` shim for multi-lang under `[a-z]+` |
+| 18 | (this commit) | docs(HANDOFF): commit-list refresh — variance + union + normalise |
 
 ### Commit 4 — Per-role disjoint-subset extractor
 
@@ -309,6 +313,44 @@ UNCHANGED; the tool's Unicode mode is analysis-side only.
 Wiring a runtime relax is a separate operator-review-gated diff
 because it changes Babbleon's public compound alphabet.
 
+### Commits 15–17 — variance + union + normalise-diacritics
+
+Cluster of small, high-value follow-ups that each answered an
+autonomous-safe followup from the session-2 refreshed priority
+list.
+
+**15 (`9600d93`) — 3-seed variance for the multi-language
+filter benches.**  Reran `tools/tokenizer-benchmark` at seeds
+1/2/3 for each of German / Spanish / French filtered wordlists.
+All σ ≤ 0.051 tokens; every filter row in the multi-lang notes
+doc is now 3-seed mean + σ.  No design conclusion changes.
+
+**16 (`688cd3d`) — Union multiple `--wordlist-path` sources in
+the extractor.**  The role-partitioning tool's `--wordlist-path`
+knob went from `PathBuf` to `Vec<PathBuf>`; the extractor loads
+each source, dedupes in insertion order, and draws from the
+union.  Manifest records per-source `raw_entries`, `contributed
+(after dedupe)`, and SHA-256.  End-to-end verified with
+English + Spanish + German → 430 408-word union, dedup drops
+21 659 shared items.  Zero new deps; existing `sha2` covered
+the audit-hash step.
+
+**17 (`6518d6a`) — `--normalise-diacritics` shim on
+`tools/wordlist-density-analysis`.**  NFKD + drop combining
+marks + fold 6 Latin ligatures (`œ`→`oe`, `æ`→`ae`, `ß`→`ss`,
+`ø`→`o`, `ð`→`d`, `þ`→`th`).  Output stays under `[a-z]+`, so
+the shim composes with the DEFAULT AsciiLowercase validator —
+the operator keeps the runtime invariant and picks up most of
+the multi-language pool.  New dep `unicode-normalization 0.1`,
+crate-local only.  French comparison recorded in the multi-
+lang notes: pure-ASCII 35 433 → normalise 43 990 (+24 %) →
+Unicode 46 792 (+32 %); mean tokens/word tracks accordingly
+(2.39 → 2.46 → 2.62).  Recommendation baked into the doc:
+`--normalise-diacritics` is the runtime-compatible winner.
+Density-analysis test count 35 → 40 (+5 tests: strip mapping,
+ligature folds, ascii+normalise accept, silent-dedupe, illegal-
+after-normalise reject).
+
 ### Commit 1 — `wordlist-role-partitioning` scaffold + full tool
 
 Closes TODO.md § "Algorithmic derivation of per-role wordlist pool
@@ -523,26 +565,33 @@ contested design.
     12, `23db1c8`).**  All three non-English filtered wordlists
     overflow the provisional role table alone; the
     cross-language union pattern is now the leading design.
-12. **Diacritics normalisation shim.**  If the operator prefers
-    to keep the `[a-z]+` runtime invariant, a shim that
-    NFKD-decomposes and drops combining marks (`café` →
-    `cafe`) would preserve most of the pool at the cost of
-    losing language-native word shape.  Small standalone tool
-    or a `--normalise-diacritics` flag on the density tool.
+12. **Diacritics normalisation shim — DONE (commit 17,
+    `6518d6a`).**  `--normalise-diacritics` on the density-
+    analysis tool composes with the default `[a-z]+`
+    validator.  Follow-up (autonomous-safe): mirror the same
+    normalisation on the role-partitioning extractor so
+    per-role subsets stay ASCII when the operator wires them
+    into the runtime.
+13. **Cross-language union in extractor — DONE (commit 16,
+    `688cd3d`).**  `--wordlist-path` accepts repeats; the
+    extractor unions before drawing.  Follow-up (autonomous-
+    safe): a companion `--source-weight <lang>=<weight>` for
+    weighted union (e.g. English 3×, German 1×) would let the
+    operator bias role selection without maintaining a
+    pre-shuffled file.
+14. **Multi-seed variance for multi-language filters — DONE
+    (commit 15, `9600d93`).**
+15. **Smaller-model superlinear-token-cost hypothesis.**
+    Carried over from TODO.md phase 4 supporting research.
+    `tools/tokenizer-benchmark` currently uses cl100k_base +
+    o200k_base (both large-model tokenizers from OpenAI's
+    GPT-3.5/4 / GPT-4o families).  The hypothesis:
+    smaller-vocab tokenizers (e.g. `r50k_base` from GPT-3,
+    `p50k_base` from Codex) cost MORE per compound because
+    they hit rare-token sequences more often.  Adding those
+    to the benchmark is small — tiktoken-rs already exposes
+    them — and gives quantitative evidence for or against.
     Autonomous-safe.
-13. **Cross-language union extractor extension.**  The
-    extractor currently takes a single wordlist.  Follow-up
-    would let it concatenate + shuffle across `--wordlist
-    <path>` inputs BEFORE the disjoint draw, so the operator
-    can implement the "primary+secondary language" pattern
-    without stitching the files themselves.  Autonomous-safe;
-    trivial to wire on top of the existing extract module.
-14. **Multi-seed compound-cost benchmark for non-English
-    filters.**  The multi-language doc's per-language filter
-    numbers are single-seed (seed=1); the English baseline it
-    compares against is 3-seed mean.  Autonomous-safe to
-    replay with seed=1,2,3 and record σ; would tighten the
-    doc's ±0.05-token caveat.
 
 ### Process notes for next autonomous session
 
