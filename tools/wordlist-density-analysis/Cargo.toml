@@ -1,0 +1,16 @@
+[package]
+name = "wordlist-density-analysis"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Score the Babbleon wordlist by BPE tokenization density and filter it to a mid-tail band."
+
+# Standalone workspace so tiktoken-rs and its embedded BPE tables stay
+# out of the default Babbleon workspace build.  Same pattern as
+# tools/tokenizer-benchmark/.
+[workspace]
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+tiktoken-rs = "0.5"
