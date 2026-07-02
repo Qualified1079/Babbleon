@@ -22,11 +22,250 @@ Branch (push target): `claude/magical-turing-mele8c` (operator
 intends to rename to `v1-maintenance` out-of-band; until that
 lands, push here)
 
-Date: 2026-07-02 (user-asleep session — claude-opus-4-7)
+Date: 2026-07-02 (second user-asleep session — claude-opus-4-7)
 
-Last commit before this handoff section: `d04a0c3` —
-feat(wordlist-density-analysis): --intersect-tokenizers filter
-mode.  See the 2026-07-02 block immediately below for context.
+Last commit before this handoff section: `4970250` —
+docs(TODO,phase0-research-notes): cross-link role-partitioning
+tool.  See the 2026-07-02 session-2 block immediately below for
+context, then the 2026-07-02 (session 1) block below that for the
+density-analysis work that this session builds on.
+
+---
+
+## 2026-07-02 (session 2) — sleeping-operator: wordlist role-partitioning calculator
+
+Author: Claude Opus 4.7 (autonomous overnight continuation).
+Branch: `claude/magical-turing-mele8c`.  2 commits before this
+refresh (this refresh will be #3), all green tests, no new
+default-workspace deps (new standalone-workspace crate under
+`tools/`, same discipline as `tools/wordlist-density-analysis/`).
+
+### Entry state
+
+Branch tip on entry was `c71b1ac` — "docs(PLAN): cross-link v2
+wordlist filter bullet to analysis tool", tip of session 1's work.
+Workspace clean.  Session 1's refreshed next-session priorities
+were:
+
+1. Adversarial-LLM re-test with variable ALIAS_COUNT — operator-
+   gated (NOT autonomous).  Blocked here.
+2. Wire chosen filtered wordlist into `v2-babbleon-core` — blocked
+   on priority 1.  Blocked here.
+3. Corpus-lifecycle seccomp — operator review recommended.
+   Blocked here.
+4. Multi-language wordlists — analysis is autonomous-safe.
+   Deferred to a future session (network + license work needed).
+5. **Wordlist role-partitioning formula.**  Filed as TODO §
+   "Algorithmic derivation of per-role wordlist pool sizes" —
+   autonomous-safe, pure analytical + code work.  This is what
+   this session shipped.
+
+So of the five, three are still blocked on operator gates, one is
+deferred, and one (priority 5) was the natural autonomous pickup.
+
+### Net commits this session: 2 (+ this refresh)
+
+| # | Hash | Subject |
+|---|---|---|
+| 1 | `e167a23` | feat(wordlist-role-partitioning): standalone role-pool calculator (TODO §11) |
+| 2 | `4970250` | docs(TODO,phase0-research-notes): cross-link role-partitioning tool |
+| 3 | (this commit) | docs(HANDOFF): record session 2 — role-partitioning tool |
+
+### Commit 1 — `wordlist-role-partitioning` scaffold + full tool
+
+Closes TODO.md § "Algorithmic derivation of per-role wordlist pool
+sizes" (was `[ ]`, now `[x]` after commit 2).  Executable form of
+HANDOFF 2026-07-02 (session 1) priority 5.
+
+New standalone workspace at `tools/wordlist-role-partitioning/`,
+same standalone-workspace pattern as `wordlist-density-analysis/`
+and `tokenizer-benchmark/` so its `clap` dep does not touch the
+default Babbleon workspace build.
+
+**Compartmentalized modules** (each with its own `#[cfg(test)]`
+block so a break in one is targeted):
+
+- `entropy` — pure-math primitives: `compound_entropy_bits`,
+  `required_pool_size`, `birthday_collision_probability`,
+  `attention_cost_multiplier`.  11 unit tests.
+- `params` — `Role`, `AttackerModel`, `WordlistModel`,
+  `EntropyModel` (Birthday | Uniqueness), plus the six-role
+  `Role::provisional_v2_table()` constructor and the
+  `AttackerModel::developer_laptop_default()` /
+  `paranoid_default()` presets.  9 unit tests.
+- `allocation` — `AllocationTable::compute(roles, attacker,
+  wordlist) -> AllocationTable`, per-role `Allocation` row with
+  target/achieved bits + per-epoch/per-lifetime collision
+  probabilities; overflow-safe `total_pool_size()` +
+  `headroom_words()`.  17 unit tests.
+- `report` — deterministic `render_text` + `render_markdown`.
+  9 unit tests.
+- `main` — CLI orchestration only, exposing wordlist and role
+  presets + all attacker knobs + `--paranoid` flip.
+
+47 unit tests total, all green under `cargo test --release`.
+Zero clippy warnings under default lint set.
+
+### The two-model design decision (recorded)
+
+The scrambler pipeline mixes probabilistic and permutation-driven
+layers:
+
+- Compound_N ≥ 2 identifier / decoy / direction_marker roles —
+  Birthday bound applies (attacker sees compounds close to random
+  observations over a large space).
+- Compound_N = 1 or permutation-driven whitespace / keyword /
+  prompt_injection roles — Uniqueness bound applies (the L2/L3
+  mapping is *bijective by construction*, so accidental
+  within-mapping collisions are impossible; the pool only needs to
+  fit the bijection).
+
+Applying Birthday uniformly (session-1 draft) demanded
+astronomically large pools for compound_N = 1 roles under any
+realistic attacker (2^63+ words for keyword under 1e-6 collision +
+8 760-epoch lifetime).  The two-model split is the smallest change
+that keeps the strict math on the roles that need it and lets
+permutation-driven roles get honest, achievable numbers.  The
+model choice per role is a Role-struct field, editable by future
+callers without touching the allocator.
+
+### Measured numbers (from `tools/wordlist-role-partitioning/RESULTS.md`)
+
+Four preset scenarios, all deterministic (no RNG anywhere in the
+tool).
+
+| Scenario | Wordlist | Attacker | Total pool | Utilization | Verdict |
+|---|---|---|---:|---:|:---:|
+| 1 | cl100k baseline (369 652) | laptop-default (1e-6, 8 760 epochs) |  215 387 |    58.27 % | FITS |
+| 2 | cl100k intersect[3,5] (223 009) | laptop-default | 215 387 | **96.58 %** | FITS |
+| 3 | cl100k baseline | paranoid (1e-12) | 20 470 160 | 5 537.68 % | OVERFLOW |
+| 4 | cl100k intersect[3,5] | paranoid | 20 470 160 | 9 179.07 % | OVERFLOW |
+
+**Design implications baked into `RESULTS.md`'s Recommendations
+section:**
+
+1. Continue with `cl100k baseline` while phase-4 multi-language
+   pools are still upstream (58 % utilization has room for future
+   role additions).
+2. Reserve `intersect[3, 5]` for after phase 4 lands (currently
+   97 % utilization; any phase-4 role addition pushes it into
+   OVERFLOW).
+3. Do NOT ship the paranoid preset without the phase-4 corpus;
+   1e-12 requires ~20 M words, which no English-only wordlist
+   provides.
+
+Sensitivity table in `RESULTS.md` shows the closed-form
+`pool ≈ 2^((2·log2(events) + margin + log2(lifetime)) / N)` moves
+`√2×` per doubled event count, `2^(-1/N)×` per halved lifetime,
+etc.
+
+### Commit 2 — TODO closure + phase0-research-notes cross-link
+
+`TODO.md` §"Algorithmic derivation of per-role wordlist pool sizes"
+was `[ ]` back-of-envelope; flipped to `[x]` closed with a
+paragraph naming the tool, both bounds, the four-scenario finding,
+and the two cross-references
+(`tools/wordlist-role-partitioning/RESULTS.md`,
+`docs/v2/phase0-research-notes.md` §11 2026-07-02 addendum #2).
+
+`docs/v2/phase0-research-notes.md` §11 addendum #2 (new) records
+the tool's existence, the two-model split, the four-scenario
+utilization numbers, and the phase-4 dependency for the paranoid
+posture.  The provisional table numbers earlier in §11 stand —
+the calculator formalises them, it does not replace them.
+
+### Architectural properties landed
+
+- The provisional pool table has moved from "hand-tuned number"
+  status to "output of a deterministic calculator" — the
+  operator can re-derive any row by editing an input in the CLI
+  or the `Role` struct.
+- The role table + attacker model + wordlist model are three
+  disjoint groups of state (per the module split); the allocator
+  is a pure function of the tuple.  Future wiring (per-role
+  wordlist subset generation into `v2-babbleon-core::wordlist`)
+  can consume the same `Allocation` rows without redoing the
+  math.
+- The tool is standalone-workspace so its `clap` procedural-macro
+  build does not touch the default Babbleon workspace.  Same
+  discipline as `wordlist-density-analysis` and
+  `tokenizer-benchmark`.
+
+### Stats
+
+| Metric | Before | After | Δ |
+|---|---|---|---|
+| New tool subpackage | 0 | 1 | +1 (`tools/wordlist-role-partitioning/`) |
+| Tool unit tests | 0 | 47 | +47 |
+| Default-workspace deps | unchanged | unchanged | 0 |
+| Default-workspace tests | 0 impact | 0 impact | 0 |
+| `forbid(unsafe_code)` violations | 0 | 0 | 0 |
+| Clippy warnings on the new crate | n/a | 0 | 0 |
+| Full report wall-clock | n/a | <10 ms | n/a |
+
+### Refreshed next-session priorities
+
+Ordered by leverage.  Items requiring operator review are called
+out so an autonomous-session bot does not silently build on a
+contested design.
+
+1. **Adversarial-LLM re-test — carried over from session 1.**
+   Baseline number for the variable-alias-count regime plus at
+   least one filtered wordlist and now an allocation snapshot
+   from this session's tool.  NOT autonomous — operator must
+   supply API keys and approve the run.  This is the gate that
+   unblocks priority 2 below.
+2. **Wire chosen filtered wordlist into `v2-babbleon-core` — carried
+   over from session 1.**  Blocked on priority 1 producing a delta.
+   Leading recommendation from session 1 is `intersect [3, 5]`; the
+   role-partitioning tool confirms the choice fits under the
+   laptop-default posture with only ~8 k words of headroom, so the
+   operator's follow-up sizing choice (which per-role subset gets
+   which slice of the pool) can now be made numerically instead of
+   by feel.
+3. **Corpus-lifecycle seccomp.**  Carried over; operator review
+   recommended.  See HANDOFF 2026-06-26 (night) for the three
+   design paths.
+4. **Multi-language wordlists — analysis.**  TODO.md phase 4 open.
+   Session 1's density-analysis tool can score
+   HermitDave/FrequencyWords under both tokenizers; this session's
+   role-partitioning tool can then verify per-language pool
+   allocations fit.  Autonomous-safe for the *analysis* (score +
+   allocate); wiring requires operator review of the license and
+   role-partitioning-plan.  Network access to GitHub raw for
+   HermitDave files needs to be verified on session start.
+5. **Per-role wordlist subset extractor.**  Follow-on to this
+   session's calculator: given a `RoleAllocation` row, extract
+   an actual disjoint subset of the wordlist for the role
+   (HKDF-seeded selection so it's operator-reproducible per
+   epoch).  Would live at `tools/wordlist-role-partitioning/` or
+   a new sibling.  Prereq for the priority 2 wiring diff — the
+   calculator gives sizes, the extractor gives words.  Fully
+   autonomous-safe once the design is committed.
+6. **Attention-cost multiplier population.**  The tool currently
+   reports the multiplier as identity (`1.00×`) unless the
+   caller sets `Role.tokens_per_compound` explicitly.  A follow-
+   up could either (a) automatically populate it from
+   `tools/tokenizer-benchmark/RESULTS.md`'s numbers or (b) add a
+   `--tokens-per-compound-role identifier=13.80,...` CLI arg for
+   what-if analysis.  Autonomous-safe.
+
+### Process notes for next autonomous session
+
+- The tool is **standalone-workspace** — same warning as session
+  1's density tool: `cd tools/wordlist-role-partitioning &&
+  cargo test --release` from inside the tool's directory.  Do
+  NOT run `cargo` from repo root or it walks upward and triggers
+  a full Babbleon-workspace build.
+- `cargo test --workspace` is still forbidden per CLAUDE.md §4.
+  This session's tool is a separate workspace so nothing in the
+  outer workspace changed; outer tests remain green.
+- The two-model choice (Birthday vs Uniqueness per role) is
+  editable at `Role::provisional_v2_table()` in
+  `src/params.rs`.  If a future session decides the Uniqueness
+  bound is too loose for whitespace or too tight for
+  prompt_injection, flip the field and re-run — no allocator
+  code changes needed.
 
 ---
 
