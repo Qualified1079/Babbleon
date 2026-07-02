@@ -1,0 +1,15 @@
+[package]
+name = "wordlist-role-partitioning"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Compute per-role wordlist pool sizes and their entropy/attention budgets for the Babbleon v2 obfuscator."
+
+# Standalone workspace so the default Babbleon workspace build stays
+# unaffected — same pattern as tools/wordlist-density-analysis/ and
+# tools/tokenizer-benchmark/.
+[workspace]
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
