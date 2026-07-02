@@ -106,22 +106,23 @@ code items are phases 1-6.
       `TokenMapping` replaces `GetKeywordCompounds` /
       `KeywordCompounds`.  Full round-trip + property tests
       pass.
-- [ ] **Algorithmic derivation of per-role wordlist pool
-      sizes.**  Current provisional sizes (identifier ~370k,
-      decoy ~100k, direction marker ~20k, whitespace ~10k,
-      keyword ~5k per language, prompt-injection ~0.5k) are
-      back-of-envelope numbers from
-      `docs/v2/phase0-research-notes.md` §11.  Real sizing
-      comes from an information-theoretic analysis
-      parameterised by:
-        - target rotation rate (defeats Threat B at sub-second)
-        - desired attacker work-factor per rotation window
-        - cross-role disjointness budget
-        - per-role compound-N (1-4 words per compound)
-      Output: a formula `N_role = f(rotation_hz, work_factor,
-      compound_n)` instead of a hand-tuned number.  Useful for
-      v2.1+ where operators tune rotation rate to deployment;
-      not required for v2.0 ship.
+- [x] **Algorithmic derivation of per-role wordlist pool
+      sizes.**  Closed 2026-07-02 by
+      `tools/wordlist-role-partitioning/`.  The tool applies a
+      Birthday-bound target (`H = 2·log2(events) +
+      collision_margin + log2(lifetime)`) for compound_n ≥ 2
+      draws and a Uniqueness bound (`log2(events × alias_count ×
+      safety)`) for permutation-driven / compound_n = 1 roles,
+      then reports per-role pool sizes plus fit-in-wordlist
+      verdict.  Under the laptop-default posture the six-role
+      table uses 215 387 words (58 % baseline / 97 %
+      intersect[3,5]).  Under the paranoid preset the strict
+      1e-12 target requires ~20 M words — a real signal that
+      phase-4's multi-language pool is a prerequisite for that
+      posture.  See `tools/wordlist-role-partitioning/RESULTS.md`
+      for the sensitivity table and
+      `docs/v2/phase0-research-notes.md` §11 2026-07-02 addendum
+      #2 for the cross-reference.
 
 ### Phase 1 — v2 core crate (code; awaiting phase-0 decisions)
 

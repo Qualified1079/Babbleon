@@ -281,6 +281,24 @@ crack-rate delta is the adversarial-LLM re-test's job (HANDOFF
 2026-06-27 priority 1) — this addendum only settles the entropy
 side of the ledger.
 
+**2026-07-02 addendum #2 — role-partitioning formula executable.**
+The provisional table above has been formalised as an executable
+calculator in `tools/wordlist-role-partitioning/`.  It applies a
+per-role entropy target (Birthday bound for compound_n ≥ 2 draws,
+Uniqueness bound for the compound_n = 1 and permutation-driven
+roles) and reports the derived pool sizes plus fit-in-wordlist
+verdict for a chosen (wordlist, attacker) pair.  Under the tool's
+`developer_laptop_default` posture (2 000 events/epoch, 1e-6
+lifetime collision probability, 8 760-epoch lifetime) the six-role
+allocation is 215 387 words — 58 % utilization of the 369 652-word
+English baseline, 97 % utilization of the 223 009-word
+`intersect[3, 5]` filter output.  The paranoid posture (1e-12
+lifetime target) does not fit any English-only corpus; the
+mismatch is the tool's explicit signal that phase-4's multi-
+language pool is a prerequisite for that posture.  See
+`tools/wordlist-role-partitioning/RESULTS.md` for the four preset
+scenarios and the sensitivity table.
+
 ---
 
 ## Cross-cutting findings
