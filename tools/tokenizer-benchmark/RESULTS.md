@@ -84,3 +84,40 @@ seed, tokenizer, and model-family the claim cites.
   including the intersection filter, which achieved +15.4 % /
   +16.1 % compound-cost inflation on cl100k / o200k for 223 009
   kept entries.
+
+## Smaller-model tokenizer comparison (2026-07-02 session 2)
+
+TODO.md phase 4 supporting research asked: "Do smaller-vocab
+tokenizers (GPT-3-era) cost MORE per Babbleon compound than
+GPT-4-era ones?"  The bench grew a `--include-smaller` flag that
+adds `r50k_base` (GPT-3, 50 k vocab) and `p50k_base` (Codex,
+50 k vocab).  One representative run:
+
+- English baseline wordlist, 2 000 samples, seed=1, `--compound-n 4`.
+
+| Tokenizer     | Vocab  | Compound mean | Spaced mean | Ratio (compound / spaced) |
+|---------------|-------:|--------------:|------------:|--------------------------:|
+| `o200k_base`  | 200 k  |         11.54 |       10.85 |                    1.070× |
+| `cl100k_base` | 100 k  |         11.97 |       11.33 |                    1.062× |
+| `p50k_base`   |  50 k  |         12.35 |       11.67 |                    1.066× |
+| `r50k_base`   |  50 k  |         12.35 |       11.67 |                    1.066× |
+
+**Findings.**
+
+1. **Smaller-vocab tokenizers cost more in absolute tokens.**
+   Compound mean drops from 12.35 (r50k/p50k) → 11.97 (cl100k) →
+   11.54 (o200k) — an ~7 % absolute reduction as vocab quadruples.
+2. **The compound-to-spaced ratio is tokenizer-invariant** (1.062–
+   1.070×).  The hypothesis that smaller tokenizers show a
+   *superlinear* compound tax does NOT hold in this run —
+   spaced-baseline cost scales at the same rate, so the ratio
+   stays flat.
+3. **`p50k_base` == `r50k_base`** on this input.  Expected: p50k
+   is a strict superset of r50k for the "text" register, and the
+   words in the Babbleon wordlist land in that subset.
+4. **Design implication.**  Deploying against LLMs that use
+   r50k/p50k-shaped tokenizers gives ~3 % *more* absolute attention
+   cost per compound than the current cl100k baseline.  So a
+   Babbleon build tuned for GPT-3-era targets does NOT need a
+   different filter strategy from a GPT-4-era build — the ratio
+   is what matters for the obfuscation gain, and it is invariant.

@@ -38,7 +38,7 @@ use rand_chacha::ChaCha20Rng;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
-use tiktoken_rs::{cl100k_base, o200k_base, CoreBPE};
+use tiktoken_rs::{cl100k_base, o200k_base, p50k_base, r50k_base, CoreBPE};
 
 #[derive(Parser)]
 #[command(about = "BPE tokenizer cost benchmark for Babbleon compound names")]
@@ -62,6 +62,14 @@ struct Args {
     /// Optional path to write a CSV of per-sample counts for further analysis.
     #[arg(long)]
     out: Option<PathBuf>,
+
+    /// Include the older GPT-3-era `r50k_base` and Codex-era
+    /// `p50k_base` tokenizers.  Tests the "smaller-vocab tokenizer
+    /// pays more per compound" superlinear hypothesis (TODO.md
+    /// phase 4 supporting research).  Off by default so existing
+    /// runs keep their two-tokenizer output shape.
+    #[arg(long, default_value_t = false)]
+    include_smaller: bool,
 }
 
 struct Stats {
@@ -122,6 +130,14 @@ fn main() {
     println!("Loading tokenizers...");
     let cl100k = cl100k_base().expect("cl100k_base");
     let o200k = o200k_base().expect("o200k_base");
+    let smaller = if args.include_smaller {
+        Some((
+            r50k_base().expect("r50k_base"),
+            p50k_base().expect("p50k_base"),
+        ))
+    } else {
+        None
+    };
 
     println!(
         "Sampling {} compounds × {} words (seed=0x{:x})",
@@ -136,6 +152,13 @@ fn main() {
     let mut spaced_o2: Vec<usize> = Vec::with_capacity(args.samples);
     let mut ratios_cl: Vec<f64> = Vec::with_capacity(args.samples);
     let mut ratios_o2: Vec<f64> = Vec::with_capacity(args.samples);
+    // Vectors for the smaller tokenizers, empty when --include-smaller is off.
+    let mut compound_r50: Vec<usize> = Vec::with_capacity(args.samples);
+    let mut compound_p50: Vec<usize> = Vec::with_capacity(args.samples);
+    let mut spaced_r50: Vec<usize> = Vec::with_capacity(args.samples);
+    let mut spaced_p50: Vec<usize> = Vec::with_capacity(args.samples);
+    let mut ratios_r50: Vec<f64> = Vec::with_capacity(args.samples);
+    let mut ratios_p50: Vec<f64> = Vec::with_capacity(args.samples);
 
     let mut csv = args.out.as_ref().map(|p| {
         let mut f = fs::File::create(p).expect("create csv");
@@ -167,6 +190,19 @@ fn main() {
         ratios_cl.push(c_cl as f64 / s_cl as f64);
         ratios_o2.push(c_o2 as f64 / s_o2 as f64);
 
+        if let Some((r50, p50)) = &smaller {
+            let c_r50 = count_tokens(r50, &compound);
+            let s_r50 = count_tokens(r50, &spaced);
+            let c_p50 = count_tokens(p50, &compound);
+            let s_p50 = count_tokens(p50, &spaced);
+            compound_r50.push(c_r50);
+            spaced_r50.push(s_r50);
+            compound_p50.push(c_p50);
+            spaced_p50.push(s_p50);
+            ratios_r50.push(c_r50 as f64 / s_r50 as f64);
+            ratios_p50.push(c_p50 as f64 / s_p50 as f64);
+        }
+
         if let Some(f) = &mut csv {
             writeln!(
                 f,
@@ -183,6 +219,14 @@ fn main() {
     println!("  o200k_base:");
     print_row("    compound (no separator)", &summarize(&compound_o2));
     print_row("    spaced (control)       ", &summarize(&spaced_o2));
+    if smaller.is_some() {
+        println!("  r50k_base (GPT-3 era):");
+        print_row("    compound (no separator)", &summarize(&compound_r50));
+        print_row("    spaced (control)       ", &summarize(&spaced_r50));
+        println!("  p50k_base (Codex era):");
+        print_row("    compound (no separator)", &summarize(&compound_p50));
+        print_row("    spaced (control)       ", &summarize(&spaced_p50));
+    }
 
     let mean_ratio_cl = ratios_cl.iter().sum::<f64>() / ratios_cl.len() as f64;
     let mean_ratio_o2 = ratios_o2.iter().sum::<f64>() / ratios_o2.len() as f64;
@@ -202,6 +246,24 @@ fn main() {
         "  o200k_base:   mean={:.3}×  median={:.3}×",
         mean_ratio_o2, median_o2
     );
+    if smaller.is_some() {
+        let mean_ratio_r50 = ratios_r50.iter().sum::<f64>() / ratios_r50.len() as f64;
+        let mean_ratio_p50 = ratios_p50.iter().sum::<f64>() / ratios_p50.len() as f64;
+        let mut sorted_r50 = ratios_r50.clone();
+        let mut sorted_p50 = ratios_p50.clone();
+        sorted_r50.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        sorted_p50.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let median_r50 = sorted_r50[sorted_r50.len() / 2];
+        let median_p50 = sorted_p50[sorted_p50.len() / 2];
+        println!(
+            "  r50k_base:    mean={:.3}×  median={:.3}×",
+            mean_ratio_r50, median_r50
+        );
+        println!(
+            "  p50k_base:    mean={:.3}×  median={:.3}×",
+            mean_ratio_p50, median_p50
+        );
+    }
 
     if let Some(p) = &args.out {
         println!("\nPer-sample CSV written to {}", p.display());
