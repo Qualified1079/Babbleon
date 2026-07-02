@@ -264,8 +264,20 @@ composes with the phase-3 five-layer base; they don't replace it.
       the same models that defeated v1 when shown the original.
       Required: cannot stack phase-4 layers on top of phase-3
       until we know phase-3 actually helped.
-- [ ] Smaller-model superlinear-token-cost hypothesis test
-      (existing TODO; reaffirmed here).
+- [x] Smaller-model superlinear-token-cost hypothesis test —
+      **closed 2026-07-02 with a null result** (session 2,
+      commit `b97ba64`).  `tokenizer-benchmark --include-smaller`
+      compares r50k / p50k against cl100k / o200k on the
+      production wordlist.  Smaller-vocab tokenizers do cost
+      MORE absolute tokens per compound (~7 % r50k vs o200k),
+      but the compound-to-spaced RATIO stays ~1.06× regardless
+      of vocab size, so the "compound tax" is not superlinear
+      in vocab shrinkage.  See
+      `tools/tokenizer-benchmark/RESULTS.md` §"Smaller-model
+      tokenizer comparison".  Note: this uses OpenAI's tiktoken
+      BPE family; the TODO §575 open-weights hypothesis
+      (SentencePiece for Llama/Mistral/Phi) is a separate
+      untested question.
 - [ ] TEE direction decision: does v2.0 target
       individual-developer deployment (no TEE) or
       enterprise/cloud (TEE available)?  Different priority for

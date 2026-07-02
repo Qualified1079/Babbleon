@@ -63,7 +63,7 @@ were:
 So of the five, three are still blocked on operator gates, one is
 deferred, and one (priority 5) was the natural autonomous pickup.
 
-### Net commits this session: 17 (+ this refresh)
+### Net commits this session: 19 (+ this refresh)
 
 | # | Hash | Subject |
 |---|---|---|
@@ -84,7 +84,9 @@ deferred, and one (priority 5) was the natural autonomous pickup.
 | 15 | `9600d93` | docs(v2): multi-language filter benches now 3-seed mean + σ recorded |
 | 16 | `688cd3d` | feat(wordlist-role-partitioning): union multiple `--wordlist-path` sources before extract |
 | 17 | `6518d6a` | feat(wordlist-density-analysis): `--normalise-diacritics` shim for multi-lang under `[a-z]+` |
-| 18 | (this commit) | docs(HANDOFF): commit-list refresh — variance + union + normalise |
+| 18 | `161c326` | docs(HANDOFF): commit-list refresh — variance + union + normalise |
+| 19 | `b97ba64` | feat(tokenizer-benchmark): `--include-smaller` for r50k+p50k superlinear test |
+| 20 | (this commit) | docs(HANDOFF,TODO): superlinear hypothesis closed with null result |
 
 ### Commit 4 — Per-role disjoint-subset extractor
 
@@ -351,6 +353,36 @@ Density-analysis test count 35 → 40 (+5 tests: strip mapping,
 ligature folds, ascii+normalise accept, silent-dedupe, illegal-
 after-normalise reject).
 
+### Commit 19 — Smaller-model tokenizer support in the bench
+
+Closes TODO.md phase 4 "Smaller-model superlinear-token-cost
+hypothesis test" with a null result.
+`tools/tokenizer-benchmark` grew a `--include-smaller` flag that
+loads `r50k_base` (GPT-3 era, 50 k vocab) and `p50k_base` (Codex
+era, 50 k vocab) alongside the existing cl100k_base +
+o200k_base.  One representative run on the production wordlist
+(2 000 samples, seed=1, compound_n=4):
+
+| Tokenizer     | Vocab  | Compound mean | Ratio |
+|---------------|-------:|--------------:|------:|
+| `o200k_base`  | 200 k  |         11.54 | 1.070×|
+| `cl100k_base` | 100 k  |         11.97 | 1.062×|
+| `p50k_base`   |  50 k  |         12.35 | 1.066×|
+| `r50k_base`   |  50 k  |         12.35 | 1.066×|
+
+**Finding.**  Smaller-vocab tokenizers do cost more per compound
+in absolute tokens (~7 % r50k vs o200k), but the compound-to-
+spaced RATIO is tokenizer-invariant.  The hypothesis was that
+the *ratio* would grow at smaller vocab (a superlinear compound
+tax); it does not.  The obfuscation gain from concatenation is a
+property of BPE tokenization at large, not a property of a
+particular tokenizer.
+
+`p50k_base` outputs the same numbers as `r50k_base` — expected,
+because Codex's Compound-tokenizer differences are in the
+non-textual token classes, and the Babbleon wordlist lands in
+the shared text register.
+
 ### Commit 1 — `wordlist-role-partitioning` scaffold + full tool
 
 Closes TODO.md § "Algorithmic derivation of per-role wordlist pool
@@ -581,17 +613,23 @@ contested design.
     pre-shuffled file.
 14. **Multi-seed variance for multi-language filters — DONE
     (commit 15, `9600d93`).**
-15. **Smaller-model superlinear-token-cost hypothesis.**
-    Carried over from TODO.md phase 4 supporting research.
-    `tools/tokenizer-benchmark` currently uses cl100k_base +
-    o200k_base (both large-model tokenizers from OpenAI's
-    GPT-3.5/4 / GPT-4o families).  The hypothesis:
-    smaller-vocab tokenizers (e.g. `r50k_base` from GPT-3,
-    `p50k_base` from Codex) cost MORE per compound because
-    they hit rare-token sequences more often.  Adding those
-    to the benchmark is small — tiktoken-rs already exposes
-    them — and gives quantitative evidence for or against.
-    Autonomous-safe.
+15. **Smaller-model superlinear-token-cost hypothesis — CLOSED
+    with null result (commit 19, `b97ba64`).**  Smaller-vocab
+    tokenizers cost more per compound in absolute terms
+    (~7 % r50k vs o200k) but the compound-to-spaced RATIO is
+    tokenizer-invariant.  So the "compound tax" scales with
+    vocab shrinkage in absolute cost, but not superlinearly in
+    the ratio.  TODO.md line 267 flipped to `[x]` with a
+    pointer to `tools/tokenizer-benchmark/RESULTS.md`
+    §"Smaller-model tokenizer comparison".
+16. **Open-weights tokenizer superlinear hypothesis (Llama-3
+    SentencePiece, Mistral, Phi).**  Carried over from TODO
+    §"Structure-level scrambling — research".  Requires
+    SentencePiece bindings — `tiktoken-rs` doesn't cover these.
+    `sentencepiece` crate + one bundled model per family would
+    let the same harness produce the numbers.  Autonomous-safe
+    once the model files are on disk.  Licence check needed
+    per family.
 
 ### Process notes for next autonomous session
 
