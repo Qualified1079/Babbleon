@@ -63,13 +63,78 @@ were:
 So of the five, three are still blocked on operator gates, one is
 deferred, and one (priority 5) was the natural autonomous pickup.
 
-### Net commits this session: 2 (+ this refresh)
+### Net commits this session: 4 (+ this refresh)
 
 | # | Hash | Subject |
 |---|---|---|
 | 1 | `e167a23` | feat(wordlist-role-partitioning): standalone role-pool calculator (TODO §11) |
 | 2 | `4970250` | docs(TODO,phase0-research-notes): cross-link role-partitioning tool |
-| 3 | (this commit) | docs(HANDOFF): record session 2 — role-partitioning tool |
+| 3 | `743397a` | docs(HANDOFF): record 2026-07-02 session 2 — role-partitioning tool |
+| 4 | `77f8599` | feat(wordlist-role-partitioning): per-role disjoint-subset extractor |
+| 5 | (this commit) | docs(HANDOFF): commit-list refresh + extractor notes |
+
+### Commit 4 — Per-role disjoint-subset extractor
+
+Closes session-2 refreshed priority 5 (this session's own new
+priority 5, filed after commit 2).  New module
+`src/extract.rs` inside the same crate (not a sibling — the
+extractor is meaningless without the calculator's `Allocation`
+rows, so keeping them together preserves the single-artifact
+tool boundary).
+
+New surface:
+
+- `extract_disjoint_subsets(&[&str], &AllocationTable, &[u8])
+  -> Result<Extraction, ExtractError>` — the pure function.
+  Deterministic: SHA-256(seed) → 32 bytes → ChaCha20 PRNG →
+  Fisher-Yates over the remaining-index vector, drained per
+  role.
+- `Extraction { subsets: Vec<RoleSubset> }` — the output; each
+  `RoleSubset` carries `role_name` + `words: Vec<String>`.
+- `Extraction::assert_disjoint()` — post-hoc sanity check; the
+  primary path is disjoint by construction because indices are
+  drained per role.
+- `ExtractError::{WordlistTooSmall, RolePoolExceedsWordlist}`
+  — two named failure modes so an OVERFLOW-shaped mistake shows
+  up in the message.
+
+New deps (crate-local only, no default-workspace impact):
+`rand` 0.8, `rand_chacha` 0.3, `sha2` 0.10.
+
+New CLI knobs:
+
+- `--extract-to <dir>` — turn extraction on; refuses to
+  overwrite existing per-role files.
+- `--extract-seed <utf8>` — SHA-256'd into the ChaCha key.
+  Default is a documented dev seed so bench reruns are
+  reproducible; production callers MUST override.
+- `--wordlist-path <path>` — where the raw wordlist lives on
+  disk; defaults to v1's baseline `crates/babbleon/wordlist/
+  words.txt`.
+
+Verified end-to-end against the v1 baseline (369 652 words) at
+laptop-default posture:
+
+```
+--- MANIFEST ---
+wordlist_path:   ../../crates/babbleon/wordlist/words.txt
+wordlist_entries: 369652
+wordlist_sha256: 15f4a8534eac5462dc198d4fb8b50a93aca6149784ba05ad4dd260301f431431
+seed_utf8:        "babbleon-role-partitioning-dev-seed"
+total_extracted_words: 215387
+
+role,size,file
+identifier,13682,identifier.txt
+decoy,129862,decoy.txt
+direction_marker,70500,direction_marker.txt
+whitespace,142,whitespace.txt
+keyword,701,keyword.txt
+prompt_injection,500,prompt_injection.txt
+```
+
+`sort *.txt | uniq -d` returns nothing across all six emitted
+files → disjointness confirmed at runtime.  Test count 47 → 55
+(+8 extract tests).
 
 ### Commit 1 — `wordlist-role-partitioning` scaffold + full tool
 
@@ -234,14 +299,16 @@ contested design.
    allocate); wiring requires operator review of the license and
    role-partitioning-plan.  Network access to GitHub raw for
    HermitDave files needs to be verified on session start.
-5. **Per-role wordlist subset extractor.**  Follow-on to this
-   session's calculator: given a `RoleAllocation` row, extract
-   an actual disjoint subset of the wordlist for the role
-   (HKDF-seeded selection so it's operator-reproducible per
-   epoch).  Would live at `tools/wordlist-role-partitioning/` or
-   a new sibling.  Prereq for the priority 2 wiring diff — the
-   calculator gives sizes, the extractor gives words.  Fully
-   autonomous-safe once the design is committed.
+5. **Per-role wordlist subset extractor — DONE this session
+   (commit 4, `77f8599`).**  The calculator's `Allocation` rows
+   are now consumable by the extractor to produce actual
+   disjoint wordlist files, gated on a caller-supplied seed.
+   The wiring diff (priority 2 above) can consume the extractor
+   output directly: emit the six role files under
+   `crates/babbleon/wordlist/roles/`, wire `include_str!`
+   constants for each in `v2-babbleon-core::wordlist`, and pick
+   per role at the appropriate scrambler layer.  Blocked on
+   priority 1 producing the LLM baseline delta.
 6. **Attention-cost multiplier population.**  The tool currently
    reports the multiplier as identity (`1.00×`) unless the
    caller sets `Role.tokens_per_compound` explicitly.  A follow-
@@ -249,6 +316,14 @@ contested design.
    `tools/tokenizer-benchmark/RESULTS.md`'s numbers or (b) add a
    `--tokens-per-compound-role identifier=13.80,...` CLI arg for
    what-if analysis.  Autonomous-safe.
+7. **Extractor seed derivation from a real per-host secret.**
+   The `--extract-seed` knob currently takes a UTF-8 string.
+   Production use should derive it from the per-host secret via
+   HKDF-Expand with a domain-separator label (e.g.
+   `label="babbleon/v2/role-partitioning/<epoch>"`) so the same
+   host produces the same per-role files at the same epoch.
+   Wiring into `crates/v2-babbleon-core::key_derivation` is a
+   thin follow-up; autonomous-safe once the design commits.
 
 ### Process notes for next autonomous session
 
