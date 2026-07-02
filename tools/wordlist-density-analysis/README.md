@@ -75,6 +75,23 @@ cargo run --release -- \
 Mixing is allowed: `--min-percentile 33 --max-tokens 5` binds low
 to the 33rd percentile and high to a literal cutoff of 5 tokens.
 
+Apply the same band under **both** tokenizers and keep only the
+intersection:
+
+```
+cargo run --release -- \
+  --wordlist ../../crates/babbleon/wordlist/words.txt \
+  --filter cl100k \
+  --min-tokens 3 --max-tokens 5 \
+  --intersect-tokenizers \
+  --filtered-out filtered-both.txt \
+  --manifest-out filtered-both.manifest
+```
+
+Intersection produces a stricter subset (words must be well-
+behaved under both cl100k and o200k) at the cost of shrinking the
+kept-count.  See `RESULTS.md` for the tradeoff table.
+
 ## Module layout
 
 Compartmentalized so a break in one module is targeted:

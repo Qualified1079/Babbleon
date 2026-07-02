@@ -181,6 +181,64 @@ impl FilterSpec {
     }
 }
 
+/// Intersect two `FilterResult`s by word, preserving the input
+/// order of the primary result.  A word survives iff both filter
+/// results kept it.  The returned `FilterResult` mirrors the shape
+/// of a single-filter result: its `spec` is `primary.spec`, its
+/// cutoffs are `primary`'s cutoffs, and `dropped_below` /
+/// `dropped_above` count the words the primary dropped.  The words
+/// the primary kept but the secondary dropped are folded into
+/// `dropped_by_secondary`, returned separately, so the caller can
+/// report the intersection stats without losing information.
+pub struct IntersectedResult {
+    pub primary: FilterResult,
+    pub secondary: FilterResult,
+    pub kept: Vec<WordScore>,
+    pub dropped_by_secondary_only: usize,
+}
+
+impl IntersectedResult {
+    pub fn total_input(&self) -> usize {
+        self.primary.total_input()
+    }
+
+    pub fn kept_fraction(&self) -> f64 {
+        let total = self.total_input();
+        if total == 0 {
+            return 0.0;
+        }
+        self.kept.len() as f64 / total as f64
+    }
+}
+
+/// Compute the intersection of two `FilterResult`s.  Both results
+/// must have been produced from the same input `scores` slice;
+/// this is enforced structurally by requiring the caller to pass
+/// the primary's `kept` order — words present in both `kept` vectors
+/// (compared by `word`) survive.
+///
+/// Runs in O(P + S) time where P and S are the two kept-vector
+/// lengths, using a `HashSet` on the secondary's word column.
+pub fn intersect(primary: FilterResult, secondary: FilterResult) -> IntersectedResult {
+    use std::collections::HashSet;
+    let secondary_words: HashSet<&str> = secondary.kept.iter().map(|s| s.word.as_str()).collect();
+    let mut kept = Vec::with_capacity(primary.kept.len().min(secondary.kept.len()));
+    let mut dropped_by_secondary_only = 0usize;
+    for w in &primary.kept {
+        if secondary_words.contains(w.word.as_str()) {
+            kept.push(w.clone());
+        } else {
+            dropped_by_secondary_only += 1;
+        }
+    }
+    IntersectedResult {
+        primary,
+        secondary,
+        kept,
+        dropped_by_secondary_only,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,6 +252,21 @@ mod tests {
                 bytes: 5,
                 cl100k: c,
                 o200k: c, // dummy alignment; not exercised in these tests
+            })
+            .collect()
+    }
+
+    fn make_scores_split(cl_counts: &[usize], o2_counts: &[usize]) -> Vec<WordScore> {
+        assert_eq!(cl_counts.len(), o2_counts.len());
+        cl_counts
+            .iter()
+            .zip(o2_counts.iter())
+            .enumerate()
+            .map(|(i, (&c, &o))| WordScore {
+                word: format!("w{i}"),
+                bytes: 5,
+                cl100k: c,
+                o200k: o,
             })
             .collect()
     }
@@ -331,6 +404,54 @@ mod tests {
             max: Bound::Percentile(110.0),
         };
         assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn intersect_keeps_only_words_passing_both_filters() {
+        // Word w0: cl100k=3, o200k=3 → passes cl [3,4] AND o [3,4]
+        // Word w1: cl100k=3, o200k=5 → passes cl [3,4] but NOT o [3,4]
+        // Word w2: cl100k=5, o200k=3 → fails cl [3,4] → excluded from primary
+        // Word w3: cl100k=4, o200k=4 → passes both
+        let scores = make_scores_split(&[3, 3, 5, 4], &[3, 5, 3, 4]);
+        let cl_spec = FilterSpec {
+            tokenizer: Tokenizer::Cl100k,
+            min: Bound::Tokens(3),
+            max: Bound::Tokens(4),
+        };
+        let o2_spec = FilterSpec {
+            tokenizer: Tokenizer::O200k,
+            min: Bound::Tokens(3),
+            max: Bound::Tokens(4),
+        };
+        let cl_res = cl_spec.apply(&scores).unwrap();
+        let o2_res = o2_spec.apply(&scores).unwrap();
+        assert_eq!(cl_res.kept.len(), 3); // w0, w1, w3
+        assert_eq!(o2_res.kept.len(), 3); // w0, w2, w3
+        let inter = intersect(cl_res, o2_res);
+        let kept_names: Vec<String> = inter.kept.iter().map(|s| s.word.clone()).collect();
+        assert_eq!(kept_names, vec!["w0", "w3"]);
+        assert_eq!(inter.dropped_by_secondary_only, 1); // w1
+        assert_eq!(inter.total_input(), 4);
+    }
+
+    #[test]
+    fn intersect_matches_primary_when_secondary_keeps_all() {
+        let scores = make_scores(&(1..=5).collect::<Vec<_>>());
+        let a = FilterSpec {
+            tokenizer: Tokenizer::Cl100k,
+            min: Bound::Tokens(2),
+            max: Bound::Tokens(4),
+        };
+        let b = FilterSpec {
+            tokenizer: Tokenizer::O200k,
+            min: Bound::Tokens(0),
+            max: Bound::Tokens(100),
+        };
+        let a_res = a.apply(&scores).unwrap();
+        let b_res = b.apply(&scores).unwrap();
+        let inter = intersect(a_res, b_res);
+        assert_eq!(inter.kept.len(), 3);
+        assert_eq!(inter.dropped_by_secondary_only, 0);
     }
 
     #[test]

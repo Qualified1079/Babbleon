@@ -15,7 +15,7 @@ use std::fs;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
-use crate::filter::FilterResult;
+use crate::filter::{FilterResult, IntersectedResult};
 use crate::score::WordScore;
 use crate::stats::Distribution;
 
@@ -98,10 +98,21 @@ pub fn write_scores_csv(scores: &[WordScore], path: &Path) -> Result<()> {
 /// Write the surviving wordlist, one word per line.  Preserves the
 /// order of `result.kept`, which mirrors the input scoring order.
 pub fn write_filtered_wordlist(result: &FilterResult, path: &Path) -> Result<()> {
+    write_wordlist_lines(&result.kept, path)
+}
+
+/// Write the intersection of two `FilterResult`s (see
+/// `filter::intersect`), one word per line, in the primary's input
+/// order.
+pub fn write_intersected_wordlist(result: &IntersectedResult, path: &Path) -> Result<()> {
+    write_wordlist_lines(&result.kept, path)
+}
+
+fn write_wordlist_lines(scores: &[WordScore], path: &Path) -> Result<()> {
     let f = fs::File::create(path)
         .with_context(|| format!("create filtered wordlist {}", path.display()))?;
     let mut w = BufWriter::new(f);
-    for score in &result.kept {
+    for score in scores {
         writeln!(w, "{}", score.word)?;
     }
     w.flush()?;
@@ -117,21 +128,62 @@ pub fn write_filter_manifest(result: &FilterResult, path: &Path) -> Result<()> {
         .with_context(|| format!("create manifest {}", path.display()))?;
     let mut w = BufWriter::new(f);
     writeln!(w, "# wordlist-density-analysis filter manifest")?;
-    writeln!(w, "tokenizer        {}", result.spec.tokenizer)?;
-    writeln!(w, "min_bound        {}", result.spec.min)?;
-    writeln!(w, "max_bound        {}", result.spec.max)?;
-    writeln!(w, "cutoff_low       {}", result.cutoff_low)?;
-    writeln!(w, "cutoff_high      {}", result.cutoff_high)?;
-    writeln!(w, "input_total      {}", result.total_input())?;
-    writeln!(w, "kept             {}", result.kept.len())?;
-    writeln!(w, "dropped_below    {}", result.dropped_below)?;
-    writeln!(w, "dropped_above    {}", result.dropped_above)?;
+    write_filter_manifest_fields(&mut w, "", result)?;
+    w.flush()?;
+    Ok(())
+}
+
+pub fn write_intersection_manifest(
+    result: &IntersectedResult,
+    path: &Path,
+) -> Result<()> {
+    let f = fs::File::create(path)
+        .with_context(|| format!("create manifest {}", path.display()))?;
+    let mut w = BufWriter::new(f);
     writeln!(
         w,
-        "kept_fraction    {:.6}",
+        "# wordlist-density-analysis intersection manifest"
+    )?;
+    writeln!(w, "# primary filter (drop-below/above counts and cutoffs refer to this):")?;
+    write_filter_manifest_fields(&mut w, "primary_", &result.primary)?;
+    writeln!(w, "# secondary filter:")?;
+    write_filter_manifest_fields(&mut w, "secondary_", &result.secondary)?;
+    writeln!(w)?;
+    writeln!(w, "input_total                {}", result.total_input())?;
+    writeln!(w, "kept_intersection          {}", result.kept.len())?;
+    writeln!(
+        w,
+        "dropped_by_secondary_only  {}",
+        result.dropped_by_secondary_only
+    )?;
+    writeln!(
+        w,
+        "kept_fraction              {:.6}",
         result.kept_fraction()
     )?;
     w.flush()?;
+    Ok(())
+}
+
+fn write_filter_manifest_fields<W: Write>(
+    w: &mut W,
+    prefix: &str,
+    result: &FilterResult,
+) -> Result<()> {
+    writeln!(w, "{prefix}tokenizer        {}", result.spec.tokenizer)?;
+    writeln!(w, "{prefix}min_bound        {}", result.spec.min)?;
+    writeln!(w, "{prefix}max_bound        {}", result.spec.max)?;
+    writeln!(w, "{prefix}cutoff_low       {}", result.cutoff_low)?;
+    writeln!(w, "{prefix}cutoff_high      {}", result.cutoff_high)?;
+    writeln!(w, "{prefix}input_total      {}", result.total_input())?;
+    writeln!(w, "{prefix}kept             {}", result.kept.len())?;
+    writeln!(w, "{prefix}dropped_below    {}", result.dropped_below)?;
+    writeln!(w, "{prefix}dropped_above    {}", result.dropped_above)?;
+    writeln!(
+        w,
+        "{prefix}kept_fraction    {:.6}",
+        result.kept_fraction()
+    )?;
     Ok(())
 }
 

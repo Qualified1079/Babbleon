@@ -56,7 +56,7 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
 
-use crate::filter::{Bound, FilterSpec, Tokenizer};
+use crate::filter::{intersect, Bound, FilterSpec, Tokenizer};
 use crate::load::Wordlist;
 use crate::score::{score_all, Tokenizers};
 
@@ -123,6 +123,14 @@ struct Args {
     #[arg(long)]
     manifest_out: Option<PathBuf>,
 
+    /// When set, apply the same L/H bounds under both cl100k and
+    /// o200k and keep only the intersection.  The `--filter`
+    /// choice becomes the "primary" tokenizer for reporting
+    /// (drop-below / drop-above counts refer to it); the other
+    /// tokenizer acts as the secondary gate.
+    #[arg(long, default_value_t = false)]
+    intersect_tokenizers: bool,
+
     /// Skip the summary print (useful when driving from a script).
     #[arg(long, default_value_t = false)]
     quiet: bool,
@@ -168,47 +176,108 @@ fn main() -> Result<()> {
             (None, None) => Bound::Percentile(70.0),
             (Some(_), Some(_)) => unreachable!("clap enforces conflicts_with"),
         };
-        let spec = FilterSpec {
-            tokenizer: tok.into(),
+        let primary_tok: Tokenizer = tok.into();
+        let primary_spec = FilterSpec {
+            tokenizer: primary_tok,
             min,
             max,
         };
-        if let Err(msg) = spec.validate() {
+        if let Err(msg) = primary_spec.validate() {
             bail!("invalid filter spec: {msg}");
         }
-        let result = spec
+        let primary_result = primary_spec
             .apply(&scores)
             .map_err(|msg| anyhow::anyhow!("filter apply failed: {msg}"))?;
-        if !args.quiet {
-            println!(
-                "\nFilter: tokenizer={} bounds=[{}, {}] resolved-cutoff=[{}, {}]",
-                spec.tokenizer,
-                spec.min,
-                spec.max,
-                result.cutoff_low,
-                result.cutoff_high
-            );
-            println!(
-                "  kept {} / {} ({:.2}%) — dropped {} below, {} above",
-                result.kept.len(),
-                result.total_input(),
-                result.kept_fraction() * 100.0,
-                result.dropped_below,
-                result.dropped_above
-            );
-        }
-        if let Some(path) = &args.filtered_out {
-            report::write_filtered_wordlist(&result, path)
-                .with_context(|| format!("write filtered wordlist to {}", path.display()))?;
+
+        if args.intersect_tokenizers {
+            let secondary_tok = match primary_tok {
+                Tokenizer::Cl100k => Tokenizer::O200k,
+                Tokenizer::O200k => Tokenizer::Cl100k,
+            };
+            let secondary_spec = FilterSpec {
+                tokenizer: secondary_tok,
+                min,
+                max,
+            };
+            let secondary_result = secondary_spec
+                .apply(&scores)
+                .map_err(|msg| anyhow::anyhow!("secondary filter failed: {msg}"))?;
+            let inter = intersect(primary_result, secondary_result);
             if !args.quiet {
-                println!("Wrote filtered wordlist to {}", path.display());
+                println!(
+                    "\nIntersection filter:  primary={} bounds=[{}, {}] cutoff=[{}, {}]",
+                    inter.primary.spec.tokenizer,
+                    inter.primary.spec.min,
+                    inter.primary.spec.max,
+                    inter.primary.cutoff_low,
+                    inter.primary.cutoff_high,
+                );
+                println!(
+                    "                     secondary={} cutoff=[{}, {}]",
+                    inter.secondary.spec.tokenizer,
+                    inter.secondary.cutoff_low,
+                    inter.secondary.cutoff_high,
+                );
+                println!(
+                    "  primary kept        {} / {} ({:.2}%)",
+                    inter.primary.kept.len(),
+                    inter.total_input(),
+                    inter.primary.kept_fraction() * 100.0
+                );
+                println!(
+                    "  intersection kept   {} / {} ({:.2}%) — {} passed primary only",
+                    inter.kept.len(),
+                    inter.total_input(),
+                    inter.kept_fraction() * 100.0,
+                    inter.dropped_by_secondary_only
+                );
             }
-        }
-        if let Some(path) = &args.manifest_out {
-            report::write_filter_manifest(&result, path)
-                .with_context(|| format!("write manifest to {}", path.display()))?;
+            if let Some(path) = &args.filtered_out {
+                report::write_intersected_wordlist(&inter, path)
+                    .with_context(|| format!("write filtered wordlist to {}", path.display()))?;
+                if !args.quiet {
+                    println!("Wrote intersected wordlist to {}", path.display());
+                }
+            }
+            if let Some(path) = &args.manifest_out {
+                report::write_intersection_manifest(&inter, path)
+                    .with_context(|| format!("write manifest to {}", path.display()))?;
+                if !args.quiet {
+                    println!("Wrote intersection manifest to {}", path.display());
+                }
+            }
+        } else {
             if !args.quiet {
-                println!("Wrote filter manifest to {}", path.display());
+                println!(
+                    "\nFilter: tokenizer={} bounds=[{}, {}] resolved-cutoff=[{}, {}]",
+                    primary_result.spec.tokenizer,
+                    primary_result.spec.min,
+                    primary_result.spec.max,
+                    primary_result.cutoff_low,
+                    primary_result.cutoff_high
+                );
+                println!(
+                    "  kept {} / {} ({:.2}%) — dropped {} below, {} above",
+                    primary_result.kept.len(),
+                    primary_result.total_input(),
+                    primary_result.kept_fraction() * 100.0,
+                    primary_result.dropped_below,
+                    primary_result.dropped_above
+                );
+            }
+            if let Some(path) = &args.filtered_out {
+                report::write_filtered_wordlist(&primary_result, path)
+                    .with_context(|| format!("write filtered wordlist to {}", path.display()))?;
+                if !args.quiet {
+                    println!("Wrote filtered wordlist to {}", path.display());
+                }
+            }
+            if let Some(path) = &args.manifest_out {
+                report::write_filter_manifest(&primary_result, path)
+                    .with_context(|| format!("write manifest to {}", path.display()))?;
+                if !args.quiet {
+                    println!("Wrote filter manifest to {}", path.display());
+                }
             }
         }
     } else if args.filtered_out.is_some()
@@ -217,6 +286,7 @@ fn main() -> Result<()> {
         || args.max_percentile.is_some()
         || args.min_tokens.is_some()
         || args.max_tokens.is_some()
+        || args.intersect_tokenizers
     {
         bail!("filter parameters require --filter <tokenizer>");
     }

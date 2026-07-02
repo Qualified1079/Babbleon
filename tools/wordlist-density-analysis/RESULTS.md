@@ -54,18 +54,24 @@ tokenizers).  Cheap enough to re-run whenever the wordlist changes.
 ## Filter matrix — absolute token cutoffs
 
 Every value below is the number of entries that survive a filter
-with `--min-tokens L --max-tokens H`.
+with `--min-tokens L --max-tokens H`.  "Intersect" rows require
+the word to pass the same `[L, H]` band under **both** cl100k and
+o200k (via `--intersect-tokenizers`).
 
-| tokenizer | [L, H] | kept    | kept % of 369 652 |
-|-----------|--------|--------:|------------------:|
-| cl100k    | [3, 4] | 225 886 |            61.1 % |
-| cl100k    | [3, 5] | 244 804 |            66.2 % |
-| cl100k    | [4, 4] |  69 098 |            18.7 % |
-| cl100k    | [4, 5] |  88 016 |            23.8 % |
-| o200k     | [3, 4] | 218 857 |            59.2 % |
-| o200k     | [3, 5] | 233 476 |            63.2 % |
-| o200k     | [4, 4] |  61 694 |            16.7 % |
-| o200k     | [4, 5] |  76 313 |            20.6 % |
+| tokenizer   | [L, H] | kept    | kept % of 369 652 |
+|-------------|--------|--------:|------------------:|
+| cl100k      | [3, 4] | 225 886 |            61.1 % |
+| cl100k      | [3, 5] | 244 804 |            66.2 % |
+| cl100k      | [4, 4] |  69 098 |            18.7 % |
+| cl100k      | [4, 5] |  88 016 |            23.8 % |
+| o200k       | [3, 4] | 218 857 |            59.2 % |
+| o200k       | [3, 5] | 233 476 |            63.2 % |
+| o200k       | [4, 4] |  61 694 |            16.7 % |
+| o200k       | [4, 5] |  76 313 |            20.6 % |
+| **intersect** | [3, 4] | 202 139 |            54.7 % |
+| **intersect** | [3, 5] | 223 009 |            60.3 % |
+| **intersect** | [4, 4] |  46 523 |            12.6 % |
+| **intersect** | [4, 5] |  66 264 |            17.9 % |
 
 ## Findings
 
@@ -132,13 +138,25 @@ Mean tokens per 4-word compound, averaged over three seeds
 (`--seed {1,2,3}`, 2000 samples each), against the same seeds' runs
 on the baseline wordlist:
 
-|                       Wordlist |  cl100k mean |    Δ cl100k |   o200k mean |    Δ o200k |
-|-------------------------------:|-------------:|------------:|-------------:|-----------:|
-|             Baseline (369 652) |        11.96 |           — |        11.53 |          — |
-|       cl100k [3, 4] (225 886) |        13.11 |     +9.6 %  |        12.55 |    +8.8 %  |
-|       cl100k [3, 5] (244 804) |        13.60 |    +13.7 %  |        12.97 |   +12.5 %  |
-|        o200k [3, 4] (218 857) |        13.36 |    +11.7 %  |        13.01 |   +12.8 %  |
-|        o200k [3, 5] (233 476) |        13.74 |    +14.9 %  |        13.38 |   +16.0 %  |
+|                        Wordlist |  cl100k mean |    Δ cl100k |   o200k mean |    Δ o200k |
+|--------------------------------:|-------------:|------------:|-------------:|-----------:|
+|              Baseline (369 652) |        11.96 |           — |        11.53 |          — |
+|        cl100k [3, 4] (225 886) |        13.11 |     +9.6 %  |        12.55 |    +8.8 %  |
+|        cl100k [3, 5] (244 804) |        13.60 |    +13.7 %  |        12.97 |   +12.5 %  |
+|         o200k [3, 4] (218 857) |        13.36 |    +11.7 %  |        13.01 |   +12.8 %  |
+|         o200k [3, 5] (233 476) |        13.74 |    +14.9 %  |        13.38 |   +16.0 %  |
+|    **intersect [3, 5]** (223 009) |    **13.80** | **+15.4 %** |    **13.38** | **+16.1 %** |
+
+The intersection row is the clear winner if the operator wants
+one filter that raises compound cost under **both** tokenizers.
+`cl100k [3, 5]` beats `intersect [3, 5]` on kept-count by 21 795
+entries but underperforms it on o200k compound cost (+12.5 %
+vs +16.1 %).  `o200k [3, 5]` matches the intersection on o200k
+compound cost but underperforms on cl100k (+14.9 % vs +15.4 %).
+The intersection filter costs 21 795 kept entries (~8.9 %
+relative shrinkage vs `cl100k [3, 5]`) and buys +2.7 pp of o200k
+compound cost improvement plus +1.7 pp of cl100k compound cost
+improvement.
 
 Ratios of compound to spaced-baseline token count are unchanged
 (~1.07× under both tokenizers across every filter and the baseline).
