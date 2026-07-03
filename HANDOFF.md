@@ -24,11 +24,11 @@ lands, push here)
 
 Date: 2026-07-03 (third user-asleep session — claude-sonnet-5)
 
-Last commit before this handoff section: `98f08d7` —
-feat(v2-vault): port `AttemptTracker` rate-limiting to v2 unlock
-path.  See the 2026-07-03 (session 3) block immediately below for
-context, then the 2026-07-02 (session 2) block below that for the
-role-partitioning tool this session builds on.
+Last commit before this handoff section: `7635649` —
+docs(HANDOFF): restructure session-3 narrative, record commit 9
+(A07 closure).  See the 2026-07-03 (session 3) block immediately
+below for context, then the 2026-07-02 (session 2) block below
+that for the role-partitioning tool this session builds on.
 
 ---
 
@@ -56,7 +56,7 @@ lifecycle seccomp, runtime wiring review, SentencePiece bundling —
 all still blocked, none touched this session). This session picked
 up that backlog in priority order.
 
-### Net commits this session: 11 (+ this refresh)
+### Net commits this session: 14 (+ this refresh)
 
 | # | Hash | Subject |
 |---|---|---|
@@ -71,6 +71,9 @@ up that backlog in priority order.
 | 9 | `75b3a2b` | docs(v2): OWASP Top 10 (2021) documentary audit against crates/v2-* |
 | 10 | `5794f10` | docs(HANDOFF): record commits 7-8 (TODO reconciliation + OWASP audit) |
 | 11 | `98f08d7` | feat(v2-vault): port AttemptTracker rate-limiting to v2 unlock path |
+| 12 | `7635649` | docs(HANDOFF): restructure session-3 narrative, record commit 9 (A07 closure) |
+| 13 | `8915f13` | feat(v2-daemon): SO_PEERCRED peer-uid auth on the daemon socket; correct A05 |
+| 14 | (this commit) | docs(HANDOFF): record commit 13 (A01 closure + A05 correction) |
 | 12 | (this commit) | docs(HANDOFF): restructure session-3 narrative, record commit 9 (A07 closure) |
 
 ### Commit 1 — `derive_domain_seed` in `v2-babbleon-core::key_derivation`
@@ -463,33 +466,102 @@ zero clippy warnings on both crates (`--all-targets`); wide sanity
 build `cargo build -p v2-babbleon-core -p v2-babbleon -p
 v2-babbleon-daemon -p v2-babbleon-vault` clean.
 
+### Commit 10 — `SO_PEERCRED` peer-uid auth (closes A01) + A05 correction
+
+New `crates/v2-babbleon-daemon/src/socket.rs::check_peer_uid(stream,
+expected_uid)`: reads the connecting peer's kernel-populated
+credentials via `getsockopt(SO_PEERCRED)` (through `nix::sys::socket`,
+so `#![forbid(unsafe_code)]` stays intact) and refuses the connection
+if the peer's uid doesn't match the daemon's own uid — checked
+immediately after `accept()`, before any request byte is read. File
+mode `0o660` alone only restricts by group membership; this narrows
+trust to "the exact uid this process runs as." `serve_blocking` takes
+`daemon_uid: u32` as a new parameter rather than calling `getuid()`
+internally — deliberate, see below. New `ErrorKind::Unauthorized`
+wire variant so a rejected peer gets an explicit response instead of
+a dropped connection; the detailed uid mismatch goes to the daemon's
+own logs via `accept_error_handler`, never onto the wire.
+
+**How this surfaced the A05 correction.** Implementing the fix and
+running the existing `tests/end_to_end_binary.rs` suite immediately
+SIGSYS-killed the daemon subprocess — `dmesg` showed the kernel
+killing it for calling `getuid` (syscall 102 on x86_64), a syscall
+not on `seccomp_profile.rs::ALLOWED_SYSCALLS`. That is only possible
+if a REAL, actively-enforcing seccomp filter is running — which
+directly contradicts `docs/v2/owasp-top10-audit.md`'s original A05
+finding ("daemon runs unfiltered today"), written from reading that
+doc's own stale "DRAFT... before it lands in code" banner rather
+than from testing the binary. Corrected in the same commit:
+
+- `docs/v2/daemon-seccomp-envelope.md`'s banner now states plainly
+  that the filter is installed BY DEFAULT (`cli.rs`'s
+  `disable_seccomp` defaults to `false`, pinned by a unit test), and
+  that the two integration tests its own "Test strategy when the
+  profile pins" section describes in future tense
+  (`tests/seccomp_envelope.rs`, `tests/seccomp_denies_forbidden.rs`)
+  already exist and pass.
+- The same doc's syscall enumeration was ALSO missing four syscalls
+  the code already carried (`rename`/`renameat`/`renameat2`/`rmdir`,
+  for the atomic wrapper-dir swap) — a separate, pre-existing drift
+  unrelated to this session, folded into the same correction pass
+  since I was already reconciling the doc against the code.
+- `docs/v2/owasp-top10-audit.md`'s A05 entry, summary table, and
+  `TODO.md`'s A05 item were all corrected to say "audit's original
+  finding was wrong, not a code gap" rather than silently deleting
+  the mistake — the audit's own error is worth a future reader
+  seeing, not hiding.
+
+**Resolving the fix without widening the allowlist more than
+necessary.** `getsockopt` genuinely has to join
+`ALLOWED_SYSCALLS` (40 → 41) — it fires per-connection, unavoidable
+post-filter. `getuid` does NOT: the daemon's own uid never changes
+for the life of the process, so `main.rs` now calls
+`nix::unistd::getuid().as_raw()` once, BEFORE
+`seccomp_profile::apply()` installs, and threads the value into
+`serve_blocking` as a parameter. `getuid` stays off the allowlist
+permanently; a new test
+(`seccomp_profile::tests::allowlist_excludes_getuid`) pins that
+choice so a future refactor that moves the call back inside the
+serve loop fails a fast unit test instead of a slow SIGSYS discovery.
+
+New tests: 2 in `socket.rs` (`check_peer_uid` accept/reject via
+`UnixStream::pair()`), 1 wire-shape test, 2 in `seccomp_profile.rs`
+(`getsockopt` present, `getuid` absent), `ErrorKind::Unauthorized`
+added to `daemon-protocol`'s exhaustive wire-roundtrip test and to
+`proptest_protocol.rs`'s `arb_error_kind()` generator.
+
+Verified: `cargo test -p v2-babbleon-daemon` = 134 lib + all 4
+integration suites pass (including the two seccomp suites and the
+previously-broken `end_to_end_binary.rs`, now fixed);
+`cargo test -p v2-babbleon-daemon-protocol` = 76 lib pass, plus the
+5 fast `proptest_protocol` cases (the 6th, `request_parse_rejects_
+oversize_without_panic`, generates ~4 GB of random bytes across 1024
+cases — pre-existing, unrelated to this diff, confirmed by running it
+filtered out and separately confirming the change it doesn't touch);
+zero clippy warnings on both crates (`--all-targets`).
+
 ### Where session 3 stopped
 
 Every autonomous-safe follow-up session 2 explicitly filed has
-landed (commits 1-6), this session's own research fallback (`TODO.md`
+landed (commits 1-6); this session's own research fallback (`TODO.md`
 reconciliation + the OWASP audit it surfaced) is closed (commits
-7-8), and the first of the four gaps that audit found is closed too
-(commit 9, A07). Three well-scoped items remain on the board:
+7-8); and of the four items that audit found, two are closed (commit
+9, A07; commit 10, A01), one turned out to be a false positive in the
+audit itself rather than a real gap (also commit 10, A05 — corrected,
+not built), and one remains:
 
-1. **Daemon socket `SO_PEERCRED` peer-uid authentication (A01).**
-   `crates/v2-babbleon-daemon/src/socket.rs`.  Buildable now — no
-   external dependency, no operator decision needed beyond "confirm
-   this is the intended trust boundary."  Natural next pickup: it's
-   the highest-leverage of the three, and tightens the value of the
-   A07 rate-limiting just landed (a rate-limited-but-unauthenticated
-   socket is a real improvement over no rate limit, but peer auth is
-   what actually keeps an unrelated local process from reaching the
-   unlock path at all).
-2. **v2 binaries into the signed release pipeline (A08).**
+1. **v2 binaries into the signed release pipeline (A08).**
    `.github/workflows/release.yml`.  Needs one small decision (which
    v2 binaries ship — `babbleon-daemon`, `v2-babbleon`,
    `babbleon-launch-untrusted`, others?) that a session can make and
-   document rather than defer; not a hard operator gate.
-3. **Daemon seccomp profile — needs operator sign-off (A05).**
-   `docs/v2/daemon-seccomp-envelope.md` is DRAFT specifically because
-   it wants an operator to confirm the strace-derived allowlist
-   before it's wired in live — this ONE is genuinely operator-gated,
-   unlike the other two.
+   document rather than defer; not a hard operator gate. This is the
+   only item left from the OWASP audit's original four, and the only
+   one of the four that still needs anything built.
+
+The narrower question A05's correction left open — has an operator
+reviewed and signed off on the *specific* 41-syscall envelope as
+final — is a policy review, not code to write; not queued as an
+autonomous-safe item for that reason.
 
 Also still blocked on operator input, unchanged since session 2:
 
