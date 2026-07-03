@@ -111,6 +111,13 @@ fn run_daemon(
     let listener = bind_socket(socket_path)
         .map_err(|e| format!("bind {}: {e}", socket_path.display()))?;
 
+    // Computed BEFORE the seccomp filter installs below: `getuid` is
+    // deliberately not on the post-filter allowlist (see
+    // docs/v2/daemon-seccomp-envelope.md), so `serve_blocking` takes
+    // this as a parameter instead of calling `getuid()` itself in
+    // steady state.
+    let daemon_uid = nix::unistd::getuid().as_raw();
+
     // Surface the deprecated --enable-seccomp flag so a script
     // passing it learns to drop it before v2.1 retires it.
     if args.legacy_enable_seccomp {
@@ -138,7 +145,7 @@ fn run_daemon(
             format!("seccomp profile install: {e}")
         })?;
         tracing::info!(
-            "babbleon-daemon: seccomp allowlist installed (40 syscalls; \
+            "babbleon-daemon: seccomp allowlist installed (41 syscalls; \
              envelope in docs/v2/daemon-seccomp-envelope.md)",
         );
     }
@@ -148,7 +155,7 @@ fn run_daemon(
         "babbleon-daemon serving (phase 2 stub)",
     );
 
-    serve_blocking(&mut state, &listener, |e| {
+    serve_blocking(&mut state, &listener, daemon_uid, |e| {
         tracing::warn!(error = %e, "per-connection error");
     })
     .map_err(|e| format!("serve loop: {e}"))?;

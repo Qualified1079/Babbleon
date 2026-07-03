@@ -1,17 +1,39 @@
-# Daemon syscall envelope — DRAFT for operator confirmation
+# Daemon syscall envelope — ACTIVE (installed by default)
 
-**Status: draft.**  Filed 2026-06-20.  This is the enumeration of
-every syscall the daemon makes today, broken down by lifecycle
-stage, so the operator can sign off on the seccomp allowlist
-before it lands in code.
+**Status: shipped, not merely proposed.**  Filed as a draft
+2026-06-20; corrected 2026-07-03 after direct testing showed the
+banner below had gone stale.  `crates/v2-babbleon-daemon/src/
+seccomp_profile.rs::apply()` installs this exact allowlist by
+default at daemon startup (`--no-seccomp` opts out for local
+development only; see that module's "Default: ON" section and
+`cli.rs`'s `disable_seccomp` field, which a unit test pins to
+`false`). The `## Test strategy when the profile pins` section
+below, and its two integration tests
+(`tests/seccomp_envelope.rs`, `tests/seccomp_denies_forbidden.rs`),
+already exist and run in CI — despite still reading in future
+tense below, they are not aspirational.
+`docs/v2/owasp-top10-audit.md`'s original A05 finding
+("`daemon-seccomp-envelope.md` is still DRAFT ... daemon runs
+unfiltered today") was itself based on this banner rather than on
+running the actual binary; corrected in that doc and in `TODO.md`
+in the same commit that fixed this one.
+The remaining genuinely-open item is narrower than "is a filter
+installed at all": it is whether an operator has reviewed and
+signed off on this SPECIFIC 41-syscall envelope as the intended
+final shape (the "Open questions for the operator" section below
+records the design decisions made so far, each already resolved
+in the code one way, but not yet operator-ratified).
 
-The HANDOFF open-items list says, verbatim:
+The HANDOFF open-items list originally said, verbatim:
 
 > Daemon seccomp profile.  Allowed-syscall list per
 > `docs/v2/least-privilege.md` (daemon's expected envelope).  The
 > envelope grew with materialise (openat / write / fchmod /
 > unlinkat / read_dir); pin the profile only once the operator
 > confirms the envelope.
+
+The profile has since been pinned in code (see above); operator
+confirmation of the envelope's *contents* remains open.
 
 This document is the envelope.
 
@@ -126,7 +148,13 @@ The initial 32-syscall draft was confirmed via `strace -f` against
 a live daemon serving the operator sequence (status × N → rotate
 × N → emit-table × N).  **Four additional syscalls** surfaced
 that the draft missed; they are folded in below and marked with
-`# strace`.
+`# strace`.  This section was also missing the four atomic-swap
+syscalls (`rename`/`renameat`/`renameat2`/`rmdir`) and the
+`getsockopt` peer-uid-auth syscall that
+`crates/v2-babbleon-daemon/src/seccomp_profile.rs::ALLOWED_SYSCALLS`
+already carried — both gaps closed 2026-07-03 so this doc matches
+the code exactly again (see that module's own
+`allowlist_size_matches_envelope_doc` drift-detection test).
 
 ```
 // I/O
@@ -137,6 +165,11 @@ close
 shutdown
 recvfrom        // some glibc versions translate read on socket
 sendto          // some glibc versions translate write on socket
+getsockopt      // SO_PEERCRED peer-uid authentication, added 2026-07-03 —
+                // see socket.rs::check_peer_uid, closes
+                // docs/v2/owasp-top10-audit.md A01. Deliberately not
+                // paired with getuid: the daemon's own uid is computed
+                // once at startup BEFORE this filter installs.
 
 // File system (rotation only)
 openat
@@ -148,6 +181,10 @@ statx
 fstat           # strace — std::fs::metadata on opened FDs emits fstat(2)
 getdents64
 mkdir           # strace — std::fs::create_dir_all on /run/babbleon/ parents
+rename          // atomic wrapper-dir swap (materialize_atomic)
+renameat        // same — newer Rust std may emit this instead of rename
+renameat2       // same — explicit nix::fcntl::renameat2(RENAME_EXCHANGE) call
+rmdir           // post-swap staging-dir cleanup (previous epoch's wrappers)
 
 // Memory
 brk
@@ -180,7 +217,7 @@ exit_group
 rseq
 ```
 
-Final count: **36 syscalls**.
+Final count: **41 syscalls**.
 
 ### Strace confirmation
 

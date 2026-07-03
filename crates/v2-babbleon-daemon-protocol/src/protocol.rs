@@ -365,6 +365,9 @@ pub enum ErrorKind {
     Ipc,
     /// Request was syntactically or semantically invalid.
     BadRequest,
+    /// Peer failed the `SO_PEERCRED` uid check before any request
+    /// was read.  See `v2-babbleon-daemon::socket::check_peer_uid`.
+    Unauthorized,
     /// Internal daemon error.  Catch-all.
     Internal,
 }
@@ -378,6 +381,7 @@ impl ErrorKind {
             Self::ActivatedTable => "activated-table",
             Self::Ipc => "ipc",
             Self::BadRequest => "bad-request",
+            Self::Unauthorized => "unauthorized",
             Self::Internal => "internal",
         }
     }
@@ -390,6 +394,7 @@ impl ErrorKind {
             "activated-table" => Self::ActivatedTable,
             "ipc" => Self::Ipc,
             "bad-request" => Self::BadRequest,
+            "unauthorized" => Self::Unauthorized,
             _ => Self::Internal,
         }
     }
@@ -1363,6 +1368,7 @@ mod tests {
             ErrorKind::ActivatedTable,
             ErrorKind::Ipc,
             ErrorKind::BadRequest,
+            ErrorKind::Unauthorized,
             ErrorKind::Internal,
         ] {
             let s = kind.as_wire_str();

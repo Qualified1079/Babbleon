@@ -260,29 +260,53 @@ composes with the phase-3 five-layer base; they don't replace it.
 
 ### v2 security-hygiene gaps (OWASP Top 10 audit, 2026-07-03)
 
-Four genuine gaps surfaced by `docs/v2/owasp-top10-audit.md`,
-grouped here as one checklist rather than scattered across the
-phase headings they'd otherwise fall under, so a reviewer can
-triage them together.  None are novel discoveries — three were
-already implicitly flagged in `docs/v2/threat-model.md` or a
-seccomp-envelope doc; this list makes each one a trackable item
-instead of prose an operator has to re-derive.
+Four items surfaced by `docs/v2/owasp-top10-audit.md`, grouped here
+as one checklist rather than scattered across the phase headings
+they'd otherwise fall under.  Three were real (A01, A07, A08); one
+(A05) turned out to be a false positive in the audit itself —
+corrected below rather than silently dropped, since the audit's own
+mistake (trusting a stale doc banner instead of running the binary)
+is worth a reader seeing.
 
-- [ ] **Daemon socket peer-credential authentication (A01).**
-      `crates/v2-babbleon-daemon/src/socket.rs::bind_socket` gates
-      the daemon's Unix socket at file mode `0o660` (group-only) but
-      does not check `SO_PEERCRED` / peer UID — any process in the
-      socket's group can open a session, not just the intended
-      caller.  The module's own comments file this as "phase 2
-      ships file-mode 0o660 ... SO_PEERCRED uid-allowlist
-      authentication is filed" — this item makes that filing
-      explicit in the shippable list.
-- [ ] **Daemon seccomp profile still DRAFT (A05).**
-      `docs/v2/daemon-seccomp-envelope.md` has a strace-confirmed
-      candidate syscall allowlist but is explicitly marked "DRAFT
-      for operator confirmation" and is not wired into the daemon
-      binary.  Until an operator confirms it and it lands, the
-      daemon runs with no seccomp filter.
+- [x] **Daemon socket peer-credential authentication (A01).**  Closed
+      2026-07-03.  `crates/v2-babbleon-daemon/src/socket.rs` gated
+      the daemon's Unix socket at file mode `0o660` (group-only) with
+      no `SO_PEERCRED` / peer-uid check — any process in the socket's
+      group could open a session, not just the intended caller.
+      New `check_peer_uid` rejects any connection whose kernel-
+      reported peer uid doesn't match the daemon's own uid, checked
+      immediately after `accept()`, before any request bytes are
+      read. `serve_blocking` takes the expected uid as a parameter
+      (computed once in `main.rs` via `nix::unistd::getuid()` BEFORE
+      the seccomp filter installs) rather than calling `getuid()`
+      internally, so `getuid` never needs to join the post-filter
+      syscall allowlist — only `getsockopt` does (added to
+      `seccomp_profile.rs::ALLOWED_SYSCALLS`, count 40 -> 41). New
+      `ErrorKind::Unauthorized` wire variant. This fix is also what
+      surfaced the A05 correction below: adding `getsockopt` without
+      first adding it to the allowlist SIGSYS-killed the daemon
+      subprocess in `tests/end_to_end_binary.rs`, which is only
+      possible under an actually-enforcing seccomp filter.
+- [x] **Daemon seccomp profile — audit corrected, not a gap (A05).**
+      Corrected 2026-07-03; NOT closed by new code because there was
+      no real gap to close. The original OWASP-audit finding read
+      `docs/v2/daemon-seccomp-envelope.md`'s banner ("DRAFT ... before
+      it lands in code") and concluded the daemon runs unfiltered —
+      without running the daemon to check. Direct testing (via the
+      A01 fix above) proved the filter is installed BY DEFAULT
+      (`cli.rs`'s `disable_seccomp` defaults to `false`, pinned by a
+      unit test) and has been for some time; the envelope doc's own
+      "Test strategy when the profile pins" section describes two
+      integration tests that already exist and pass
+      (`tests/seccomp_envelope.rs`, `tests/seccomp_denies_forbidden.rs`).
+      Both the doc's banner and the OWASP audit's A05 entry were
+      corrected in the same commit as the A01 fix; the doc's
+      allowlist enumeration was also found to be missing 4 syscalls
+      (`rename`/`renameat`/`renameat2`/`rmdir`) that the code already
+      had — folded in during the same correction pass. The narrower
+      question that remains genuinely open: has an operator reviewed
+      and signed off on the *specific* 41-syscall envelope as final?
+      That's a policy review, not a "wire it up" task.
 - [x] **v2 vault-unlock rate-limiting port (A07).**  Closed
       2026-07-03.  Note this finding was originally mis-scoped at
       `DaemonState::unlock` (the daemon-side "install this already-

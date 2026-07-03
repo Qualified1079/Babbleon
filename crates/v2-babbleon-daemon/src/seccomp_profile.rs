@@ -8,7 +8,7 @@
 //! bug in the request parser, the wrapper renderer, or the HKDF
 //! path) would otherwise have the full kernel ABI available.  The
 //! seccomp filter installed by this module bounds the post-bind
-//! syscall surface to the **32 syscalls** documented in
+//! syscall surface to the **41 syscalls** documented in
 //! `docs/v2/daemon-seccomp-envelope.md`.  Everything else returns
 //! `SECCOMP_RET_KILL_PROCESS` — the kernel terminates the daemon
 //! before the exploit can issue a forbidden call (e.g. `execve` of a
@@ -33,7 +33,7 @@
 //!
 //! Seccomp is installed BY DEFAULT at daemon startup.  The
 //! envelope is documented in `docs/v2/daemon-seccomp-envelope.md`
-//! (40 syscalls).  Operators who need to iterate on code paths
+//! (41 syscalls).  Operators who need to iterate on code paths
 //! that may add a new syscall pass `--no-seccomp` to skip the
 //! install for that run; production deployments leave the
 //! default in place.  The legacy `--enable-seccomp` flag is
@@ -91,6 +91,13 @@ const ALLOWED_SYSCALLS: &[i64] = &[
     libc::SYS_shutdown,
     libc::SYS_recvfrom,
     libc::SYS_sendto,
+    // getsockopt(SO_PEERCRED) — SO_PEERCRED peer-uid authentication
+    // (socket.rs::check_peer_uid), added 2026-07-03 to close
+    // docs/v2/owasp-top10-audit.md A01.  Deliberately NOT paired
+    // with getuid: the daemon's own uid is computed once at startup
+    // BEFORE this filter installs and threaded into serve_blocking
+    // as a parameter, so getuid never needs to be on this allowlist.
+    libc::SYS_getsockopt,
     // ---- File system (rotation: wrapper materialise + cleanup) ----
     libc::SYS_openat,
     libc::SYS_unlinkat,
@@ -231,6 +238,26 @@ mod tests {
     }
 
     #[test]
+    fn allowlist_includes_getsockopt_for_peer_uid_auth() {
+        // socket.rs::check_peer_uid reads SO_PEERCRED via
+        // getsockopt(2). Without this the daemon is SIGSYS-killed on
+        // its very first accepted connection -- caught the hard way
+        // once already; see the commit that added this test.
+        assert!(ALLOWED_SYSCALLS.contains(&libc::SYS_getsockopt));
+    }
+
+    #[test]
+    fn allowlist_excludes_getuid() {
+        // Deliberate: the daemon's own uid is computed once at
+        // startup, BEFORE this filter installs, and threaded into
+        // serve_blocking as a parameter (see main.rs). getuid must
+        // never need to be on the post-filter allowlist -- if a
+        // future refactor calls it from inside the serve loop, this
+        // test should catch the regression before the SIGSYS does.
+        assert!(!ALLOWED_SYSCALLS.contains(&libc::SYS_getuid));
+    }
+
+    #[test]
     fn allowlist_includes_rotation_fs_calls() {
         // Per docs/v2/daemon-seccomp-envelope.md stage B' — these are
         // the calls the wrapper materialise path issues.
@@ -329,21 +356,25 @@ mod tests {
 
     #[test]
     fn allowlist_size_matches_envelope_doc() {
-        // The envelope doc enumerates 40 syscalls:
+        // The envelope doc enumerates 41 syscalls:
         //   - 32 from the initial draft.
         //   - 4 added after the first strace pass (chmod, fstat,
         //     mkdir, fcntl — see "Strace confirmation").
         //   - 4 added for atomic wrapper-dir swap (rename,
         //     renameat, renameat2, rmdir — see
         //     materialize_atomic).
+        //   - 1 added 2026-07-03 for SO_PEERCRED peer-uid
+        //     authentication (getsockopt — see
+        //     socket.rs::check_peer_uid, closes
+        //     docs/v2/owasp-top10-audit.md A01).
         //
         // If the list here drifts, either the doc is stale or the
         // implementation is.  Update both in the same PR.
         assert_eq!(
             ALLOWED_SYSCALLS.len(),
-            40,
+            41,
             "allowlist drifted from docs/v2/daemon-seccomp-envelope.md \
-             (36 documented; this code lists {}).  Update both.",
+             (41 documented; this code lists {}).  Update both.",
             ALLOWED_SYSCALLS.len(),
         );
     }

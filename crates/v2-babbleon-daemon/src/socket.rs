@@ -47,11 +47,14 @@
 //! - **Defeats:** oversize-request denial-of-service, parser-state
 //!   spill across connections, partial-write corruption (every
 //!   write flushes before close), accidental socket-reuse
-//!   (`bind_socket` unlinks stale files).
-//! - **Does NOT defeat:** unauthorized peers connecting to the
-//!   socket.  Phase 2 ships file-mode `0o660` so only group members
-//!   connect; `SO_PEERCRED` uid-allowlist authentication is filed
-//!   for phase 3 with the PAM module's UID flow.
+//!   (`bind_socket` unlinks stale files), unauthorized peers
+//!   connecting to the socket — [`check_peer_uid`] rejects any
+//!   connection whose kernel-reported `SO_PEERCRED` uid does not
+//!   match the daemon process's own uid, closing
+//!   `docs/v2/owasp-top10-audit.md` A01 (file-mode `0o660` alone
+//!   only restricts by group membership, which is coarser and,
+//!   unlike `SO_PEERCRED`, not derived from a value the kernel
+//!   attaches to the connection itself).
 //! - **Does NOT defeat:** a single client holding the connection
 //!   open indefinitely.  Phase 2 has no read/write timeout; if a
 //!   slow-read peer becomes a denial-of-service concern, add
@@ -61,8 +64,10 @@
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::UnixListener;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
+
+use nix::sys::socket::{getsockopt, sockopt::PeerCredentials};
 
 use crate::handlers::dispatch;
 use crate::state::DaemonState;
@@ -110,6 +115,41 @@ pub fn bind_socket(path: &Path) -> std::io::Result<UnixListener> {
     Ok(listener)
 }
 
+/// Verify the connecting peer's real uid matches `expected_uid` via
+/// `SO_PEERCRED`.
+///
+/// # What this defeats
+///
+/// The kernel populates `SO_PEERCRED` from the connecting process's
+/// actual credentials at `connect()` time — it is not a value the
+/// peer supplies or can spoof, unlike anything carried in the
+/// request payload itself.  File-mode `0o660` alone lets in any
+/// process running as a member of the socket's owning group; this
+/// check narrows that to "the exact uid this daemon process runs
+/// as," so a misconfigured or unexpectedly-populated group no
+/// longer widens the daemon's trust boundary.
+///
+/// # Errors
+///
+/// - The underlying `getsockopt(SO_PEERCRED)` syscall error,
+///   converted to `std::io::Error` (should not happen for a freshly
+///   accepted Unix-domain stream).
+/// - `std::io::ErrorKind::PermissionDenied` if the peer's uid does
+///   not match `expected_uid`.
+pub fn check_peer_uid(stream: &UnixStream, expected_uid: u32) -> std::io::Result<()> {
+    let creds = getsockopt(stream, PeerCredentials)?;
+    let peer_uid = creds.uid();
+    if peer_uid != expected_uid {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "peer uid {peer_uid} does not match daemon uid {expected_uid}"
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// Serve connections until `listener` errors or the calling thread
 /// drops it.
 ///
@@ -123,6 +163,16 @@ pub fn bind_socket(path: &Path) -> std::io::Result<UnixListener> {
 /// tests it is a closure that records the error; in production it
 /// logs via `tracing` and continues.
 ///
+/// `daemon_uid` is the uid every accepted peer's `SO_PEERCRED` must
+/// match (see [`check_peer_uid`]).  Taken as a parameter rather than
+/// queried internally via `getuid()` so the seccomp allowlist
+/// installed before this function runs does not need to admit
+/// `getuid` in steady state — callers compute it once, pre-filter,
+/// alongside the other startup-only syscalls.  Production passes
+/// `nix::unistd::getuid().as_raw()`, called before
+/// `seccomp_profile::apply()`; tests pass whatever `SO_PEERCRED` will
+/// actually report for their in-process client (their own uid).
+///
 /// # Errors
 ///
 /// - `std::io::Error` if the listener itself fails (e.g. the socket
@@ -132,11 +182,28 @@ pub fn bind_socket(path: &Path) -> std::io::Result<UnixListener> {
 pub fn serve_blocking(
     state: &mut DaemonState,
     listener: &UnixListener,
+    daemon_uid: u32,
     mut accept_error_handler: impl FnMut(&std::io::Error),
 ) -> std::io::Result<()> {
     for stream in listener.incoming() {
         match stream {
             Ok(mut stream) => {
+                if let Err(e) = check_peer_uid(&stream, daemon_uid) {
+                    // Best-effort: tell the rejected peer why, then
+                    // move on.  A peer that can't even be written to
+                    // (already gone) just falls through to the next
+                    // `accept`.
+                    let _ = write_response(
+                        &mut stream,
+                        &Response::Error {
+                            kind: ErrorKind::Unauthorized,
+                            message: "peer uid does not match daemon uid"
+                                .to_string(),
+                        },
+                    );
+                    accept_error_handler(&e);
+                    continue;
+                }
                 let read_clone = match stream.try_clone() {
                     Ok(c) => c,
                     Err(e) => {
@@ -458,6 +525,57 @@ mod tests {
         )
         .unwrap();
         assert_eq!(*writer.last().unwrap(), b'\n');
+    }
+
+    // ----- check_peer_uid -----
+
+    #[test]
+    fn check_peer_uid_accepts_the_actual_peer_uid() {
+        let (a, _b) = UnixStream::pair().unwrap();
+        let own_uid = nix::unistd::getuid().as_raw();
+        // Both ends of a same-process socketpair report the test
+        // process's own uid as the peer credential.
+        check_peer_uid(&a, own_uid).unwrap();
+    }
+
+    #[test]
+    fn check_peer_uid_rejects_a_mismatched_uid() {
+        let (a, _b) = UnixStream::pair().unwrap();
+        let own_uid = nix::unistd::getuid().as_raw();
+        // Any uid other than our own must be refused.  Wrapping-add
+        // guarantees a distinct value without depending on whether
+        // the test happens to run as uid 0.
+        let wrong_uid = own_uid.wrapping_add(1);
+        let err = check_peer_uid(&a, wrong_uid).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+        let msg = err.to_string();
+        assert!(msg.contains(&own_uid.to_string()), "{msg}");
+        assert!(msg.contains(&wrong_uid.to_string()), "{msg}");
+    }
+
+    #[test]
+    fn serve_blocking_rejects_connection_with_wrong_expected_uid_via_response() {
+        // We can't spoof a different real uid in-process, so this
+        // test exercises the same code path serve_blocking would
+        // take on a genuine uid mismatch by connecting directly and
+        // calling check_peer_uid with a deliberately wrong
+        // expectation -- covered above. This test instead confirms
+        // the *wire shape* serve_blocking would emit: an
+        // Unauthorized-kind Response::Error, matching what a real
+        // mismatched peer would receive.
+        let resp = Response::Error {
+            kind: ErrorKind::Unauthorized,
+            message: "peer uid does not match daemon uid".to_string(),
+        };
+        let mut writer: Vec<u8> = Vec::new();
+        write_response(&mut writer, &resp).unwrap();
+        let parsed = Response::parse(&writer).unwrap();
+        match parsed {
+            Response::Error { kind, .. } => {
+                assert_eq!(kind, ErrorKind::Unauthorized);
+            }
+            other => panic!("expected Error, got {other:?}"),
+        }
     }
 
     #[test]

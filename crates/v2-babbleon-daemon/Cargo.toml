@@ -36,8 +36,10 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 # CLI.
 clap = { workspace = true }
-# IPC + filesystem primitives.
-nix = { workspace = true }
+# IPC + filesystem primitives.  `socket` feature (added on top of the
+# workspace-wide feature set) is needed for SO_PEERCRED peer-uid
+# authentication in `socket.rs::check_peer_uid`.
+nix = { workspace = true, features = ["socket"] }
 # Linux syscall surface — only used if we need raw libc (avoided
 # where possible; nix wraps most needs).
 libc = { workspace = true }

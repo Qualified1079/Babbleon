@@ -133,6 +133,7 @@ fn arb_error_kind() -> impl Strategy<Value = ErrorKind> {
         Just(ErrorKind::ActivatedTable),
         Just(ErrorKind::Ipc),
         Just(ErrorKind::BadRequest),
+        Just(ErrorKind::Unauthorized),
         Just(ErrorKind::Internal),
     ]
 }

@@ -49,15 +49,36 @@ syscall}.rs`, each privileged call site carrying a `CAPABILITY:`
 comment per security-baseline rule 10 (`docs/v2/least-privilege.md`
 covers this in full — cross-reference, not duplicated here).
 
-**Finding — genuine gap, filed.** The daemon's Unix domain socket
-(`crates/v2-babbleon-daemon/src/socket.rs::bind_socket`) is created
-at mode `0o660` (group-gated, not world-writable) but the module's
-own comments state that peer-credential authentication
-(`SO_PEERCRED` / peer-UID check) is **not yet implemented** — filed
-there as "phase 3" work. Group-mode gating is a real but coarse
-control: any process running as a member of the socket's group can
-open a session, not just the intended caller. Filed in `TODO.md`
-under a new "v2 security-hygiene gaps" entry (below).
+**Finding — gap found, closed 2026-07-03.** At audit time the
+daemon's Unix domain socket
+(`crates/v2-babbleon-daemon/src/socket.rs::bind_socket`) was created
+at mode `0o660` (group-gated, not world-writable) but had no
+peer-credential check — any process in the socket's group could open
+a session, not just the intended caller.
+
+Closed via `SO_PEERCRED`: `socket.rs::check_peer_uid` reads the
+kernel-populated peer credentials via `getsockopt(SO_PEERCRED)`
+(through `nix::sys::socket`, keeping `#![forbid(unsafe_code)]` intact)
+and rejects any connection whose peer uid does not match the daemon
+process's own uid, before a byte of the request is ever read.
+`serve_blocking` takes the expected uid as a parameter rather than
+calling `getuid()` internally — the daemon's own uid is computed once
+in `main.rs`, **before** the seccomp filter installs, specifically so
+`getuid` never needs to join the post-filter allowlist. `getsockopt`
+itself DOES need to join it (per-connection, unavoidable): this was
+discovered the hard way when the daemon subprocess in
+`tests/end_to_end_binary.rs` started dying with `SIGSYS` mid-fix — see
+the A05 section below for the corrected understanding that finding
+produced.
+
+New `ErrorKind::Unauthorized` wire variant so a rejected peer gets an
+explicit, minimal-detail response instead of a mysterious dropped
+connection; the detailed uid mismatch goes to the daemon's own logs
+via `accept_error_handler`, not over the wire. Two new unit tests in
+`socket.rs` (`check_peer_uid_accepts_the_actual_peer_uid`,
+`check_peer_uid_rejects_a_mismatched_uid`) plus two new seccomp-list
+tests confirming `getsockopt` is allowed and `getuid` deliberately is
+not.
 
 ---
 
@@ -148,14 +169,32 @@ defaults to `NotifyOnly` — no automatic kill/quarantine action
 unless an operator opts in, so a misconfigured tripwire cannot
 itself become a denial-of-service vector.
 
-**Finding — genuine gap, filed.**
-`docs/v2/daemon-seccomp-envelope.md` is explicitly marked "DRAFT for
-operator confirmation" at its own top line — a strace-confirmed
-candidate allowlist exists, but it has not been finalized or wired
-into the daemon binary. Until it lands, the daemon runs without a
-seccomp filter, which is a real misconfiguration-shaped gap (the
-control exists in design but not in the running binary). Filed in
-`TODO.md`.
+**Finding — corrected 2026-07-03; not a gap.** The original pass of
+this audit read `docs/v2/daemon-seccomp-envelope.md`'s own banner
+("DRAFT for operator confirmation... before it lands in code") and
+concluded the daemon runs unfiltered — without actually running the
+daemon to check. It was wrong. Directly testing confirmed
+`crates/v2-babbleon-daemon/src/seccomp_profile.rs::apply()` installs
+a 40-syscall (now 41, see below) allowlist **by default** at daemon
+startup (`cli.rs`'s `disable_seccomp` field defaults to `false`, pinned
+by a unit test); `--no-seccomp` is an explicit opt-out for local
+development only. The two integration tests the envelope doc
+describes in future tense (`## Test strategy when the profile
+pins`) — `tests/seccomp_envelope.rs` and
+`tests/seccomp_denies_forbidden.rs` — already exist and pass. This
+was discovered while building the A01 fix below: adding
+`SO_PEERCRED` support required a new syscall (`getsockopt`), and the
+daemon subprocess in `tests/end_to_end_binary.rs` immediately
+started dying with `SIGSYS` (`dmesg` showed the kernel killing it for
+an un-allowlisted `getuid` call) — which is only possible if a real,
+active seccomp filter is enforcing in that test run. A doc that
+merely proposed a filter could not have produced that failure.
+`docs/v2/daemon-seccomp-envelope.md`'s banner and this audit's own
+original A05 entry were both corrected in the same commit that
+landed the A01 fix. The narrower, still-genuinely-open question is
+whether an operator has reviewed and signed off on the *specific*
+41-syscall envelope as final — a policy review, not a "wire it up"
+gap — tracked in `TODO.md` with the corrected framing.
 
 ---
 
@@ -293,29 +332,29 @@ an HTTP client dependency.
 
 | Category | Verdict | Action |
 |---|---|---|
-| A01 Broken Access Control | Partial | Daemon socket lacks peer-auth — filed |
+| A01 Broken Access Control | **Closed 2026-07-03** | `SO_PEERCRED` peer-uid check added to `socket.rs::serve_blocking` |
 | A02 Cryptographic Failures | No fix | Covered by security-baseline.md rules 3/4/12 |
 | A03 Injection | No fix | Ported clean from v1's audited pattern |
 | A04 Insecure Design | No fix | Covered by threat-model.md + security-baseline.md |
-| A05 Security Misconfiguration | Partial | daemon-seccomp-envelope.md still DRAFT — filed |
+| A05 Security Misconfiguration | **No fix — original finding was wrong** | Filter is active by default in code; only the envelope-doc banner was stale |
 | A06 Vulnerable/Outdated Components | Partial | `cargo vet` exemptions backfill — already tracked |
 | A07 Auth Failures | **Closed 2026-07-03** | `AttemptTracker` ported to `v2-babbleon-vault`, wired into `run_unlock` |
 | A08 Software/Data Integrity | **Gap** | v2 binaries missing from signed release pipeline — filed |
 | A09 Logging/Monitoring Failures | No fix | Covered by threat-model.md T1 + events.rs |
 | A10 SSRF | N/A | No network surface exists |
 
-Four genuine gaps surfaced (A01, A05, A07, A08), filed in `TODO.md`
-under a "v2 security-hygiene gaps (OWASP Top 10 audit)" entry rather
-than scattered across unrelated phase headings, so a reviewer can
-triage them as one group. None of the four were novel discoveries —
-three were already implicitly flagged in `threat-model.md` or a
-seccomp-envelope doc; this audit's value was confirming each one at
-the code level and making it a trackable checklist item instead of
-prose an operator has to re-derive. A07 closed the same day the
-audit landed (see that section above for the mis-scoping this audit
-corrected en route: the daemon-side `DaemonState::unlock` has no
-"wrong guess" concept at all; the actual client-side unseal call was
-the right target). A01, A05, A08 remain open.
+Of the four items this audit originally flagged, three turned out to
+be real (A01, A07, A08) and one was a false positive caused by
+trusting a stale doc banner instead of running the binary (A05,
+corrected in the same session — see that section above). A01 and A07
+closed the same day the audit landed; A08 remains open, needing a
+small operator decision (which v2 binaries ship) rather than a hard
+gate. The corrected A05 entry is the audit's own most useful
+finding in a sense: it is a reminder that "the doc says X" and "the
+code does X" are different claims, and this audit's own first pass
+conflated them exactly once. Filed in `TODO.md` under "v2
+security-hygiene gaps (OWASP Top 10 audit)" so the group stays
+easy to re-triage as items close.
 
 ## Update cadence
 
