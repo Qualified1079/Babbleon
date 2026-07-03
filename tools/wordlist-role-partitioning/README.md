@@ -156,6 +156,31 @@ dedupes, and draws from the union.  The manifest records each
 source's SHA-256 + contributed-after-dedupe count, so the
 cross-language mix is auditable.
 
+Fold diacritics before the dedupe (mirrors
+`tools/wordlist-density-analysis --normalise-diacritics`) so a
+raw non-English source doesn't carry `café`/`naïve`/`köln` into
+the extracted files, which the runtime loader
+(`crates/v2-babbleon-core::wordlist`) rejects outright:
+
+```
+cargo run --release -- \
+  --extract-to /tmp/rp-union \
+  --wordlist-path ../../crates/babbleon/wordlist/words.txt \
+  --wordlist-path /tmp/de_raw.txt \
+  --normalise-diacritics
+```
+
+`café` becomes `cafe`; a normalised form that collides with an
+already-seen entry (same source or an earlier one) is dropped,
+first-occurrence wins.  Off by default — the English-baseline
+path stays byte-identical without it.  The manifest records
+`normalise_diacritics: true|false` for audit.  Note this is a
+belt-and-suspenders check: `scripts/end-to-end.sh` already runs
+diacritics normalisation upstream in the density-analysis filter
+step when `NORMALISE_DIACRITICS=1`, so files it hands to the
+extractor are typically already ASCII; this flag matters for
+direct `--extract-to` invocations that skip the density tool.
+
 Extract using a real per-host secret + domain-separator label
 (production path — the secret never appears on the command line):
 

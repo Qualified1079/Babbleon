@@ -29,6 +29,7 @@
 mod allocation;
 mod entropy;
 mod extract;
+mod normalise;
 mod params;
 mod report;
 mod seed;
@@ -228,6 +229,18 @@ struct Args {
     /// Skip the stdout summary; useful when scripting `--report-out`.
     #[arg(long, default_value_t = false)]
     quiet: bool,
+
+    /// NFKD-normalise + fold diacritics on every wordlist entry
+    /// before union/dedupe, mirroring
+    /// `tools/wordlist-density-analysis --normalise-diacritics`.
+    /// `café` becomes `cafe`; entries that collide after folding are
+    /// deduped (first-occurrence wins).  Off by default so the
+    /// English-baseline path is byte-identical to before.  Required
+    /// before extracting from any non-English source, since the
+    /// runtime loader (`crates/v2-babbleon-core::wordlist`) rejects
+    /// non-`[a-z]+` entries outright.
+    #[arg(long, default_value_t = false)]
+    normalise_diacritics: bool,
 }
 
 fn main() -> Result<()> {
@@ -289,6 +302,7 @@ fn main() -> Result<()> {
             dir,
             &extract_input,
             args.quiet,
+            args.normalise_diacritics,
         )?;
     }
 
@@ -396,7 +410,11 @@ struct UnionSourceRow {
     sha256_hex: String,
 }
 
-fn load_and_union_wordlists(paths: &[PathBuf], quiet: bool) -> Result<UnionedWordlist> {
+fn load_and_union_wordlists(
+    paths: &[PathBuf],
+    quiet: bool,
+    normalise_diacritics: bool,
+) -> Result<UnionedWordlist> {
     use sha2::{Digest, Sha256};
 
     let mut union: Vec<String> = Vec::new();
@@ -414,8 +432,21 @@ fn load_and_union_wordlists(paths: &[PathBuf], quiet: bool) -> Result<UnionedWor
             if w.is_empty() {
                 continue;
             }
-            if seen.insert(w.to_string()) {
-                union.push(w.to_string());
+            // Normalise BEFORE the union-wide dedupe check so a word
+            // that only differs by diacritics from an already-seen
+            // entry (in this source or an earlier one) collapses to
+            // one entry — same first-occurrence-wins rule the density
+            // tool uses.
+            let w = if normalise_diacritics {
+                normalise::strip_combining_marks(w)
+            } else {
+                w.to_string()
+            };
+            if w.is_empty() {
+                continue;
+            }
+            if seen.insert(w.clone()) {
+                union.push(w);
                 contributed += 1;
             }
         }
@@ -509,8 +540,9 @@ fn extract_and_write(
     out_dir: &std::path::Path,
     seed_input: &ExtractSeedInput,
     quiet: bool,
+    normalise_diacritics: bool,
 ) -> Result<()> {
-    let sources = load_and_union_wordlists(wordlist_paths, quiet)?;
+    let sources = load_and_union_wordlists(wordlist_paths, quiet, normalise_diacritics)?;
     // Vec<String> in insertion order.  Convert to &str borrow so
     // extract::extract_disjoint_subsets can take it directly.
     let words_borrow: Vec<&str> = sources.union.iter().map(String::as_str).collect();
@@ -556,6 +588,7 @@ fn extract_and_write(
     manifest.push_str("Babbleon v2 wordlist role-partitioning — extraction manifest\n\n");
     manifest.push_str(&format!("union_size: {}\n", sources.union.len()));
     manifest.push_str(&format!("source_count: {}\n", sources.sources.len()));
+    manifest.push_str(&format!("normalise_diacritics: {normalise_diacritics}\n"));
     manifest.push_str("\nsources (path,raw_entries,contributed,sha256):\n");
     for src in &sources.sources {
         manifest.push_str(&format!(
@@ -696,6 +729,53 @@ mod tests {
         std::fs::write(dir.join("alpha.txt"), "one\ntwo\n").unwrap();
         let err = super::verify_extracted_dir(&dir, true).unwrap_err().to_string();
         assert!(err.contains("has 2 words"), "actual: {err}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn load_and_union_without_normalise_rejects_nothing_and_keeps_diacritics() {
+        let dir = std::env::temp_dir().join(format!("rp-union-raw-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("wl.txt");
+        std::fs::write(&path, "cafe\ncafé\n").unwrap();
+
+        let result = super::load_and_union_wordlists(&[path], true, false).unwrap();
+        assert_eq!(result.union, vec!["cafe", "café"]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn load_and_union_with_normalise_folds_and_dedupes() {
+        let dir = std::env::temp_dir().join(format!("rp-union-norm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("wl.txt");
+        // "café" normalises to "cafe", which we already saw — dropped.
+        std::fs::write(&path, "cafe\ncafé\nnaïve\n").unwrap();
+
+        let result = super::load_and_union_wordlists(&[path], true, true).unwrap();
+        assert_eq!(result.union, vec!["cafe", "naive"]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn load_and_union_with_normalise_dedupes_across_sources() {
+        let dir = std::env::temp_dir().join(format!("rp-union-cross-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path_a = dir.join("a.txt");
+        let path_b = dir.join("b.txt");
+        std::fs::write(&path_a, "café\n").unwrap();
+        std::fs::write(&path_b, "cafe\n").unwrap();
+
+        let result =
+            super::load_and_union_wordlists(&[path_a, path_b], true, true).unwrap();
+        assert_eq!(result.union, vec!["cafe"]);
+        assert_eq!(result.sources[0].contributed, 1);
+        // Second source's "cafe" normalises to something already
+        // seen from the first source, so it contributes nothing new.
+        assert_eq!(result.sources[1].contributed, 0);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
