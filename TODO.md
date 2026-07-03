@@ -333,17 +333,42 @@ is worth a reader seeing.
       `docs/v2/threat-model.md` row D1 (now "Shipped") and row D4
       (corrupt-sidecar-defaults-safe, also shipped as part of the
       same port).
-- [ ] **v2 binaries missing from the signed release pipeline (A08).**
-      `.github/workflows/release.yml`'s `build` job bundles only
-      `babbleon` and `babbleon-ns-helper` (v1) into the
-      cosign-signed, SLSA-L3-attested release artifact.  v2 is the
-      shipping product (`CLAUDE.md` §1); an operator downloading a
-      "signed Babbleon release" today gets cryptographic assurance
-      over code that is not the product they're running.  Needs the
-      v2 binary list (`babbleon-daemon`, `v2-babbleon`,
-      `babbleon-launch-untrusted`, ...) decided before this can
-      close — filing as `[ ]` rather than picking the list
-      unilaterally, since it's a release-shape decision.
+- [ ] **v2 binaries missing from the signed release pipeline — bigger
+      than originally scoped (A08).**  `.github/workflows/
+      release.yml`'s `build` job bundles only `babbleon` and
+      `babbleon-ns-helper` (v1) into the cosign-signed,
+      SLSA-L3-attested release artifact.  Originally filed here as
+      "needs the v2 binary list decided, otherwise small" — that
+      undersold it.  `crates/DEPRECATED-V1.md` is unambiguous: **"v1
+      is not the public product and will not ship."**  The release
+      pipeline currently violates that recorded decision outright,
+      not just by omission — it is actively publishing v1 binaries
+      under the project's cosign identity and SLSA provenance today,
+      which is the opposite of "v2 is the product."  This is an
+      operator decision, not a session's to make unilaterally,
+      because it's really three decisions bundled together:
+      1. **Swap v1 → v2 in the next release**, per
+         `DEPRECATED-V1.md`'s plan.  The v2 binary set worth
+         shipping (system/runtime components, not dev tooling):
+         `babbleon-daemon`, `babbleon-v2`, `babbleon-launch-
+         untrusted`, `babbleon-login-shell`, `babbleon-python`.
+         Deliberately excludes `babbleon-bench`
+         (`v2-babbleon-resilience-bench`'s CLI) — that's an internal
+         adversarial-measurement tool, not something an end-user
+         installs, same category as the `tools/` standalone
+         binaries that were never shipped.
+      2. **Is v2 ready to tag a release at all?**  TODO.md's phase
+         1-6 lists are still substantially open (`[ ]`).  Shipping a
+         signed, SLSA-attested v2 binary set under a version tag
+         implies a completeness claim the phase lists don't yet
+         support.
+      3. **Transition window.**  Ship v1 and v2 side-by-side for one
+         or more releases so existing v1 operators have a migration
+         path, or cut over immediately?
+      An autonomous session should not decide any of these three
+      without the operator; filed here with the sharper framing so
+      the decision is easy to make when someone with authority looks
+      at it, rather than reading as "just add a build step."
 
 ### Phase 4 — supporting research and measurement
 

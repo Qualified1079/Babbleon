@@ -270,14 +270,21 @@ epoch_journal.rs` provides an HMAC-sealed journal so a tampered
 on-disk epoch record is detected at resume, tested in
 `state.rs::resume_epoch_from_journal`'s round-trip coverage.
 
-**Finding — genuine gap, filed.** The release `build` job currently
-bundles only the v1 binaries (`babbleon`, `babbleon-ns-helper`) —
-**v2 binaries are not yet part of the signed, SLSA-attested release
-pipeline.** Since v2 is the shipping product (`CLAUDE.md` §1), this
-is a real integrity-supply-chain gap, not a documentation nit: an
-operator downloading a "signed Babbleon release" today gets
-cryptographic assurance over code that isn't the product they're
-running. Filed in `TODO.md`.
+**Finding — genuine gap, filed; sharper on a second pass.** The
+release `build` job currently bundles only the v1 binaries
+(`babbleon`, `babbleon-ns-helper`). This audit's first pass framed
+it as "v2 binaries are missing" — true, but undersells it.
+`crates/DEPRECATED-V1.md` states plainly: **"v1 is not the public
+product and will not ship."** The release pipeline isn't merely
+incomplete, it is actively contradicting a recorded operator
+decision every time it runs — publishing v1 binaries under the
+project's cosign identity and SLSA provenance is the opposite of
+"v2 is the product" (`CLAUDE.md` §1). Filed in `TODO.md` with the
+three bundled decisions this actually requires (which v2 binaries
+to ship, whether v2 is complete enough to tag a release at all, and
+whether to run a v1/v2 transition window) — deliberately NOT closed
+by this session, since none of the three is a call an autonomous
+session should make unilaterally on a supply-chain-security file.
 
 ---
 
@@ -339,7 +346,7 @@ an HTTP client dependency.
 | A05 Security Misconfiguration | **No fix — original finding was wrong** | Filter is active by default in code; only the envelope-doc banner was stale |
 | A06 Vulnerable/Outdated Components | Partial | `cargo vet` exemptions backfill — already tracked |
 | A07 Auth Failures | **Closed 2026-07-03** | `AttemptTracker` ported to `v2-babbleon-vault`, wired into `run_unlock` |
-| A08 Software/Data Integrity | **Gap** | v2 binaries missing from signed release pipeline — filed |
+| A08 Software/Data Integrity | **Gap, bigger than first scoped** | Release pipeline ships v1, which `DEPRECATED-V1.md` says will not ship — three bundled operator decisions, filed |
 | A09 Logging/Monitoring Failures | No fix | Covered by threat-model.md T1 + events.rs |
 | A10 SSRF | N/A | No network surface exists |
 
@@ -347,10 +354,17 @@ Of the four items this audit originally flagged, three turned out to
 be real (A01, A07, A08) and one was a false positive caused by
 trusting a stale doc banner instead of running the binary (A05,
 corrected in the same session — see that section above). A01 and A07
-closed the same day the audit landed; A08 remains open, needing a
-small operator decision (which v2 binaries ship) rather than a hard
-gate. The corrected A05 entry is the audit's own most useful
-finding in a sense: it is a reminder that "the doc says X" and "the
+closed the same day the audit landed. A08 remains open and is
+*larger* than this audit's first pass scoped it: the release
+pipeline doesn't just lack v2 binaries, it actively ships v1 ones
+under the project's signing identity, contradicting the recorded
+"v1 will not ship" decision in `crates/DEPRECATED-V1.md` — filed as
+three bundled operator decisions (which v2 binaries ship, whether v2
+is release-complete, whether to run a transition window)
+deliberately left for the operator rather than resolved
+unilaterally on a supply-chain-security file. The corrected A05
+entry is the audit's own most useful finding in a sense: it is a
+reminder that "the doc says X" and "the
 code does X" are different claims, and this audit's own first pass
 conflated them exactly once. Filed in `TODO.md` under "v2
 security-hygiene gaps (OWASP Top 10 audit)" so the group stays
