@@ -1,39 +1,52 @@
-# String-literal leak — bench finding 2026-06-21
+# String-literal leak — design note
 
-The first concrete data point from
-`v2-babbleon-resilience-bench` (archived at
-`crates/v2-babbleon-resilience-bench/runs/2026-06-21-claude-opus-4-7-subagent/`)
-identifies a load-bearing finding the prior layer planning did
-not weight correctly:
+> **Evidence framing corrected 2026-07-03.** This design note
+> originally cited `v2-babbleon-resilience-bench`'s 2026-06-21 run
+> as measured evidence for the finding below. That run (and the
+> 2026-06-22 layer-7 prototype run) were retracted in
+> `crates/v2-babbleon-resilience-bench/CORRECTIONS.md`: every
+> challenge's recovery target was a plain string literal that L2+L3
+> don't touch by design, so a 100% crack rate measured the absence
+> of literal-scrambling, not scramble strength — a tautology, not a
+> finding about adversary capability. `CORRECTIONS.md` itself
+> called amending this doc a required follow-up commit; that
+> follow-up never landed until now. The design conclusion below
+> does not depend on the retracted bench numbers — it follows from
+> reading the preprocessor's own tokenizer logic, not from running
+> an adversary against it — so the design stands; only the
+> "bench proved this" framing is removed.
 
-**Under L3-only and L2+L3, the subagent adversary recovered the
-"secret" in every graded cell (7/7 = 100%) by reading string
-literals that survive the scramble verbatim.**
+Reading the v2 preprocessor's own tokenizer settles this without
+needing an adversary trial: L2 (keyword scramble) and L3
+(whitespace-as-words) both treat an entire quoted string as one
+atomic `Word` token and never descend into its contents (see
+"Why this is true" below for the exact mechanism). Any secret a
+program compares against a string literal — a password check, an
+API key, a hash prefix, a magic flag name — therefore survives the
+scramble byte-for-byte and is trivially readable in the scrambled
+source.
 
-This document records the finding, cross-references the prior
-"layer 10" framing in `obfuscation-landscape.md`, and proposes
-the next design step — a narrow string-literal substitution
-mechanism scoped to operator-marked literals only.
+This document records that structural finding, cross-references
+the prior "layer 10" framing in `obfuscation-landscape.md`, and
+proposes the next design step — a narrow string-literal
+substitution mechanism scoped to operator-marked literals only.
 
-## What the bench measured
+## Why this is true
 
-4 challenges × 2 layer configurations = 8 cells, N=1 per cell,
-adversary = in-sandbox Claude-Opus-4.7 subagent.  Headline:
-
-| challenge            | L3-only    | L2+L3                       |
-|----------------------|------------|-----------------------------|
-| auth-literal-string  | 1/1 (100%) | 1/1 (100%)                  |
-| auth-hash-check      | 1/1 (100%) | 1/1 (100%)                  |
-| state-machine        | 1/1 (100%) | 0/0 (n/a) [+1 refused]      |
-| realistic-cli        | 1/1 (100%) | 1/1 (100%)                  |
-
-The state-machine L2+L3 cell is a provider-side safety-filter
-refusal, not credit for the scramble — see the run's README.
-
-## Why every cell cracked
-
-Each challenge's "secret" lives in a string literal that L2
-(keyword scramble) and L3 (whitespace-as-words) do not touch:
+Four small challenge programs (`auth-literal-string`,
+`auth-hash-check`, `state-machine`, `realistic-cli` — still present
+under `crates/v2-babbleon-resilience-bench/challenges/`, each
+carrying an in-file `# DEPRECATED` banner per `CORRECTIONS.md`,
+since they remain useful as illustrations even though a crack rate
+against them is not a measurement worth citing) make the point
+concrete. Every one of these values is visible verbatim in the
+scrambled source regardless of which of L2/L3/L4/L5/L6/L12 are
+active, because none of those layers open a string literal's
+contents — no adversary trial is needed to establish this; reading
+the literal out of the scrambled file with a text editor works just
+as well as an LLM subagent would. Each challenge's "secret" lives in
+a string literal that L2 (keyword scramble) and L3
+(whitespace-as-words) do not touch:
 
 | challenge            | leak                                                     |
 |----------------------|----------------------------------------------------------|
@@ -165,17 +178,18 @@ parameter, not a different design.
 - **Computed secrets** that are reconstructed at runtime from
   unmarked pieces.  Example: `auth(x): return x == chr(104) +
   chr(117) + chr(110) + chr(116) + chr(101) + chr(114) + "2"`.
-  Recovering the literal requires evaluating the construction.
-  **Bench-confirmed 2026-06-21:** the `computed-secret.toml`
-  challenge added to validate this hypothesis was cracked by the
-  Claude Opus 4.7 subagent in 1/1 attempts under L3-only — the
-  subagent piped the chr() construction to its `python3` Bash
-  tool and read off the answer.  Sandbox-equipped adversaries
-  defeat the "no literals" defence by execution, not by literal
-  search.  A separate layer (decoy injection, chunk reorder, or
-  *sandbox-resistant runtime construction*) is needed to address
-  this; layer 7 alone is insufficient even with the marker
-  discipline.
+  Recovering the literal requires evaluating the construction —
+  trivial for any adversary with code-execution access (an LLM
+  subagent with a `python3` tool just pipes the `chr()`
+  construction through it and reads off the result; this is a
+  first-principles capability claim, not something that needs a
+  bench trial to establish). Sandbox-equipped adversaries defeat
+  the "no literals" defence by execution, not by literal search —
+  see `docs/v2/sandbox-execution-defence.md` for the full threat
+  model and candidate countermeasures. A separate layer (decoy
+  injection, chunk reorder, or *sandbox-resistant runtime
+  construction*) is needed to address this; layer 7 alone is
+  insufficient even with the marker discipline.
 - **f-strings** (`f"prefix-{secret}-suffix"`).  The recognised
   pattern would need extension; today's `secret("...")`
   proposal handles only direct string literals.
@@ -225,14 +239,17 @@ session for the bench re-run.
 ## Cross-references
 
 - `crates/v2-babbleon-resilience-bench/runs/2026-06-21-claude-opus-4-7-subagent/README.md`
-  — the run that surfaced this finding.
+  — the retracted run that originally prompted this design note
+  (see the `INVALIDATED.md` stub in the same directory and
+  `crates/v2-babbleon-resilience-bench/CORRECTIONS.md` for why).
 - `docs/v2/obfuscation-landscape.md` §3 "Data obfuscation"
   — prior framing this doc supersedes (for the secret-strings
   sub-case).
 - `docs/v2/structure-scrambling.md` — the existing 5-layer
   composition story this layer joins.
 - HANDOFF.md 2026-06-21 night session block — operator-facing
-  summary of the bench run and this finding.
+  summary of the (now-retracted) bench run; see
+  `CORRECTIONS.md` for the retraction.
 - HANDOFF item 7 — "real Python tokenizer" swap.  This layer is
   designed to NOT block on item 7 by using a narrow opt-in
   marker recognisable to the MVP tokenizer.

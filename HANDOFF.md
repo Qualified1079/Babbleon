@@ -3537,6 +3537,20 @@ header rule).
 
 ## 2026-06-22 — layer-7 bench prototype validated (100% → 0%)
 
+> **INVALIDATED, 2026-07-03.** The run this block describes is
+> retracted in `crates/v2-babbleon-resilience-bench/CORRECTIONS.md`
+> (see `runs/2026-06-22-claude-opus-4-7-subagent-layer7-prototype/
+> INVALIDATED.md`): the challenge corpus embedded its recovery
+> target as a string literal / `chr()` construction that L2+L3
+> don't transform by design, so the "100%→0%" crack-fraction shift
+> below measures the presence/absence of literal-scrambling, not a
+> validated defeat of a simulated adversary. Do not cite the
+> numbers in this block as evidence of scramble strength. The
+> layer-7 *design* is unaffected by this retraction — see
+> `docs/v2/string-literal-leak.md`, corrected the same day this
+> header was added. `CORRECTIONS.md` itself called this header a
+> required follow-up commit; it did not land until now.
+
 One commit lands the experimental layer-7 secret-literal
 substitution mechanism as a bench-only prototype, and the
 bench-against-subagent run confirms the design at N=1.  This
@@ -3776,6 +3790,24 @@ Two dominant failure modes:
 ---
 
 ## 2026-06-21 night — adversarial-bench crate + FIRST DATA POINT
+
+> **INVALIDATED, 2026-07-03.** The crack-fraction numbers this
+> block reports are retracted in
+> `crates/v2-babbleon-resilience-bench/CORRECTIONS.md` (see
+> `runs/2026-06-21-claude-opus-4-7-subagent/INVALIDATED.md`): every
+> challenge's recovery target was a plain string literal (or
+> `chr()` ordinals / transition-table literals) that L2+L3 don't
+> transform by design, so the 100% crack rate measures the absence
+> of literal-scrambling, not scramble strength — a tautology, not a
+> finding about adversary capability. The bench harness itself
+> (CLI, prompt rendering, JSONL run records, scoring) is NOT
+> invalidated — only this run's challenge corpus and the
+> conclusions drawn from its numbers are. See
+> `docs/v2/string-literal-leak.md` and
+> `docs/v2/sandbox-execution-defence.md` for the corrected,
+> first-principles framing of what this run originally motivated.
+> `CORRECTIONS.md` itself called this header a required follow-up
+> commit; it did not land until now.
 
 Three commits land the `v2-babbleon-adversarial-bench` crate
 filed as "next big deliverable" in HANDOFF's 2026-06-21 evening
@@ -6693,3 +6725,93 @@ with that flag, 54/54 pass (38 lib + 5 + 2 + 2 + 4 + 3 across the
 five integration-test binaries), matching the previous session's own
 count exactly. `cargo clippy -p v2-babbleon-launch-untrusted
 --all-targets -- -D warnings` clean.
+
+---
+
+## 2026-07-03 (overnight autonomous session, continued) — landed the CORRECTIONS.md follow-up that never shipped
+
+While cross-checking `TODO.md`'s Phase-4 "wordlist-pool allocation
+table" item against `tools/wordlist-role-partitioning/` (to make sure
+that item wasn't a stale duplicate of already-closed work, same kind
+of check as the Phase 6 reconciliation above — it wasn't; that tool
+closed the *sizing* question, the Phase-4 item is about actually
+wiring per-role subsets into the runtime, still correctly open and
+gated on the adversarial-LLM re-test), landed on
+`crates/v2-babbleon-resilience-bench/CORRECTIONS.md`, which retracts
+the 2026-06-21 and 2026-06-22 bench runs (every recovery target sat
+in a plain string literal L2+L3 don't transform, making the 100%
+crack rate a tautology, not a finding). Its own commit message
+(`36c525c`) lists three follow-up items explicitly deferred to a
+later commit — including "amend HANDOFF.md +
+docs/v2/string-literal-leak.md + docs/v2/sandbox-execution-defence.md
+to reframe their bench-result citations." Grepped for evidence that
+follow-up landed since (`INVALIDATED`/`invalidated` headers in
+HANDOFF, "bench measured"/"Bench evidence" framing in the two docs)
+and found none — nearly two weeks later, both docs still presented
+the retracted runs as live measured evidence, and this file's
+2026-06-21/2026-06-22 blocks had no invalidation marker. Landed the
+deferred follow-up:
+
+- `docs/v2/string-literal-leak.md`: retitled from "bench finding
+  2026-06-21" to "design note"; added a dated correction blockquote;
+  replaced "What the bench measured" (a crack-rate table) with "Why
+  this is true" (the same four illustrative challenges, reframed as
+  worked examples of a fact establishable by reading
+  `identifier_scrambler.rs`/`scrambler.rs`'s tokenizer, not by
+  running an adversary); fixed the "Computed secrets" bullet's
+  "**Bench-confirmed 2026-06-21:**" framing to a first-principles
+  capability claim; updated cross-references to note the retraction.
+  The design itself (operator-marked `secret(...)` literal
+  substitution) is untouched — CORRECTIONS.md's own point is that it
+  doesn't need the retracted numbers to be justified.
+- `docs/v2/sandbox-execution-defence.md`: same treatment. Retitled
+  off "research note 2026-06-22"; added the correction blockquote;
+  reframed the "Bench evidence" section as a "Worked example" showing
+  the `chr()`-construction case is an *exact*, deterministic claim
+  (the scrambled program must compute the same value as the
+  unscrambled one, by construction) rather than something a crack-
+  rate measurement was needed to establish. Also caught and fixed a
+  second citation of the SAME invalidated run inside the
+  "Recommended sequence" section ("the secret-wrapped layer-7 cell
+  already demonstrated") — this one is a direct violation of
+  `runs/2026-06-22-claude-opus-4-7-subagent-layer7-prototype/
+  INVALIDATED.md`'s explicit "Do NOT cite the numbers in this
+  directory as evidence... in any document" instruction, sitting
+  unfixed since the retraction. Reframed as an explicit prediction
+  to verify with a proper re-run, not a result already in hand.
+- This file: added a dated correction blockquote to both the
+  "2026-06-21 night — adversarial-bench crate + FIRST DATA POINT" and
+  "2026-06-22 — layer-7 bench prototype validated (100% → 0%)"
+  headers, matching the "add a correction blockquote, don't silently
+  rewrite history" pattern this file already uses elsewhere (see the
+  `least-privilege.md` CAP_SETPCAP correction earlier this session).
+  The historical commit-by-commit narrative under each header is
+  otherwise untouched — it's an accurate record of what commits
+  landed and when; only the "these numbers are validated evidence"
+  implication is corrected.
+
+Verified the challenge files cited in the amended docs
+(`auth-literal-string.toml`, `auth-hash-check.toml`,
+`state-machine.toml`, `realistic-cli.toml`, `secret-wrapped.toml`) do
+still exist on disk with their `# DEPRECATED` banners intact and are
+excluded from `run_matrix.rs`'s default corpus, and that the two
+`INVALIDATED.md` run stubs say exactly what the docs now cite them as
+saying, before writing any of the above — did not take CORRECTIONS.md's
+summary on faith without checking the primary artifacts it describes.
+
+No code changed; doc-only. Did not touch `BENCHMARK-DESIGN.md`'s
+"implement the 4 literal-free challenge drafts" or "add
+wordlist_size + adversary_capability_tier + disclosure_mode to
+RunRecord" follow-ups — those are a properly-scoped future bench
+session's work, not a documentation-consistency fix.
+
+### For the next session
+
+- The actual re-run CORRECTIONS.md's new challenge corpus enables
+  (N>=5, literal-free challenges under `BENCHMARK-DESIGN.md`'s
+  requirements) still has not happened — `TODO.md`'s "Adversarial-LLM
+  re-test" item is correctly still open. This session only fixed
+  what the *retracted* run's citations claimed; it did not run a new
+  bench.
+- Same operator-gated items as every recent session: seccomp/exec
+  finding, PAM wiring, A08.

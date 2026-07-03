@@ -1,16 +1,42 @@
-# Sandbox-execution defence — research note 2026-06-22
+# Sandbox-execution defence — research note
 
-The bench's second-most-important finding (after the string-
-literal leak addressed by layer 7) is that a tool-using adversary
-defeats *any* purely-textual scramble by executing the code
-under analysis.  The `computed-secret` challenge demonstrates
-this concretely: the secret literal does not appear in the
-source at all (it is constructed at runtime from `chr()` calls),
-and the subagent still recovers it in 1 attempt under L3-only by
-piping the construction to `python3` via its Bash tool.
+> **Evidence framing corrected 2026-07-03.** This note originally
+> cited the 2026-06-21 `computed-secret` bench cell as measured
+> evidence for the threat below. That run was retracted in
+> `crates/v2-babbleon-resilience-bench/CORRECTIONS.md` — its
+> committed runs are archived-but-invalid data points, not a live
+> measurement (`CORRECTIONS.md` itself flagged amending this doc
+> as a required follow-up commit that never landed until now).
+> The threat this note addresses does not need that bench cell to
+> be real: it is a first-principles capability claim — any
+> adversary with code-execution access can evaluate a
+> constructed expression, independent of what any specific bench
+> run measured — and the design below stands on that basis alone.
 
-This document records the threat model, the bench evidence, the
-candidate countermeasures, and a recommended sequence.
+A tool-using adversary defeats *any* purely-textual scramble by
+executing the code under analysis, not by reading it. Any
+defence that relies on the source being *unreadable* fails the
+moment the source becomes *executable* in the adversary's
+environment — a scrambled Python file piped through `python3`
+still runs correctly (that is the whole point of a working
+obfuscator), and a computed value like
+`chr(115) + chr(105) + chr(108) + chr(118) + chr(101) + chr(114) + chr(55)`
+evaluates to `"silver7"` regardless of what identifiers or
+whitespace around it look like. Layer 7's operator-marked-literal
+mechanism (`docs/v2/string-literal-leak.md`) cannot address this
+case at all — there is no literal to wrap in `secret(...)` when
+the value is constructed at runtime from opaque pieces.
+
+The threat is broader than just Python's `chr()`. An adversary
+with any general-purpose execution surface (a shell, `curl`,
+`sqlite3`, a REPL) has many ways to recover a value that was
+computed-at-runtime under the legitimate program's actual state,
+because obfuscation of the *source text* cannot change what the
+*running program* computes.
+
+This document records the threat model, why the obvious textual
+defences don't address it, the candidate countermeasures, and a
+recommended sequence.
 
 ## Threat model
 
@@ -19,22 +45,21 @@ The HANDOFF spec's adversary model assumes:
 > The adversary uses BYOE scratchpad reasoning across many model
 > calls — not single-shot in-context cracking.
 
-The bench's in-sandbox subagent operationalises this: the
-subagent has a Bash tool that lets it run arbitrary shell
-commands, including `python3 -c '...'`.  Any defence that relies
-on the source being *unreadable* fails when the source becomes
-*executable* in the adversary's sandbox.
+An in-sandbox subagent adversary operationalises this concretely:
+given a Bash tool that lets it run arbitrary shell commands
+(including `python3 -c '...'`), any defence that relies on the
+source being *unreadable* fails the moment the source becomes
+*executable* in that sandbox — no amount of textual scrambling
+changes what `python3` computes when handed the (still-valid)
+scrambled program.
 
-The threat is broader than just `python3`.  A simulated adversary
-with general-purpose tools (curl, jq, sqlite, even just `bash`)
-has many ways to recover secrets that were intended to be
+The threat is broader than just `python3`.  An adversary with
+general-purpose tools (curl, jq, sqlite, even just `bash`) has
+many ways to recover secrets that were intended to be
 computed-at-runtime under the legitimate user's actual program
 state.
 
-## Bench evidence
-
-The 2026-06-21 `computed-secret` cell, archived at
-`crates/v2-babbleon-resilience-bench/runs/2026-06-21-claude-opus-4-7-subagent/`:
+## Worked example — why "no literals" doesn't help
 
 ```python
 def auth(x):
@@ -44,27 +69,27 @@ def auth(x):
     return False
 ```
 
-Goal: find x for which `auth(x)` returns True.  Answer:
+Goal: find x for which `auth(x)` returns True. Answer:
 `"silver7"`.
 
-The source contains zero string literals.  Layer 7 cannot
-address this challenge — there is nothing to wrap in
-`secret(...)`.  Under L3-only the subagent cracked it by
-running:
+The source contains zero string literals — layer 7's
+operator-marked-literal mechanism
+(`docs/v2/string-literal-leak.md`) has nothing to wrap in
+`secret(...)` here, so it cannot address this shape at all. Any
+adversary with a Python interpreter recovers the answer in one
+step regardless of which textual layers (L2/L3/L4/L5/L6/L12) are
+active, because none of them change program semantics:
 
 ```
 python3 -c 'print(chr(115)+chr(105)+chr(108)+chr(118)+chr(101)+chr(114)+chr(55))'
 ```
 
-Resulting in `silver7`.  Crack-fraction 1/1.
-
-The L2+L3 cell for the same challenge refused-by-policy (the
-subagent's API call tripped a safety filter on the dense
-auth/return-True pattern), so we do not have a clean L2+L3
-data point.  Working theory: L2+L3+(any future scramble that
-keeps the source executable) would crack identically because
-the subagent's defence-defeating move is *execution*, not
-*comprehension*.
+This is not a probabilistic claim that needs a crack-rate
+measurement — it is exact: the scrambled program, by construction,
+must still compute the same `chr()` concatenation the unscrambled
+program does, or the obfuscator would have broken the program. An
+adversary who can execute it sees exactly what the legitimate
+runtime sees.
 
 ## Why the obvious defences don't work
 
@@ -220,9 +245,9 @@ which is expensive per rotation.
 
 ## Recommended sequence
 
-The bench's qualitative call: **C1 is the right primary
-defence; C3 is the right secondary defence; C2 and C4 are
-supporting controls.**
+This document's qualitative call, from the candidate-countermeasure
+analysis above: **C1 is the right primary defence; C3 is the right
+secondary defence; C2 and C4 are supporting controls.**
 
 Sequence:
 
@@ -239,9 +264,16 @@ Sequence:
 
 After C1 lands, add a bench challenge `computed-secret-via-
 runtime` that uses `compute_secret(...)` instead of the raw
-`chr()` construction; expected outcome is the same
-1/1 (100%) → 0/N crack-fraction shift the secret-wrapped
-layer-7 cell already demonstrated.
+`chr()` construction. Expected outcome, by the same
+first-principles reasoning as the worked example above: crack
+fraction drops once the construction routes through the daemon
+rather than appearing in the source at all. Note this is a
+prediction to verify with a proper re-run under
+`BENCHMARK-DESIGN.md`'s requirements (per-cell N>=5, literal-free
+corpus), not a result already in hand — the `secret-wrapped`
+challenge and the 2026-06-22 layer-7-prototype run that exercised
+it are both retracted in `CORRECTIONS.md`, which explicitly directs
+against citing that run's numbers as evidence anywhere.
 
 ## What this does NOT close
 
@@ -268,6 +300,8 @@ layer-7 cell already demonstrated.
 - `docs/v2/obfuscation-landscape.md` §5 / §7 — addresses the
   "why not just X" alternatives.
 - `crates/v2-babbleon-resilience-bench/runs/2026-06-21-claude-opus-4-7-subagent/`
-  — the run that surfaced this finding.
+  — the retracted run that originally prompted this note; see its
+  `INVALIDATED.md` and `crates/v2-babbleon-resilience-bench/
+  CORRECTIONS.md` for why its numbers are not citable evidence.
 - HANDOFF item 9 (trust-tier inode gate) — the plumbing C2
   composes onto.
