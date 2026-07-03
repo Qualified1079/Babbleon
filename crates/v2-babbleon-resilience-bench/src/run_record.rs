@@ -46,6 +46,41 @@ use crate::adversary_capability::AdversaryCapabilityTier;
 use crate::layer_config::LayerConfig;
 use crate::scoring::ScoreOutcome;
 
+/// Per-tokenizer BPE token counts for the scrambled source produced
+/// by one `(challenge, layer_config)` cell.
+///
+/// # Why this type has no `tiktoken-rs` dependency
+///
+/// This struct is plain data (four integer fields, `serde` only) so
+/// `RunRecord`'s schema and JSONL wire format are identical whether
+/// or not the crate was built with `--features token-metrics`.
+/// Only the code that *populates* the field —
+/// [`crate::token_metrics::compute`], gated behind that feature —
+/// depends on `tiktoken-rs`.  See `crate::token_metrics`'s module
+/// doc for why the dependency is opt-in rather than a direct one
+/// (tiktoken-rs bundles ~2 MB of BPE merge tables per tokenizer;
+/// this crate is a default-workspace member, unlike the standalone-
+/// workspace `tools/tokenizer-benchmark`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TokenCounts {
+    /// Token count under `cl100k_base` (GPT-4-era, 100k vocab).
+    /// Always populated when `token_counts` is `Some`.
+    pub cl100k: usize,
+    /// Token count under `o200k_base` (GPT-4o-era, 200k vocab).
+    /// Always populated when `token_counts` is `Some`.
+    pub o200k: usize,
+    /// Token count under `r50k_base` (GPT-3-era, 50k vocab).
+    /// `None` unless the caller opted into the smaller-tokenizer
+    /// axis (`babbleon-bench score --include-smaller-tokenizers`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub r50k: Option<usize>,
+    /// Token count under `p50k_base` (Codex-era, 50k vocab).
+    /// `None` unless the caller opted into the smaller-tokenizer
+    /// axis.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p50k: Option<usize>,
+}
+
 /// One attempt's worth of bench data, JSON-serializable.
 ///
 /// # Schema-evolution discipline
@@ -98,6 +133,14 @@ pub struct RunRecord {
     /// construction.  Defaults to `None` (mode not recorded).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disclosed: Option<bool>,
+
+    /// Per-tokenizer BPE token counts for this cell's scrambled
+    /// source.  See [`TokenCounts`].  `None` by default — populated
+    /// via `RunRecord::with_token_counts` when the caller opts in
+    /// (`babbleon-bench score --record-token-counts`, which
+    /// requires the crate built with `--features token-metrics`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_counts: Option<TokenCounts>,
 }
 
 impl RunRecord {
@@ -124,6 +167,7 @@ impl RunRecord {
             wordlist_size: None,
             adversary_capability_tier: None,
             disclosed: None,
+            token_counts: None,
         }
     }
 
@@ -151,6 +195,14 @@ impl RunRecord {
     #[must_use]
     pub fn with_disclosed(mut self, disclosed: bool) -> Self {
         self.disclosed = Some(disclosed);
+        self
+    }
+
+    /// Builder: attach per-tokenizer token counts for this cell's
+    /// scrambled source.
+    #[must_use]
+    pub fn with_token_counts(mut self, counts: TokenCounts) -> Self {
+        self.token_counts = Some(counts);
         self
     }
 
@@ -189,7 +241,7 @@ impl RunRecord {
 
 #[cfg(test)]
 mod tests {
-    use super::RunRecord;
+    use super::{RunRecord, TokenCounts};
     use crate::layer_config::LayerConfig;
     use crate::scoring::ScoreOutcome;
 
@@ -463,5 +515,86 @@ mod tests {
             Some(AdversaryCapabilityTier::Sandboxed),
         );
         assert_eq!(r.disclosed, Some(true));
+    }
+
+    // ----- token_counts -----
+
+    #[test]
+    fn new_record_has_none_token_counts_by_default() {
+        let r = RunRecord::new("x", LayerConfig::l2_plus_l3(), "y", 0, ScoreOutcome::Pass);
+        assert!(r.token_counts.is_none());
+    }
+
+    #[test]
+    fn with_token_counts_builder_sets_field() {
+        let counts = TokenCounts {
+            cl100k: 12,
+            o200k: 11,
+            r50k: None,
+            p50k: None,
+        };
+        let r = RunRecord::new("x", LayerConfig::l3_only(), "y", 0, ScoreOutcome::Pass)
+            .with_token_counts(counts);
+        assert_eq!(r.token_counts, Some(counts));
+    }
+
+    #[test]
+    fn token_counts_json_round_trip_with_smaller_tokenizers() {
+        let counts = TokenCounts {
+            cl100k: 14,
+            o200k: 13,
+            r50k: Some(15),
+            p50k: Some(15),
+        };
+        let r = RunRecord::new("x", LayerConfig::l2_plus_l3(), "y", 0, ScoreOutcome::Pass)
+            .with_token_counts(counts);
+        let j = serde_json::to_string(&r).unwrap();
+        assert!(j.contains("\"cl100k\":14"), "{j}");
+        assert!(j.contains("\"r50k\":15"), "{j}");
+        let back: RunRecord = serde_json::from_str(&j).unwrap();
+        assert_eq!(back, r);
+    }
+
+    #[test]
+    fn token_counts_json_omits_r50k_p50k_when_none() {
+        let counts = TokenCounts {
+            cl100k: 14,
+            o200k: 13,
+            r50k: None,
+            p50k: None,
+        };
+        let r = RunRecord::new("x", LayerConfig::l2_plus_l3(), "y", 0, ScoreOutcome::Pass)
+            .with_token_counts(counts);
+        let j = serde_json::to_string(&r).unwrap();
+        assert!(!j.contains("r50k"), "{j}");
+        assert!(!j.contains("p50k"), "{j}");
+    }
+
+    #[test]
+    fn json_omits_token_counts_when_none() {
+        let r = RunRecord::new("x", LayerConfig::l2_plus_l3(), "y", 0, ScoreOutcome::Pass);
+        let j = serde_json::to_string(&r).unwrap();
+        assert!(!j.contains("token_counts"), "{j}");
+    }
+
+    #[test]
+    fn json_parses_old_records_without_token_counts_field() {
+        // Pre-token-metrics JSONL logs must still parse.
+        let raw = r#"{
+            "challenge_name": "c",
+            "layer_config": {
+                "layer2_keyword_scramble": true,
+                "layer2b_operator_scramble": false,
+                "layer3_whitespace_as_words": true,
+                "layer7_secret_literal": false,
+                "seed_byte": 0,
+                "epoch": 0
+            },
+            "evaluator_label": "old-adv",
+            "attempt_index": 0,
+            "outcome": "pass"
+        }"#;
+        let r: RunRecord = serde_json::from_str(raw).unwrap();
+        assert!(r.token_counts.is_none());
     }
 }

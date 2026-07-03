@@ -97,6 +97,11 @@
 //! - **`run_record`** — the canonical record of one `(challenge,
 //!   layer_config, evaluator, attempt)` outcome, JSON-serializable
 //!   so runs are persistable to disk between subcommand invocations.
+//! - **`token_metrics`** (feature `token-metrics`, default off) —
+//!   BPE token-count measurement for a cell's scrambled source,
+//!   mirroring `tools/tokenizer-benchmark`'s tokenizer set.
+//!   Optional because `tiktoken-rs` is heavy and this crate, unlike
+//!   `tools/tokenizer-benchmark`, is a default-workspace member.
 //!
 //! # Security baseline
 //!
@@ -150,6 +155,8 @@ pub mod scramble_pipeline;
 pub mod secret_literal_layer;
 pub mod success_predicate;
 pub mod summary;
+#[cfg(feature = "token-metrics")]
+pub mod token_metrics;
 
 pub use adversary_capability::AdversaryCapabilityTier;
 pub use evaluator::{run_attempts, Evaluator, SubprocessEvaluator};
@@ -161,4 +168,4 @@ pub use run_record::RunRecord;
 pub use scoring::{score, ScoreOutcome, POLICY_REFUSAL_PATTERNS};
 pub use scramble_pipeline::apply_layers;
 pub use success_predicate::SuccessPredicate;
-pub use summary::render_markdown;
+pub use summary::{render_markdown, render_token_density_markdown};

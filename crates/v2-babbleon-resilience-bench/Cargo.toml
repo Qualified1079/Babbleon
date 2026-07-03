@@ -24,6 +24,19 @@ missing_docs = "deny"
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
 
+[features]
+default = []
+# Opt-in BPE token-count measurement (crate::token_metrics), mirroring
+# tools/tokenizer-benchmark's tokenizer set (cl100k/o200k always,
+# r50k/p50k with --include-smaller-tokenizers). Off by default: this
+# crate is a default-workspace member (unlike the standalone-workspace
+# tools/tokenizer-benchmark), and tiktoken-rs bundles ~2 MB of BPE
+# merge tables per tokenizer -- too heavy to pull into every `cargo
+# build`/`cargo test` in the workspace for a measurement most bench
+# runs don't need. Same opt-in-feature pattern as crates/babbleon's
+# `tpm` / `fido2` hardware-backend features.
+token-metrics = ["dep:tiktoken-rs"]
+
 [dependencies]
 # Direct dependency on the preprocessor lets the bench drive scramble
 # in pure-compute mode with a deterministic synthetic secret.  No
@@ -38,6 +51,8 @@ thiserror = { workspace = true }
 # CLI binary only.
 anyhow = { workspace = true }
 clap = { workspace = true }
+# Optional: see the `token-metrics` feature above.
+tiktoken-rs = { version = "0.5", optional = true }
 
 [dev-dependencies]
 # Round-trip property tests for the scoring harness and challenge

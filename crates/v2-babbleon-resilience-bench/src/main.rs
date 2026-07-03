@@ -42,8 +42,8 @@ use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 
 use babbleon_resilience_bench_v2::{
-    apply_layers, build_prompt, render_markdown, run_attempts, score,
-    Challenge, LayerConfig, RunRecord, SubprocessEvaluator,
+    apply_layers, build_prompt, render_markdown, render_token_density_markdown,
+    run_attempts, score, Challenge, LayerConfig, RunRecord, SubprocessEvaluator,
 };
 
 /// CLI entry struct parsed by clap.
@@ -103,6 +103,18 @@ enum Command {
         /// to 0 for one-shot scoring.
         #[arg(long, default_value_t = 0)]
         attempt: u32,
+        /// Attach BPE token counts (`cl100k_base`, `o200k_base`) for
+        /// this cell's scrambled source to the emitted `RunRecord`.
+        /// Requires the binary built with `--features token-metrics`
+        /// (off by default; see `crate::token_metrics`).
+        #[arg(long, default_value_t = false)]
+        record_token_counts: bool,
+        /// With `--record-token-counts`, also count under the
+        /// smaller-vocab `r50k_base` / `p50k_base` tokenizers
+        /// (mirrors `tools/tokenizer-benchmark --include-smaller`).
+        /// Ignored without `--record-token-counts`.
+        #[arg(long, default_value_t = false)]
+        include_smaller_tokenizers: bool,
     },
 
     /// Aggregate one or more JSONL files of `RunRecord`s and emit
@@ -317,12 +329,16 @@ fn main() -> Result<()> {
             model_output,
             evaluator,
             attempt,
+            record_token_counts,
+            include_smaller_tokenizers,
         } => subcommand_score(
             &challenge,
             layer_config.to_config(),
             &model_output,
             &evaluator,
             attempt,
+            record_token_counts,
+            include_smaller_tokenizers,
         ),
         Command::Summary {
             records,
@@ -383,6 +399,8 @@ fn subcommand_score(
     model_output_path: &Path,
     evaluator: &str,
     attempt: u32,
+    record_token_counts: bool,
+    include_smaller_tokenizers: bool,
 ) -> Result<()> {
     let challenge = Challenge::from_toml_file(challenge_path)
         .with_context(|| format!("load challenge {}", challenge_path.display()))?;
@@ -398,6 +416,13 @@ fn subcommand_score(
         attempt,
         outcome,
     );
+    let record = maybe_record_token_counts(
+        record,
+        record_token_counts,
+        include_smaller_tokenizers,
+        &challenge.source,
+        config,
+    )?;
     let line = record
         .to_jsonl()
         .map_err(|e| anyhow!("serialize run record: {e}"))?;
@@ -405,6 +430,53 @@ fn subcommand_score(
     stdout.write_all(line.as_bytes()).context("write stdout")?;
     stdout.flush().context("flush stdout")?;
     Ok(())
+}
+
+/// Attach `--record-token-counts` BPE token-count metadata to
+/// `record`, when requested.  Two implementations selected at
+/// compile time by the `token-metrics` feature so `subcommand_score`
+/// itself has no `#[cfg]` in its body: with the feature compiled
+/// in, this re-scrambles `source` under `config` (the same call
+/// `subcommand_prompt` makes — cheap, pure-compute, no daemon round
+/// trip) and measures it; without the feature, requesting the flag
+/// is a clear configuration error rather than a silent no-op.
+#[cfg(feature = "token-metrics")]
+fn maybe_record_token_counts(
+    record: RunRecord,
+    record_token_counts: bool,
+    include_smaller: bool,
+    source: &str,
+    config: LayerConfig,
+) -> Result<RunRecord> {
+    if !record_token_counts {
+        return Ok(record);
+    }
+    let scrambled =
+        apply_layers(source, config).map_err(|e| anyhow!("scramble: {e}"))?;
+    let counts = babbleon_resilience_bench_v2::token_metrics::compute(
+        &scrambled,
+        include_smaller,
+    );
+    Ok(record.with_token_counts(counts))
+}
+
+#[cfg(not(feature = "token-metrics"))]
+fn maybe_record_token_counts(
+    record: RunRecord,
+    record_token_counts: bool,
+    _include_smaller: bool,
+    _source: &str,
+    _config: LayerConfig,
+) -> Result<RunRecord> {
+    if record_token_counts {
+        anyhow::bail!(
+            "--record-token-counts requires the binary built with \
+             `cargo build --features token-metrics` (tiktoken-rs is \
+             opt-in to keep it out of the default workspace build; \
+             see crate::token_metrics)"
+        );
+    }
+    Ok(record)
 }
 
 fn subcommand_summary(
@@ -423,9 +495,18 @@ fn subcommand_summary(
         all_records.append(&mut parsed);
     }
     let table = render_markdown(&all_records);
+    let token_density = render_token_density_markdown(&all_records);
     {
         let mut stdout = io::stdout().lock();
         stdout.write_all(table.as_bytes()).context("write stdout")?;
+        if !token_density.is_empty() {
+            stdout
+                .write_all(b"\n## Token density\n\n")
+                .context("write stdout")?;
+            stdout
+                .write_all(token_density.as_bytes())
+                .context("write stdout")?;
+        }
         stdout.flush().context("flush stdout")?;
     }
 

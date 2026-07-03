@@ -31,7 +31,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::run_record::RunRecord;
+use crate::run_record::{RunRecord, TokenCounts};
 use crate::scoring::ScoreOutcome;
 
 /// One aggregated cell of the summary table.
@@ -225,11 +225,71 @@ pub fn render_single_cell_fraction(
     format_cell(cell)
 }
 
+/// Aggregate a flat list of `RunRecord`s into one [`TokenCounts`]
+/// row per `(challenge_name, layer_config_label)` pair, ignoring
+/// evaluator / attempt / outcome — token counts are a property of
+/// the scrambled source under a given layer config, not of any one
+/// evaluator's attempt at it.
+///
+/// Records with `token_counts: None` (the common case, since
+/// `--record-token-counts` is opt-in) contribute nothing.  If two
+/// records for the same `(challenge, layer_config)` cell carry
+/// *different* token counts — which should not happen, since the
+/// scramble is a deterministic function of `(challenge.source,
+/// layer_config)` — the first one encountered wins; this reports
+/// the discrepancy rather than silently averaging it away only in
+/// the sense that a caller diffing repeated bench runs would notice
+/// a value that doesn't match a fresh `--record-token-counts` run.
+#[must_use]
+pub fn aggregate_token_counts(
+    records: &[RunRecord],
+) -> BTreeMap<(String, String), TokenCounts> {
+    let mut rows: BTreeMap<(String, String), TokenCounts> = BTreeMap::new();
+    for r in records {
+        if let Some(counts) = r.token_counts {
+            rows.entry((r.challenge_name.clone(), r.layer_config.label()))
+                .or_insert(counts);
+        }
+    }
+    rows
+}
+
+/// Render the token-density rows as a markdown table, one row per
+/// `(challenge, layer_config)` cell that carries token-count data.
+/// Returns an empty string when no record in `records` carries
+/// token counts, so callers can skip appending an empty section
+/// rather than emit a header with zero rows underneath it.
+#[must_use]
+pub fn render_token_density_markdown(records: &[RunRecord]) -> String {
+    use std::fmt::Write as _;
+    let rows = aggregate_token_counts(records);
+    if rows.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    out.push_str("| challenge | layer config | cl100k | o200k | r50k | p50k |\n");
+    out.push_str("|---|---|---|---|---|---|\n");
+    for ((challenge, label), counts) in &rows {
+        let _ = writeln!(
+            out,
+            "| {challenge} | {label} | {} | {} | {} | {} |",
+            counts.cl100k,
+            counts.o200k,
+            counts.r50k.map_or_else(|| "—".to_string(), |v| v.to_string()),
+            counts.p50k.map_or_else(|| "—".to_string(), |v| v.to_string()),
+        );
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{aggregate, render_markdown, CellSummary};
+    use super::{
+        aggregate, aggregate_token_counts, render_markdown,
+        render_token_density_markdown, CellSummary,
+    };
     use crate::layer_config::LayerConfig;
-    use crate::run_record::RunRecord;
+    use crate::run_record::{RunRecord, TokenCounts};
     use crate::scoring::ScoreOutcome;
 
     fn make_record(
@@ -423,6 +483,83 @@ mod tests {
         // (without surrounding spaces — the renderer pads with one
         // space on each side of the cell content).
         assert!(table.contains("| — |"), "{table}");
+    }
+
+    // ----- token-density aggregation -----
+
+    fn counts(cl100k: usize, o200k: usize) -> TokenCounts {
+        TokenCounts {
+            cl100k,
+            o200k,
+            r50k: None,
+            p50k: None,
+        }
+    }
+
+    #[test]
+    fn aggregate_token_counts_ignores_records_without_counts() {
+        let cfg = LayerConfig::l2_plus_l3();
+        let records =
+            vec![make_record("c1", cfg, "adv-a", 0, ScoreOutcome::Pass)];
+        assert!(aggregate_token_counts(&records).is_empty());
+    }
+
+    #[test]
+    fn aggregate_token_counts_keys_by_challenge_and_layer_config_only() {
+        let cfg = LayerConfig::l2_plus_l3();
+        let mut r1 =
+            make_record("c1", cfg, "adv-a", 0, ScoreOutcome::Pass);
+        r1.token_counts = Some(counts(14, 13));
+        let mut r2 =
+            make_record("c1", cfg, "adv-b", 0, ScoreOutcome::Fail);
+        r2.token_counts = Some(counts(14, 13));
+
+        let rows = aggregate_token_counts(&[r1, r2]);
+        // Two records, same (challenge, layer_config), different
+        // evaluators -> one row, not two.
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows.get(&("c1".to_string(), cfg.label())),
+            Some(&counts(14, 13)),
+        );
+    }
+
+    #[test]
+    fn render_token_density_markdown_empty_when_no_counts() {
+        let cfg = LayerConfig::l2_plus_l3();
+        let records =
+            vec![make_record("c1", cfg, "adv-a", 0, ScoreOutcome::Pass)];
+        assert_eq!(render_token_density_markdown(&records), "");
+    }
+
+    #[test]
+    fn render_token_density_markdown_shows_row_with_dashes_for_smaller() {
+        let cfg = LayerConfig::l3_only();
+        let mut r = make_record("c1", cfg, "adv-a", 0, ScoreOutcome::Pass);
+        r.token_counts = Some(counts(20, 18));
+        let table = render_token_density_markdown(&[r]);
+        assert!(table.contains("| cl100k | o200k | r50k | p50k |"), "{table}");
+        assert!(
+            table.contains(&format!("| c1 | {} | 20 | 18 | — | — |", cfg.label())),
+            "{table}",
+        );
+    }
+
+    #[test]
+    fn render_token_density_markdown_shows_smaller_tokenizer_values() {
+        let cfg = LayerConfig::l3_only();
+        let mut r = make_record("c1", cfg, "adv-a", 0, ScoreOutcome::Pass);
+        r.token_counts = Some(TokenCounts {
+            cl100k: 20,
+            o200k: 18,
+            r50k: Some(21),
+            p50k: Some(21),
+        });
+        let table = render_token_density_markdown(&[r]);
+        assert!(
+            table.contains(&format!("| c1 | {} | 20 | 18 | 21 | 21 |", cfg.label())),
+            "{table}",
+        );
     }
 
     #[test]
