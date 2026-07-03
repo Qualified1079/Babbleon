@@ -156,6 +156,41 @@ dedupes, and draws from the union.  The manifest records each
 source's SHA-256 + contributed-after-dedupe count, so the
 cross-language mix is auditable.
 
+By default every word in the union is equally likely to be drawn
+regardless of which source it came from — a uniform union of a
+370k-word English list and a 40k-word German list draws ~90%
+English words per role purely from the size ratio.  Bias that
+with `--source-weight <path>=<weight>` (repeatable, keyed by the
+exact `--wordlist-path` string):
+
+```
+cargo run --release -- \
+  --extract-to /tmp/rp-weighted \
+  --wordlist-path ../../crates/babbleon/wordlist/words.txt \
+  --wordlist-path /tmp/de_ascii.txt \
+  --source-weight /tmp/de_ascii.txt=3.0
+```
+
+A word from a weight-`3.0` source is 3× as likely to be drawn
+ahead of a weight-`1.0` word from another source, independent of
+each source's raw size — so the operator can push German
+representation up without maintaining a hand-shuffled pre-mixed
+file.  Weights must be finite and `> 0.0`; an unweighted source
+defaults to `1.0`.  A `--source-weight` path that doesn't match
+any `--wordlist-path` argument is a hard error (typo protection,
+same pattern as `--role-tokens`' unknown-role check).  With zero
+`--source-weight` flags, extraction runs through the plain
+uniform extractor — byte-identical seed→output behaviour to
+every extraction this tool has produced before this flag existed.
+With one or more, it runs through a separate weighted extractor
+(Efraimidis–Spirakis A-Res weighted sampling without replacement)
+that is deterministic in the same seed→output sense but is **not**
+required to match the uniform extractor's output for equal
+weights — the two are kept as separate code paths specifically so
+existing documented seed→hash pairs (`RESULTS.md`, `HANDOFF.md`)
+never silently change underneath a future edit to this file.  The
+manifest records `source_weights:` (or `none (uniform draw)`).
+
 Fold diacritics before the dedupe (mirrors
 `tools/wordlist-density-analysis --normalise-diacritics`) so a
 raw non-English source doesn't carry `café`/`naïve`/`köln` into

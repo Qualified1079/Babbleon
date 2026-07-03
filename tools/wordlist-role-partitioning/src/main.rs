@@ -87,6 +87,21 @@ fn parse_role_tokens_arg(raw: &str) -> Result<(String, f64), String> {
     Ok((name.to_string(), value))
 }
 
+fn parse_source_weight_arg(raw: &str) -> Result<(PathBuf, f64), String> {
+    let (path, value) = raw
+        .rsplit_once('=')
+        .ok_or_else(|| format!("expected `path=weight`, got {raw:?}"))?;
+    let value: f64 = value
+        .parse()
+        .map_err(|e| format!("invalid weight for source {path:?}: {e}"))?;
+    if !value.is_finite() || value <= 0.0 {
+        return Err(format!(
+            "weight for source {path:?} must be finite and > 0.0"
+        ));
+    }
+    Ok((PathBuf::from(path), value))
+}
+
 fn apply_role_tokens_overrides(
     roles: &mut [Role],
     overrides: &[(String, f64)],
@@ -177,6 +192,20 @@ struct Args {
     /// unset.
     #[arg(long)]
     wordlist_path: Vec<PathBuf>,
+
+    /// Relative draw weight for a `--wordlist-path` source, as
+    /// `path=weight` (repeatable).  A word from a weight-`2.0`
+    /// source is twice as likely to be drawn ahead of a weight-`1.0`
+    /// word from another source — lets an operator bias role
+    /// selection toward (or away from) a specific language/corpus
+    /// without maintaining a pre-shuffled file.  `path` must exactly
+    /// match one of the `--wordlist-path` arguments; unmatched or
+    /// unweighted sources default to `1.0`.  Weight must be finite
+    /// and `> 0.0`.  Ignored unless at least one `--source-weight` is
+    /// given — with none, extraction uses the plain uniform
+    /// extractor (byte-identical to before this flag existed).
+    #[arg(long = "source-weight", value_parser = parse_source_weight_arg)]
+    source_weight: Vec<(PathBuf, f64)>,
 
     /// Extract disjoint per-role subsets into this directory.
     /// Emits one text file per role — for example
@@ -296,6 +325,13 @@ fn main() -> Result<()> {
         } else {
             args.wordlist_path.clone()
         };
+        for (path, _) in &args.source_weight {
+            if !wordlist_paths.contains(path) {
+                anyhow::bail!(
+                    "--source-weight path {path:?} does not match any --wordlist-path argument"
+                );
+            }
+        }
         extract_and_write(
             &table,
             &wordlist_paths,
@@ -303,6 +339,7 @@ fn main() -> Result<()> {
             &extract_input,
             args.quiet,
             args.normalise_diacritics,
+            &args.source_weight,
         )?;
     }
 
@@ -401,6 +438,12 @@ struct UnionedWordlist {
     union: Vec<String>,
     /// Manifest rows, one per source file.
     sources: Vec<UnionSourceRow>,
+    /// `weights[i]` is the draw weight of `union[i]`'s *originating*
+    /// source (first-occurrence source wins on cross-source dedupe,
+    /// matching `sources[..].contributed` accounting).  Always the
+    /// same length as `union`.  All `1.0` when the caller supplied
+    /// no `--source-weight`.
+    weights: Vec<f64>,
 }
 
 struct UnionSourceRow {
@@ -414,10 +457,19 @@ fn load_and_union_wordlists(
     paths: &[PathBuf],
     quiet: bool,
     normalise_diacritics: bool,
+    source_weights: &[(PathBuf, f64)],
 ) -> Result<UnionedWordlist> {
     use sha2::{Digest, Sha256};
 
+    let weight_for = |path: &PathBuf| -> f64 {
+        source_weights
+            .iter()
+            .find(|(p, _)| p == path)
+            .map_or(1.0, |(_, w)| *w)
+    };
+
     let mut union: Vec<String> = Vec::new();
+    let mut weights: Vec<f64> = Vec::new();
     let mut seen: std::collections::HashSet<String> =
         std::collections::HashSet::new();
     let mut sources: Vec<UnionSourceRow> = Vec::with_capacity(paths.len());
@@ -426,6 +478,7 @@ fn load_and_union_wordlists(
         let raw = std::fs::read_to_string(path)
             .with_context(|| format!("read wordlist at {}", path.display()))?;
         let raw_entries = raw.lines().filter(|w| !w.trim().is_empty()).count();
+        let this_weight = weight_for(path);
         let mut contributed = 0usize;
         for line in raw.lines() {
             let w = line.trim();
@@ -447,6 +500,7 @@ fn load_and_union_wordlists(
             }
             if seen.insert(w.clone()) {
                 union.push(w);
+                weights.push(this_weight);
                 contributed += 1;
             }
         }
@@ -455,7 +509,7 @@ fn load_and_union_wordlists(
         let sha = hasher.finalize();
         if !quiet {
             println!(
-                "\nLoaded {raw_entries} words from {} ({contributed} new after dedupe)",
+                "\nLoaded {raw_entries} words from {} ({contributed} new after dedupe, weight {this_weight})",
                 path.display(),
             );
         }
@@ -473,7 +527,7 @@ fn load_and_union_wordlists(
     if !quiet && paths.len() > 1 {
         println!("Union: {} words across {} sources", union.len(), paths.len());
     }
-    Ok(UnionedWordlist { union, sources })
+    Ok(UnionedWordlist { union, sources, weights })
 }
 
 /// Bytes that will be fed to `extract::extract_disjoint_subsets` +
@@ -541,15 +595,30 @@ fn extract_and_write(
     seed_input: &ExtractSeedInput,
     quiet: bool,
     normalise_diacritics: bool,
+    source_weight: &[(PathBuf, f64)],
 ) -> Result<()> {
-    let sources = load_and_union_wordlists(wordlist_paths, quiet, normalise_diacritics)?;
+    let sources =
+        load_and_union_wordlists(wordlist_paths, quiet, normalise_diacritics, source_weight)?;
     // Vec<String> in insertion order.  Convert to &str borrow so
     // extract::extract_disjoint_subsets can take it directly.
     let words_borrow: Vec<&str> = sources.union.iter().map(String::as_str).collect();
 
-    let extraction =
+    // Weighted sources use the weighted extractor; with none supplied
+    // (the common case), stay on the plain uniform extractor so
+    // existing seed -> hash reproducibility (RESULTS.md, HANDOFF.md)
+    // is untouched byte-for-byte.
+    let extraction = if source_weight.is_empty() {
         extract::extract_disjoint_subsets(&words_borrow, table, &seed_input.seed_bytes)
-            .map_err(|e| anyhow::anyhow!("extraction failed: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("extraction failed: {e}"))?
+    } else {
+        extract::extract_disjoint_subsets_weighted(
+            &words_borrow,
+            &sources.weights,
+            table,
+            &seed_input.seed_bytes,
+        )
+        .map_err(|e| anyhow::anyhow!("weighted extraction failed: {e}"))?
+    };
     extraction
         .assert_disjoint()
         .map_err(|e| anyhow::anyhow!("disjointness sanity check failed: {e}"))?;
@@ -589,6 +658,14 @@ fn extract_and_write(
     manifest.push_str(&format!("union_size: {}\n", sources.union.len()));
     manifest.push_str(&format!("source_count: {}\n", sources.sources.len()));
     manifest.push_str(&format!("normalise_diacritics: {normalise_diacritics}\n"));
+    if source_weight.is_empty() {
+        manifest.push_str("source_weights: none (uniform draw)\n");
+    } else {
+        manifest.push_str("source_weights:\n");
+        for (path, weight) in source_weight {
+            manifest.push_str(&format!("  {}: {weight}\n", path.display()));
+        }
+    }
     manifest.push_str("\nsources (path,raw_entries,contributed,sha256):\n");
     for src in &sources.sources {
         manifest.push_str(&format!(
@@ -637,8 +714,36 @@ fn extract_and_write(
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_role_tokens_overrides, parse_role_tokens_arg};
+    use super::{apply_role_tokens_overrides, parse_role_tokens_arg, parse_source_weight_arg};
     use crate::params::Role;
+    use std::path::PathBuf;
+
+    #[test]
+    fn parse_source_weight_arg_accepts_valid_input() {
+        let (path, weight) = parse_source_weight_arg("/tmp/de.txt=3.0").unwrap();
+        assert_eq!(path, PathBuf::from("/tmp/de.txt"));
+        assert!((weight - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn parse_source_weight_arg_rejects_missing_equals() {
+        assert!(parse_source_weight_arg("/tmp/de.txt3.0").is_err());
+    }
+
+    #[test]
+    fn parse_source_weight_arg_rejects_zero_weight() {
+        assert!(parse_source_weight_arg("/tmp/de.txt=0.0").is_err());
+    }
+
+    #[test]
+    fn parse_source_weight_arg_rejects_negative_weight() {
+        assert!(parse_source_weight_arg("/tmp/de.txt=-1.0").is_err());
+    }
+
+    #[test]
+    fn parse_source_weight_arg_rejects_non_numeric_weight() {
+        assert!(parse_source_weight_arg("/tmp/de.txt=abc").is_err());
+    }
 
     #[test]
     fn parse_role_tokens_arg_accepts_valid_input() {
@@ -740,7 +845,7 @@ mod tests {
         let path = dir.join("wl.txt");
         std::fs::write(&path, "cafe\ncafé\n").unwrap();
 
-        let result = super::load_and_union_wordlists(&[path], true, false).unwrap();
+        let result = super::load_and_union_wordlists(&[path], true, false, &[]).unwrap();
         assert_eq!(result.union, vec!["cafe", "café"]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -754,7 +859,7 @@ mod tests {
         // "café" normalises to "cafe", which we already saw — dropped.
         std::fs::write(&path, "cafe\ncafé\nnaïve\n").unwrap();
 
-        let result = super::load_and_union_wordlists(&[path], true, true).unwrap();
+        let result = super::load_and_union_wordlists(&[path], true, true, &[]).unwrap();
         assert_eq!(result.union, vec!["cafe", "naive"]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -770,7 +875,7 @@ mod tests {
         std::fs::write(&path_b, "cafe\n").unwrap();
 
         let result =
-            super::load_and_union_wordlists(&[path_a, path_b], true, true).unwrap();
+            super::load_and_union_wordlists(&[path_a, path_b], true, true, &[]).unwrap();
         assert_eq!(result.union, vec!["cafe"]);
         assert_eq!(result.sources[0].contributed, 1);
         // Second source's "cafe" normalises to something already

@@ -101,6 +101,24 @@ pub enum ExtractError {
         needed: usize,
         available: usize,
     },
+    /// `weights.len() != wordlist.len()` in
+    /// [`extract_disjoint_subsets_weighted`].  Internal-invariant
+    /// error: the CLI builds `weights` 1:1 alongside the unioned
+    /// wordlist, so a mismatch means a caller-side bug, not a
+    /// user-input problem.
+    WeightsLengthMismatch {
+        wordlist_len: usize,
+        weights_len: usize,
+    },
+    /// A source weight was non-finite or `<= 0.0`.  Zero or negative
+    /// weight would mean "never select this source's words", which
+    /// is what `--wordlist-path` omission already expresses more
+    /// directly; the extractor rejects it here rather than silently
+    /// producing a skewed or NaN-propagating draw.
+    InvalidWeight {
+        index: usize,
+        weight: f64,
+    },
 }
 
 impl std::fmt::Display for ExtractError {
@@ -117,6 +135,17 @@ impl std::fmt::Display for ExtractError {
             } => write!(
                 f,
                 "role {role:?} needs {needed} words but only {available} remain in the wordlist"
+            ),
+            Self::WeightsLengthMismatch {
+                wordlist_len,
+                weights_len,
+            } => write!(
+                f,
+                "wordlist has {wordlist_len} entries but {weights_len} weights were supplied"
+            ),
+            Self::InvalidWeight { index, weight } => write!(
+                f,
+                "weight at index {index} is {weight}; weights must be finite and > 0.0"
             ),
         }
     }
@@ -189,6 +218,126 @@ pub fn extract_disjoint_subsets(
     Ok(Extraction { subsets })
 }
 
+/// Weighted variant of [`extract_disjoint_subsets`].
+///
+/// # Why this exists
+///
+/// The unweighted extractor draws every word from the union with
+/// equal probability, which is right for a single-language corpus
+/// but wrong once an operator unions multiple `--wordlist-path`
+/// sources of very different sizes (e.g. a 370k-word English
+/// baseline plus a 40k-word filtered German list) and wants a
+/// specific per-source representation in the output instead of
+/// "whatever the size ratio happens to produce" — without
+/// maintaining a hand-shuffled pre-mixed file.
+///
+/// `weights[i]` is the relative draw weight of `wordlist[i]`
+/// (typically: every word from the same source shares one weight).
+/// A word with weight `2.0` is twice as likely to be drawn ahead of
+/// a weight-`1.0` word, source-size differences aside.
+///
+/// # Algorithm
+///
+/// [Efraimidis–Spirakis A-Res weighted sampling without
+/// replacement](https://en.wikipedia.org/wiki/Reservoir_sampling#Algorithm_A-Res):
+/// draw `u_i ~ Uniform(0, 1)` per index, compute priority key
+/// `k_i = u_i^(1/w_i)`, and take indices in descending-key order.
+/// Higher weight pulls `k_i` closer to 1 (since `1/w_i < 1` for
+/// `w_i > 1` flattens the curve toward the upper end), so
+/// higher-weight items are more likely to sort early.  With every
+/// weight equal, this reduces to a uniform random permutation — the
+/// same distribution [`extract_disjoint_subsets`] produces, though
+/// NOT the same seed→output mapping (different algorithm, different
+/// RNG draw sequence), which is exactly why the two functions are
+/// kept separate rather than merged behind an "all weights 1.0"
+/// fast path: existing extractions' documented seed→hash pairs in
+/// `RESULTS.md` and `HANDOFF.md` must stay reproducible against
+/// [`extract_disjoint_subsets`] forever.
+///
+/// The full index set is sorted once by key (`O(N log N)`), then
+/// each role in `allocation`'s row order drains the next
+/// `pool_size` indices off the front — the same "roles sequentially
+/// drain a shared shuffled pool" shape as the unweighted extractor,
+/// generalized to a weighted shuffle.
+///
+/// # Errors
+///
+/// - [`ExtractError::WeightsLengthMismatch`] if `weights.len() !=
+///   wordlist.len()`.
+/// - [`ExtractError::InvalidWeight`] if any weight is non-finite or
+///   `<= 0.0`.
+/// - [`ExtractError::WordlistTooSmall`] / `RolePoolExceedsWordlist`
+///   as in the unweighted extractor.
+pub fn extract_disjoint_subsets_weighted(
+    wordlist: &[&str],
+    weights: &[f64],
+    allocation: &AllocationTable,
+    seed: &[u8],
+) -> Result<Extraction, ExtractError> {
+    if weights.len() != wordlist.len() {
+        return Err(ExtractError::WeightsLengthMismatch {
+            wordlist_len: wordlist.len(),
+            weights_len: weights.len(),
+        });
+    }
+    for (index, &w) in weights.iter().enumerate() {
+        if !w.is_finite() || w <= 0.0 {
+            return Err(ExtractError::InvalidWeight { index, weight: w });
+        }
+    }
+
+    let total_needed: usize = allocation.rows.iter().map(|r| r.pool_size).sum();
+    if total_needed > wordlist.len() {
+        return Err(ExtractError::WordlistTooSmall {
+            needed: total_needed,
+            available: wordlist.len(),
+        });
+    }
+    for row in &allocation.rows {
+        if row.pool_size > wordlist.len() {
+            return Err(ExtractError::RolePoolExceedsWordlist {
+                role: row.role.name.clone(),
+                needed: row.pool_size,
+                available: wordlist.len(),
+            });
+        }
+    }
+
+    let mut rng = derive_prng(seed);
+    use rand::Rng;
+    let mut keyed: Vec<(f64, usize)> = (0..wordlist.len())
+        .map(|idx| {
+            // `gen_range` excludes 1.0 and (in practice) never
+            // returns exactly 0.0 for a 52-bit-mantissa f64 draw;
+            // clamp defensively so `ln`/`powf` never sees a literal
+            // zero even in that astronomically unlikely case.
+            let u: f64 = rng.gen_range(f64::MIN_POSITIVE..1.0);
+            let key = u.powf(1.0 / weights[idx]);
+            (key, idx)
+        })
+        .collect();
+    // Descending by key: highest-priority (most likely to be a
+    // weighted sample) first.  `partial_cmp` is safe here because
+    // `key` is a finite `powf` of two finite, in-range operands.
+    keyed.sort_by(|a, b| b.0.partial_cmp(&a.0).expect("keys are always finite"));
+
+    let mut ordered = keyed.into_iter().map(|(_, idx)| idx);
+    let mut subsets = Vec::with_capacity(allocation.rows.len());
+    for row in &allocation.rows {
+        let words: Vec<String> = ordered
+            .by_ref()
+            .take(row.pool_size)
+            .map(|idx| wordlist[idx].to_string())
+            .collect();
+        subsets.push(RoleSubset {
+            role_name: row.role.name.clone(),
+            words,
+        });
+    }
+
+    Ok(Extraction { subsets })
+}
+
 /// SHA-256(seed) → 32 bytes → ChaCha20Rng.  Public so tests can
 /// verify determinism explicitly.
 #[must_use]
@@ -215,7 +364,9 @@ impl NextU64Range for ChaCha20Rng {
 
 #[cfg(test)]
 mod tests {
-    use super::{derive_prng, extract_disjoint_subsets, ExtractError};
+    use super::{
+        derive_prng, extract_disjoint_subsets, extract_disjoint_subsets_weighted, ExtractError,
+    };
     use crate::allocation::AllocationTable;
     use crate::params::{AttackerModel, Role, WordlistModel};
 
@@ -339,6 +490,114 @@ mod tests {
         for _ in 0..64 {
             assert_eq!(a.next_u64(), b.next_u64());
         }
+    }
+
+    #[test]
+    fn weighted_same_seed_yields_same_subsets() {
+        let wl = tiny_wordlist();
+        let weights = vec![1.0; wl.len()];
+        let alloc = tiny_allocation();
+        let a = extract_disjoint_subsets_weighted(&wl, &weights, &alloc, b"seed").unwrap();
+        let b = extract_disjoint_subsets_weighted(&wl, &weights, &alloc, b"seed").unwrap();
+        for (r1, r2) in a.subsets.iter().zip(b.subsets.iter()) {
+            assert_eq!(r1.words, r2.words);
+        }
+    }
+
+    #[test]
+    fn weighted_subsets_are_disjoint_and_correctly_sized() {
+        let wl = tiny_wordlist();
+        let weights = vec![1.0; wl.len()];
+        let alloc = tiny_allocation();
+        let e = extract_disjoint_subsets_weighted(&wl, &weights, &alloc, b"seed").unwrap();
+        e.assert_disjoint().expect("subsets must be disjoint");
+        for (row, subset) in alloc.rows.iter().zip(e.subsets.iter()) {
+            assert_eq!(subset.words.len(), row.pool_size);
+        }
+    }
+
+    #[test]
+    fn weighted_rejects_length_mismatch() {
+        let wl = tiny_wordlist();
+        let weights = vec![1.0; wl.len() - 1];
+        let alloc = tiny_allocation();
+        let err = extract_disjoint_subsets_weighted(&wl, &weights, &alloc, b"seed").unwrap_err();
+        assert!(matches!(err, ExtractError::WeightsLengthMismatch { .. }));
+    }
+
+    #[test]
+    fn weighted_rejects_non_positive_weight() {
+        let wl = tiny_wordlist();
+        let mut weights = vec![1.0; wl.len()];
+        weights[2] = 0.0;
+        let alloc = tiny_allocation();
+        let err = extract_disjoint_subsets_weighted(&wl, &weights, &alloc, b"seed").unwrap_err();
+        assert!(matches!(
+            err,
+            ExtractError::InvalidWeight { index: 2, weight } if weight == 0.0
+        ));
+    }
+
+    #[test]
+    fn weighted_rejects_nan_weight() {
+        let wl = tiny_wordlist();
+        let mut weights = vec![1.0; wl.len()];
+        weights[0] = f64::NAN;
+        let alloc = tiny_allocation();
+        let err = extract_disjoint_subsets_weighted(&wl, &weights, &alloc, b"seed").unwrap_err();
+        assert!(matches!(err, ExtractError::InvalidWeight { index: 0, .. }));
+    }
+
+    #[test]
+    fn heavily_weighted_source_dominates_a_large_role() {
+        // 500 "hi" words (weight 10x) + 500 "lo" words (weight 1x).
+        // Allocate a single role that draws 100 words — the heavy
+        // source should supply a large majority, not ~50%.
+        let hi_words: Vec<String> = (0..500).map(|i| format!("hi{i}")).collect();
+        let lo_words: Vec<String> = (0..500).map(|i| format!("lo{i}")).collect();
+        let wl: Vec<&str> = hi_words
+            .iter()
+            .chain(lo_words.iter())
+            .map(String::as_str)
+            .collect();
+        let weights: Vec<f64> = std::iter::repeat(10.0)
+            .take(500)
+            .chain(std::iter::repeat(1.0).take(500))
+            .collect();
+
+        let roles = vec![Role {
+            name: "big".into(),
+            compound_n: 1,
+            entropy_model: crate::params::EntropyModel::Uniqueness,
+            alias_count: 1,
+            uniqueness_safety_factor: 1,
+            target_bits_override: Some(0.0),
+            tokens_per_compound: None,
+            pool_size_floor: 100,
+            events_per_epoch_override: None,
+        }];
+        let mut wordlist_model = WordlistModel::cl100k_baseline();
+        wordlist_model.size = wl.len();
+        let alloc = AllocationTable::compute(
+            &roles,
+            &AttackerModel::developer_laptop_default(),
+            &wordlist_model,
+        );
+
+        let e = extract_disjoint_subsets_weighted(&wl, &weights, &alloc, b"weight-skew-seed")
+            .unwrap();
+        let hi_count = e.subsets[0]
+            .words
+            .iter()
+            .filter(|w| w.starts_with("hi"))
+            .count();
+        // Expected value under a 10:1 weight with equal source sizes
+        // is ~91/9; assert clearly more than an even split to avoid
+        // seed-dependent flakiness while still proving the bias.
+        assert!(
+            hi_count > 70,
+            "expected the 10x-weighted source to dominate; got {hi_count}/100 from it"
+        );
     }
 
     #[test]
