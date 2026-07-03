@@ -126,23 +126,74 @@ code items are phases 1-6.
 
 ### Phase 1 — v2 core crate (code; awaiting phase-0 decisions)
 
-- [ ] `crates/babbleon-core/` skeleton with v2 naming + security
-      baseline applied
-- [ ] HKDF (RFC 5869) for domain separation (v1 has this; carry
-      forward)
-- [ ] `secrecy::SecretBox` for every secret-holding type
-- [ ] `#[forbid(unsafe_code)]` at every crate root with `unsafe`
-      quarantined to one syscall module per crate
-- [ ] Per-syscall `CAPABILITY:` comments per `docs/v2/least-privilege.md`
-- [ ] Identifier scramble + tripwires + response policy ported
-      from v1 (the v1 implementation is reference; rewrite under
-      v2 conventions)
+Reconciled 2026-07-03 — all six items were long done in
+`crates/v2-*` but this checklist (pre-dating the `v2-` naming
+convention) never got updated to say so. Verified each individually
+against the actual source, not just the doc's own claims (per
+`docs/cwe-top25-audit.md`'s "no fix" cross-references and this
+session's earlier A05 correction, which is a reminder to check code,
+not doc text).
+
+- [x] **`crates/babbleon-core/` skeleton with v2 naming + security
+      baseline applied.**  `crates/v2-babbleon-core/` (item wording
+      predates the `v2-` prefix landing; the crate is that one).
+- [x] **HKDF (RFC 5869) for domain separation.**
+      `crates/v2-babbleon-core/src/key_derivation.rs::derive_subkey`
+      / `derive_domain_seed`.
+- [x] **Secret-holding types wear zeroize-on-drop.**  Implemented as
+      `zeroize::Zeroizing`, not literally `secrecy::SecretBox` — the
+      item's exact wording is stale.
+      `docs/v2/security-baseline.md` Rule 3 documents both as
+      equally valid ("secrets wear `Zeroizing` **or** `SecretBox`");
+      the codebase picked `Zeroizing` uniformly
+      (`per_host_secret.rs`, `unlock_secret.rs`, `payload.rs`,
+      `soft_backend.rs`, ...) and never introduced the `secrecy`
+      crate as a direct dependency of any Babbleon type.
+- [x] **`#[forbid(unsafe_code)]` at every crate root.**  Confirmed
+      present in all 17 `crates/v2-*` binary/lib roots (`lib.rs`
+      and/or `main.rs` per crate).  `v2-babbleon-pam` is the
+      interesting case: the shipped PAM artifact is C
+      (`pam_babbleon.c`), so its Rust crate forbids `unsafe`
+      entirely rather than quarantining it — no Rust FFI surface
+      exists to quarantine.
+- [x] **Per-syscall `CAPABILITY:` comments.**  Present throughout
+      `crates/v2-babbleon-launch-untrusted/src/` (`bounding_set.rs`,
+      `identity_drop.rs`, `namespaces.rs`, `mounts.rs`,
+      `process_hardening.rs`, `seccomp_profile.rs`,
+      `credential_gate.rs`) per `docs/v2/least-privilege.md`.
+- [x] **Identifier scramble + tripwires + response policy ported
+      from v1.**  Identifier scramble:
+      `crates/v2-babbleon-preprocessor/src/identifier_scrambler.rs`.
+      Tripwires + response policy:
+      `crates/v2-babbleon-core/src/tripwire.rs::TripwireResponsePolicy`
+      (`NotifyOnly` / `KillTriggeringProcess` /
+      `KillTriggeringProcessTree` — one v1 rename,
+      `KillTrigger` → `KillTriggeringProcess`, for target clarity).
 
 ### Phase 2 — v2 launcher + PAM
 
-- [ ] `crates/babbleon-launch-untrusted/` (NOT setuid; file caps:
-      cap_sys_admin, cap_setuid, cap_setgid, cap_ipc_lock)
-- [ ] PAM module wires through the new launcher
+- [x] **`crates/babbleon-launch-untrusted/` (NOT setuid; file caps:
+      cap_sys_admin, cap_setuid, cap_setgid, cap_ipc_lock).**
+      Reconciled 2026-07-03 alongside Phase 1, same stale-checklist
+      cause.  `crates/v2-babbleon-launch-untrusted/src/
+      bounding_set.rs` documents and implements exactly this file-
+      capability set (`CAP_SYS_ADMIN`, `CAP_SETUID`, `CAP_SETGID`,
+      `CAP_IPC_LOCK`) on a non-setuid binary, contrasted explicitly
+      against v1's setuid-root `babbleon-ns-helper` in the module's
+      own doc comment.
+- [ ] **PAM module wires through the new launcher.**  Verified
+      2026-07-03: genuinely still open, do NOT check this off.
+      `crates/v2-babbleon-pam/src/lib.rs`'s own module doc says so
+      explicitly — "Mechanism — current state (SKELETON)" — the C
+      shim (`pam_babbleon.c`) probes the daemon socket and logs a
+      breadcrumb but does not invoke `babbleon-launch-untrusted`,
+      because "the architectural question of *how* a PAM session
+      module wraps the eventual user shell does not have a single
+      right answer — the three candidate architectures are
+      documented in `docs/v2/pam-architecture.md`.  The operator
+      picks one before this module ships in a release."  Explicitly
+      operator-gated by the crate's own design doc; not an
+      autonomous-safe pickup.
 - [ ] Capability-set test that asserts CapEff at each lifecycle
       stage matches the documented `CAPABILITY:` comments
 
