@@ -22,13 +22,186 @@ Branch (push target): `claude/magical-turing-mele8c` (operator
 intends to rename to `v1-maintenance` out-of-band; until that
 lands, push here)
 
-Date: 2026-07-02 (second user-asleep session — claude-opus-4-7)
+Date: 2026-07-03 (third user-asleep session — claude-sonnet-5)
 
-Last commit before this handoff section: `4970250` —
-docs(TODO,phase0-research-notes): cross-link role-partitioning
-tool.  See the 2026-07-02 session-2 block immediately below for
-context, then the 2026-07-02 (session 1) block below that for the
-density-analysis work that this session builds on.
+Last commit before this handoff section: `ca7f595` —
+feat(wordlist-role-partitioning): --source-weight weighted union.
+See the 2026-07-03 (session 3) block immediately below for
+context, then the 2026-07-02 (session 2) block below that for the
+role-partitioning tool this session builds on.
+
+---
+
+## 2026-07-03 (session 3) — sleeping-operator: autonomous-safe follow-ups from session 2's backlog
+
+Author: Claude Sonnet 5 (autonomous overnight continuation).
+Branch: `claude/magical-turing-mele8c`.  In progress — this is an
+interim refresh, not the final stopping-point note for this
+session.
+
+### Entry state
+
+Branch tip on entry was `7219456` — "docs(README): refresh Try-it
+section — v2 CLI is now the product path", the tip of session 2's
+work.  Session 2's final stopping-point note said every
+autonomous-safe follow-up it could find had landed, and separately
+listed a short backlog of small, well-scoped autonomous-safe items
+it had explicitly filed as follow-ups but not yet built (as opposed
+to the operator-gated items: adversarial-LLM re-test, corpus-
+lifecycle seccomp, runtime wiring review, SentencePiece bundling —
+all still blocked, none touched this session). This session picked
+up that backlog in priority order.
+
+### Net commits this session so far: 3
+
+| # | Hash | Subject |
+|---|---|---|
+| 1 | `b23875f` | feat(v2-babbleon-core): derive_domain_seed mirrors role-partitioning tool's HKDF |
+| 2 | `1099c10` | feat(wordlist-role-partitioning): --normalise-diacritics on the extractor |
+| 3 | `ca7f595` | feat(wordlist-role-partitioning): --source-weight weighted union |
+
+### Commit 1 — `derive_domain_seed` in `v2-babbleon-core::key_derivation`
+
+Closes session-2 priority 7's follow-up: "wire the same HKDF
+derivation into `crates/v2-babbleon-core::key_derivation` so the
+runtime can call the same primitive without going through the tool
+binary." New function `key_derivation::derive_domain_seed(secret,
+label) -> [u8; 32]`, deliberately **not** epoch-keyed (unlike the
+existing `derive_subkey`) because per-role wordlist partitioning is
+a one-time-per-secret split, not a per-rotation value. Mirrors
+`tools/wordlist-role-partitioning/src/seed.rs::derive_seed_bytes`
+bit-for-bit: `HKDF-Extract(salt=None, ikm=secret)` then
+`HKDF-Expand(info=label, length=32)`. A cross-implementation test
+(`matches_role_partitioning_tool_construction`) locks the two call
+sites to the same construction by independently reproducing the
+raw `hkdf::Hkdf` call inline (not by depending on the standalone-
+workspace tool crate — that would violate the "no new deps for the
+core crate" property the function exists to satisfy) and asserting
+byte equality against `derive_domain_seed`'s output for a fixed
+secret+label. No new deps (`hkdf`/`sha2` already used by
+`derive_subkey`). This does NOT wire per-role wordlist subsets
+into the runtime `wordlist` module — that remains the operator-
+review-gated diff (session-2 priority 8). It only lands the crypto
+primitive a future wiring diff would need, so a future session (or
+the operator) doesn't have to shell out to the tool binary to
+reproduce an offline-generated extraction's seed.
+
+Verified: `cargo test -p v2-babbleon-core --lib --release` = 97
+pass (was 92); zero clippy warnings on the crate.
+
+### Commit 2 — `--normalise-diacritics` on the role-partitioning extractor
+
+Closes session-2 priority 12's follow-up: "mirror the same
+normalisation on the role-partitioning extractor so per-role
+subsets stay ASCII when the operator wires them into the runtime."
+New module `src/normalise.rs` — a deliberate duplicate of
+`wordlist-density-analysis/src/load.rs::strip_combining_marks`
+(NFKD decompose, drop combining marks, fold 6 Latin ligatures)
+rather than a shared crate, since both tools are standalone
+workspaces by design and the function is a dozen pure lines. New
+`--normalise-diacritics` CLI flag threads through
+`load_and_union_wordlists`: normalisation happens per-line BEFORE
+the union-wide dedupe check, so a word that only differs by
+diacritics from an already-seen entry (same source or an earlier
+one) collapses to one entry, first-occurrence wins — same rule the
+density tool uses. Off by default (English-baseline path stays
+byte-identical). Recorded in the extraction manifest as
+`normalise_diacritics: true|false`.
+
+Note this is belt-and-suspenders relative to
+`scripts/end-to-end.sh`, which already normalises upstream in the
+density-analysis filter step when `NORMALISE_DIACRITICS=1` — this
+flag matters for direct `--extract-to` invocations that skip that
+script.
+
+New dep: `unicode-normalization 0.1` (crate-local, standalone
+workspace, matches the density tool's existing dep). 3 new
+`load_and_union_wordlists` unit tests (raw pass-through, fold+
+dedupe within one source, fold+dedupe across two sources) plus 2
+`normalise` module tests. Zero clippy warnings.
+
+### Commit 3 — `--source-weight` weighted union
+
+Closes session-2 priority 13's follow-up: "a companion
+`--source-weight <lang>=<weight>` for weighted union ... would let
+the operator bias role selection without maintaining a pre-shuffled
+file." New `extract::extract_disjoint_subsets_weighted` function:
+an Efraimidis–Spirakis A-Res weighted-sampling-without-replacement
+generalization of the existing uniform Fisher-Yates extractor.
+Every index gets a priority key `u_i^(1/w_i)` from the seeded
+ChaCha20 PRNG; the whole pool is sorted once by key descending, and
+each role in `AllocationTable` row order drains the next
+`pool_size` keys off the front — same "roles sequentially drain a
+shared shuffled pool" shape as the unweighted extractor, generalized
+to a weighted shuffle, `O(N log N)` total.
+
+CLI: `--source-weight <path>=<weight>` (repeatable; `path` must
+exactly match a `--wordlist-path` argument — validated at parse
+time with a clear error, same pattern as `--role-tokens`' unknown-
+role check). Weight must be finite and `> 0.0`.
+
+**Deliberate design choice, worth flagging for the next session:**
+with zero `--source-weight` flags, extraction is routed through the
+*original* uniform `extract_disjoint_subsets` function unchanged —
+NOT through the weighted function with all-1.0 weights. The two
+produce the same *distribution* at equal weights but NOT the same
+seed→output byte sequence (different algorithm, different RNG draw
+pattern), and this tool's entire design center is "same wordlist +
+same seed → byte-identical output, forever" (`RESULTS.md` and this
+file both document specific SHA-256 hashes against specific dev
+seeds). Unifying the two paths behind a fast path would have
+silently changed every previously-documented extraction's output
+the next time someone reruns with a seed from an old manifest.
+Keep them separate; do not "simplify" this into one function without
+re-deriving and republishing every existing hash in `RESULTS.md`.
+
+Verified end-to-end against two real, disjoint, equal-sized (200k
+each) wordlist sources — 200k lines of the real English baseline +
+200k synthetic words — with the synthetic source weighted 5×: the
+`identifier` role (13 682 slots) drew 11 441 synthetic words
+(83.6%), matching the 5/6 (83.3%) expectation for a 5:1 weight
+ratio at equal source sizes almost exactly. Also verified the
+path-mismatch error path (`--source-weight` naming a path not in
+`--wordlist-path` hard-errors before any extraction work happens).
+
+7 new tests in `extract.rs` (weighted determinism, disjointness,
+length-mismatch rejection, non-positive-weight rejection, NaN-weight
+rejection, and the weighted-bias integration test) + parser/call-
+site tests in `main.rs`. Test count 72 → 89 across commits 2+3.
+Zero clippy warnings.
+
+### Stats so far this session
+
+| Metric | Before | After | Δ |
+|---|---|---|---|
+| `v2-babbleon-core` tests | 92 | 97 | +5 |
+| `wordlist-role-partitioning` tests | 72 | 89 | +17 |
+| New deps | 0 | 1 (`unicode-normalization`, tool-local) | +1 |
+| `forbid(unsafe_code)` violations | 0 | 0 | 0 |
+| Clippy warnings across touched crates | 0 | 0 | 0 |
+
+### Where this session is headed next
+
+Still queued from session 2's autonomous-safe list, not yet
+started as of this refresh:
+
+- **Auto-populate `--role-tokens` from
+  `tools/tokenizer-benchmark/RESULTS.md` at startup** (session-2
+  priority 6's follow-up). Currently the operator has to
+  hand-type `--role-tokens identifier=13.80 ...`; the benchmark
+  tool's `RESULTS.md` already has these numbers in a markdown
+  table. Parse it once at startup as a soft default the CLI flag
+  can still override.
+- **Extend `v2-babbleon-resilience-bench` with the smaller-model
+  tokenizer axis** (mentioned in session 2's "Where session 2
+  stopped"). `tools/tokenizer-benchmark --include-smaller` already
+  measures r50k/p50k; the resilience-bench harness's per-run
+  reports don't yet include that vocab-size sensitivity axis.
+
+Will refresh this section again (or add a new dated block) once
+those land or once the session concludes, per `CLAUDE.md` §4's "no
+new top-level `.md` files" rule — updates land in this file, not a
+new one.
 
 ---
 
