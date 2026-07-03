@@ -258,6 +258,54 @@ composes with the phase-3 five-layer base; they don't replace it.
       attacker: real (multi-x BPE token-count inflation in limit
       cases).  Cost on us: zero (clean-source-side).
 
+### v2 security-hygiene gaps (OWASP Top 10 audit, 2026-07-03)
+
+Four genuine gaps surfaced by `docs/v2/owasp-top10-audit.md`,
+grouped here as one checklist rather than scattered across the
+phase headings they'd otherwise fall under, so a reviewer can
+triage them together.  None are novel discoveries — three were
+already implicitly flagged in `docs/v2/threat-model.md` or a
+seccomp-envelope doc; this list makes each one a trackable item
+instead of prose an operator has to re-derive.
+
+- [ ] **Daemon socket peer-credential authentication (A01).**
+      `crates/v2-babbleon-daemon/src/socket.rs::bind_socket` gates
+      the daemon's Unix socket at file mode `0o660` (group-only) but
+      does not check `SO_PEERCRED` / peer UID — any process in the
+      socket's group can open a session, not just the intended
+      caller.  The module's own comments file this as "phase 2
+      ships file-mode 0o660 ... SO_PEERCRED uid-allowlist
+      authentication is filed" — this item makes that filing
+      explicit in the shippable list.
+- [ ] **Daemon seccomp profile still DRAFT (A05).**
+      `docs/v2/daemon-seccomp-envelope.md` has a strace-confirmed
+      candidate syscall allowlist but is explicitly marked "DRAFT
+      for operator confirmation" and is not wired into the daemon
+      binary.  Until an operator confirms it and it lands, the
+      daemon runs with no seccomp filter.
+- [ ] **v2 vault-unlock rate-limiting port (A07).**  Corroborates
+      `docs/v2/threat-model.md` row D1 ("Carry-from-v1, port owed
+      phase 1") at the code level:
+      `crates/v2-babbleon-daemon/src/state.rs::DaemonState::unlock`
+      has no attempt counter, backoff, or lockout — only rejects a
+      second unlock if already-unlocked.  v1's
+      `crates/babbleon/src/vault/attempts.rs::AttemptTracker` (3
+      free attempts, then exponential backoff, lockout at 10) has no
+      v2 port yet.  Elevated priority: combined with the A01 gap
+      above, an attacker who reaches the socket can burn
+      Argon2id-throttled but otherwise unbounded unlock guesses.
+- [ ] **v2 binaries missing from the signed release pipeline (A08).**
+      `.github/workflows/release.yml`'s `build` job bundles only
+      `babbleon` and `babbleon-ns-helper` (v1) into the
+      cosign-signed, SLSA-L3-attested release artifact.  v2 is the
+      shipping product (`CLAUDE.md` §1); an operator downloading a
+      "signed Babbleon release" today gets cryptographic assurance
+      over code that is not the product they're running.  Needs the
+      v2 binary list (`babbleon-daemon`, `v2-babbleon`,
+      `babbleon-launch-untrusted`, ...) decided before this can
+      close — filing as `[ ]` rather than picking the list
+      unilaterally, since it's a release-shape decision.
+
 ### Phase 4 — supporting research and measurement
 
 - [ ] Adversarial-LLM measurement on phase-3 prototype against
@@ -395,11 +443,15 @@ genuinely open — see each item.
       CIS above — only a one-line stance in `standards-alignment.md`,
       no `stig-deployment.md`.  Lower priority than CIS per the
       original note.
-- [ ] **OWASP Top 10 (2021) documentary audit** (most items n/a;
-      sweep anyway).  Genuinely open.  `standards-alignment.md`
-      commits to `docs/v2/owasp-top10-audit.md`; the file does not
-      exist.  NOT satisfied by `docs/cwe-top25-audit.md`, which
-      audits a different (CWE, not OWASP Top 10) list.
+- [x] **OWASP Top 10 (2021) documentary audit** (most items n/a;
+      sweep anyway).  Closed 2026-07-03: `docs/v2/owasp-top10-audit.md`
+      covers all 10 categories against `crates/v2-*` (Surface /
+      Mechanism / Finding structure, matching
+      `docs/cwe-top25-audit.md`'s v1 precedent).  6 of 10 are no-fix
+      cross-references to existing docs; A10 (SSRF) is N/A verified
+      by dependency-tree absence, not assumed; 4 genuine gaps (A01,
+      A05, A07, A08) surfaced and are filed above under "v2
+      security-hygiene gaps (OWASP Top 10 audit, 2026-07-03)".
 
 ---
 
