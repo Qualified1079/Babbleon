@@ -6680,3 +6680,16 @@ cross-referencing the same evidence.
   that decision lands.
 - Same three items as the previous entry: seccomp/exec finding, PAM
   wiring, and A08 remain operator-gated and untouched.
+
+**End-of-session re-baseline:** re-ran every `v2-*` crate's test
+suite (per-crate, not `--workspace`) as a final health check since
+this session's changes were docs/policy/tooling-only and shouldn't
+have touched anything Rust tests would catch — confirmed rather than
+assumed. All green, no anomalies. `v2-babbleon-launch-untrusted`'s
+rooted tests (`capability_lifecycle.rs`, `rooted_lifecycle.rs`) need
+`-- --include-ignored` to run under plain `cargo test` — they're
+`#[ignore]`-gated by convention, not a regression from this session;
+with that flag, 54/54 pass (38 lib + 5 + 2 + 2 + 4 + 3 across the
+five integration-test binaries), matching the previous session's own
+count exactly. `cargo clippy -p v2-babbleon-launch-untrusted
+--all-targets -- -D warnings` clean.
