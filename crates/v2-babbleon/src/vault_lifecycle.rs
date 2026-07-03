@@ -37,13 +37,17 @@
 //! ## `unlock`
 //!
 //! 1. Resolve vault path; read ciphertext from disk.
-//! 2. Prompt for passphrase.
-//! 3. Unseal under `SoftBackend`.  Wrong-passphrase path lands as
+//! 2. Check [`v2-babbleon-vault::AttemptTracker`] — refuse before
+//!    even prompting for a passphrase if the vault is locked out or
+//!    inside a backoff window from recent failures.
+//! 3. Prompt for passphrase.
+//! 4. Unseal under `SoftBackend`.  Wrong-passphrase path lands as
 //!    [`v2-babbleon-vault::Error::WrongPassphrase`]; operator-visible
-//!    error.
-//! 4. Extract host-secret bytes into
+//!    error.  Records a failure with the attempt tracker on any
+//!    unseal error, a success (clearing the tracker) on success.
+//! 5. Extract host-secret bytes into
 //!    [`babbleon_daemon_protocol_v2::UnlockSecret`].
-//! 5. Round-trip [`babbleon_daemon_protocol_v2::Request::Unlock`] to
+//! 6. Round-trip [`babbleon_daemon_protocol_v2::Request::Unlock`] to
 //!    the daemon.  Print the new epoch on success.
 //!
 //! # Threat model boundaries
@@ -51,7 +55,10 @@
 //! - **Defeats:** vault-file creation by operator without a strong
 //!   passphrase; double-init clobbering the per-host secret;
 //!   silent-wrong-passphrase that would otherwise produce a
-//!   non-functional daemon.
+//!   non-functional daemon; unattended repeated-guess automation
+//!   against `unlock` (`AttemptTracker` — ported from v1, closes
+//!   `docs/v2/threat-model.md` row D1 and
+//!   `docs/v2/owasp-top10-audit.md` A07).
 //! - **Does NOT defeat:** the operator typing the passphrase into a
 //!   compromised TTY.  Out of the vault's threat model.
 
@@ -62,8 +69,8 @@ use babbleon_daemon_protocol_v2::{
     round_trip, Request, Response, UnlockSecret, UNLOCK_SECRET_LEN,
 };
 use babbleon_vault_v2::{
-    default_vault_path, ensure_parent_dir, SoftBackend, Vault, VaultPayload,
-    SOFT_BACKEND_NAME,
+    default_vault_path, ensure_parent_dir, now_secs, AttemptTracker, SoftBackend,
+    Vault, VaultPayload, SOFT_BACKEND_NAME,
 };
 use rand::RngCore;
 use zeroize::Zeroizing;
@@ -141,6 +148,11 @@ pub fn run_init(opts: InitOptions) -> Result<()> {
         .context("sealing vault")?;
     write_vault_file(&path, &sealed)
         .with_context(|| format!("writing vault to {}", path.display()))?;
+    // A fresh vault must not inherit a stale lockout/backoff state
+    // from a previous vault that lived at the same path (relevant
+    // under `--force`; a no-op sidecar write for the common
+    // never-existed-before case).
+    AttemptTracker::for_vault(&path).record_success();
     println!("babbleon: vault initialized at {}", path.display());
     Ok(())
 }
@@ -166,12 +178,28 @@ pub fn run_unlock(opts: UnlockOptions) -> Result<()> {
             path.display(),
         )
     })?;
+    // Rate-limit check runs BEFORE the passphrase prompt: a locked-
+    // out or backed-off operator (or attacker) should not be invited
+    // to type a passphrase that will be refused unread, and a
+    // refused attempt must never reach the Argon2id KDF (that's the
+    // expensive step the rate limit exists to gate).
+    let mut tracker = AttemptTracker::for_vault(&path);
+    tracker
+        .check_allowed(now_secs())
+        .map_err(|e| anyhow!("vault {}: {e}", path.display()))?;
     let passphrase = acquire_unlock_passphrase(opts.passphrase_source)
         .context("acquiring unlock passphrase")?;
     let vault = Vault::new(SoftBackend::default());
-    let payload = vault
-        .unseal(&ciphertext, Some(passphrase.expose()))
-        .map_err(|e| anyhow!("unsealing vault {}: {e}", path.display()))?;
+    let payload = match vault.unseal(&ciphertext, Some(passphrase.expose())) {
+        Ok(payload) => {
+            tracker.record_success();
+            payload
+        }
+        Err(e) => {
+            tracker.record_failure(now_secs());
+            return Err(anyhow!("unsealing vault {}: {e}", path.display()));
+        }
+    };
     // The vault crate's secret accessor returns a borrow into a
     // Zeroizing buffer.  Construct the wire-payload directly from
     // it; the borrow lives for one statement.

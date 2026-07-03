@@ -474,6 +474,94 @@ fn cli_unlock_with_wrong_passphrase_fails_without_daemon_traffic() {
     );
 }
 
+/// Rapid-fire wrong-passphrase `unlock` attempts hit the exponential
+/// backoff window after the free-attempt budget is spent
+/// (`AttemptTracker::INSTA_RETRIES = 3`) — the point where the
+/// tracker's own unit tests (`v2-babbleon-vault::attempts`) show the
+/// window first becomes nonzero is after the 4th recorded failure,
+/// so a 5th attempt fired immediately afterward must be refused
+/// *without even reading the passphrase from stdin*, i.e. before the
+/// (comparatively slow) Argon2id KDF ever runs.
+///
+/// This test intentionally checks backoff, not the `LOCKOUT_AT = 10`
+/// hard lockout: reaching real lockout requires 10 *recorded*
+/// failures, and a refused-by-backoff attempt does NOT record a new
+/// failure (no passphrase was actually tested) — so a rapid-fire
+/// loop past the 4th attempt would spend every subsequent call
+/// stuck re-hitting the same backoff window, never advancing the
+/// counter, and could only reach lockout by waiting out several
+/// real backoff windows (2s, 4s, 8s, ...) between attempts. Backoff
+/// is the fast, deterministic, CI-safe property to assert; lockout
+/// is covered by the sub-second, wall-clock-free unit tests in
+/// `v2-babbleon-vault::attempts::tests::lockout_at_threshold`.
+#[test]
+fn cli_unlock_hits_backoff_after_rapid_wrong_passphrase_attempts() {
+    use std::io::Write;
+    let tmp = tempfile::tempdir().unwrap();
+    let vault = tmp.path().join("vault.age");
+    let sock = tmp.path().join("does-not-exist.sock");
+    let cli = sibling_binary("babbleon-v2");
+
+    let mut init = Command::new(&cli)
+        .arg("--vault-path")
+        .arg(&vault)
+        .arg("--passphrase-stdin")
+        .arg("init")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    init.stdin
+        .as_mut()
+        .unwrap()
+        .write_all(b"the-right-one\n")
+        .unwrap();
+    assert!(init.wait_with_output().unwrap().status.success());
+
+    let attempt_wrong = || {
+        let mut unlock = Command::new(&cli)
+            .arg("--socket")
+            .arg(&sock)
+            .arg("--vault-path")
+            .arg(&vault)
+            .arg("--passphrase-stdin")
+            .arg("unlock")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        unlock.stdin.as_mut().unwrap().write_all(b"WRONG\n").unwrap();
+        unlock.wait_with_output().unwrap()
+    };
+
+    // Four real attempts: each reaches the (deliberately slow)
+    // Argon2id KDF and fails on the wrong passphrase, matching the
+    // pre-existing single-attempt test's assertion shape.
+    for i in 1..=4 {
+        let out = attempt_wrong();
+        assert!(!out.status.success(), "attempt {i} must fail");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("wrong passphrase") || stderr.contains("unsealing"),
+            "attempt {i} should reach the unseal step: {stderr}",
+        );
+    }
+
+    // Fifth attempt, fired immediately: refused by the backoff
+    // window before the KDF runs.
+    let backed_off = attempt_wrong();
+    assert!(!backed_off.status.success(), "5th attempt must also fail");
+    let stderr = String::from_utf8_lossy(&backed_off.stderr);
+    assert!(
+        stderr.contains("backoff"),
+        "5th attempt should be refused by the attempt tracker's \
+         backoff window, not read through to another unseal \
+         attempt: {stderr}",
+    );
+}
+
 /// End-to-end: `babbleon scramble FILE.py | babbleon unscramble`
 /// against a running daemon round-trips a Python source file.
 ///

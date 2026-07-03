@@ -30,6 +30,10 @@ thiserror = { workspace = true }
 dirs = { workspace = true }
 # RNG for fresh-vault generation (per-host secret bytes).
 rand = { workspace = true }
+# Best-effort warning when the unlock-attempts sidecar file can't be
+# persisted (attempts.rs) -- never load-bearing, see that module's
+# doc comment.
+tracing = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

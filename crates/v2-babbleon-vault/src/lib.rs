@@ -61,6 +61,10 @@
 //! - [`default_vault_path`] — `$XDG_CONFIG_HOME/babbleon/vault.age`
 //!   when present; falls back to `/etc/babbleon/vault.age` on
 //!   non-user installs.
+//! - [`AttemptTracker`] — disk-persisted consecutive-failure counter
+//!   with exponential backoff and lockout, gating repeated `unseal`
+//!   calls against offline-guessing automation.  Ported from v1;
+//!   see `attempts` module doc for the policy shape.
 //!
 //! # Threat model boundaries
 //!
@@ -79,6 +83,7 @@
 #![deny(missing_docs)]
 #![warn(clippy::pedantic)]
 
+pub mod attempts;
 pub mod backend;
 pub mod errors;
 pub mod file_layout;
@@ -86,6 +91,7 @@ pub mod payload;
 pub mod soft_backend;
 pub mod vault;
 
+pub use attempts::{now_secs, AttemptTracker};
 pub use backend::KekBackend;
 pub use errors::{Error, Result};
 pub use file_layout::{default_vault_path, ensure_parent_dir};

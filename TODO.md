@@ -283,17 +283,32 @@ instead of prose an operator has to re-derive.
       for operator confirmation" and is not wired into the daemon
       binary.  Until an operator confirms it and it lands, the
       daemon runs with no seccomp filter.
-- [ ] **v2 vault-unlock rate-limiting port (A07).**  Corroborates
-      `docs/v2/threat-model.md` row D1 ("Carry-from-v1, port owed
-      phase 1") at the code level:
-      `crates/v2-babbleon-daemon/src/state.rs::DaemonState::unlock`
-      has no attempt counter, backoff, or lockout — only rejects a
-      second unlock if already-unlocked.  v1's
-      `crates/babbleon/src/vault/attempts.rs::AttemptTracker` (3
-      free attempts, then exponential backoff, lockout at 10) has no
-      v2 port yet.  Elevated priority: combined with the A01 gap
-      above, an attacker who reaches the socket can burn
-      Argon2id-throttled but otherwise unbounded unlock guesses.
+- [x] **v2 vault-unlock rate-limiting port (A07).**  Closed
+      2026-07-03.  Note this finding was originally mis-scoped at
+      `DaemonState::unlock` (the daemon-side "install this already-
+      unsealed secret" step, which has no wrong-guess concept to
+      rate-limit — any bytes handed to it get installed, there is no
+      independent check to brute-force). The real gate is the
+      CLIENT-side Argon2id-guarded `Vault::unseal` call, matching
+      where v1's `AttemptTracker` lived (`crates/babbleon/src/
+      vault/`, not the v1 daemon). Ported as
+      `crates/v2-babbleon-vault/src/attempts.rs::AttemptTracker`
+      (unchanged policy: 3 free attempts, then exponential backoff
+      doubling per failure capped at 60s, lockout at 10 consecutive
+      failures), wired into `crates/v2-babbleon/src/
+      vault_lifecycle.rs::run_unlock` — the check runs BEFORE the
+      passphrase prompt and BEFORE the Argon2id KDF, so a refused
+      attempt costs nothing. `run_init` clears any stale sidecar so
+      a fresh vault never inherits a previous lockout. Two new
+      `Error` variants (`UnlockLockedOut`, `UnlockBackoff`), 12 new
+      unit tests in `attempts.rs` (ported 1:1 from v1's test suite)
+      plus a new CLI integration test
+      (`cli_unlock_hits_backoff_after_rapid_wrong_passphrase_attempts`)
+      confirming the backoff window fires after 4 rapid wrong-
+      passphrase attempts without reading a 5th passphrase.  Closes
+      `docs/v2/threat-model.md` row D1 (now "Shipped") and row D4
+      (corrupt-sidecar-defaults-safe, also shipped as part of the
+      same port).
 - [ ] **v2 binaries missing from the signed release pipeline (A08).**
       `.github/workflows/release.yml`'s `build` job bundles only
       `babbleon` and `babbleon-ns-helper` (v1) into the

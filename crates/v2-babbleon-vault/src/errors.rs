@@ -54,6 +54,27 @@ pub enum Error {
     /// "wrong-version-in".
     #[error("vault input invalid: {0}")]
     Input(String),
+
+    /// Unlock refused: too many consecutive failed attempts.  See
+    /// `attempts::AttemptTracker`.  Carries the failure count, never
+    /// the attempted passphrase.
+    #[error(
+        "vault locked out after {attempts} consecutive failed unlock \
+         attempts; clear the attempts sidecar file to reset"
+    )]
+    UnlockLockedOut {
+        /// Consecutive failures recorded on disk.
+        attempts: u32,
+    },
+
+    /// Unlock refused: still inside the exponential-backoff window
+    /// following a recent failure.  Carries the remaining wait time,
+    /// never the attempted passphrase.
+    #[error("vault unlock backoff: wait {remaining_secs}s before retrying")]
+    UnlockBackoff {
+        /// Seconds remaining before the next attempt is accepted.
+        remaining_secs: u64,
+    },
 }
 
 /// Result alias used throughout the crate.

@@ -190,23 +190,26 @@ cite the existing item.
 every unlock attempt costs real CPU time by design, which is a
 partial brute-force mitigant on its own.
 
-**Finding — genuine gap, filed (elevated priority).** v2 has **no
-attempt-rate-limiting or lockout** on repeated unlock attempts:
-`crates/v2-babbleon-daemon/src/state.rs::DaemonState::unlock`
-rejects a second unlock only if the vault is already unlocked — no
-attempt counter, no exponential backoff, no lockout threshold. v1
-shipped exactly this control
-(`crates/babbleon/src/vault/attempts.rs::AttemptTracker` — first 3
-failures free, then `2^(n-3)`s backoff capped at 60s, lockout at 10
-consecutive failures) and `docs/v2/threat-model.md` row D1 already
-flags the port as owed ("Carry-from-v1, port owed phase 1"). This
-audit corroborates that flag independently via the code path rather
-than the doc, and elevates it: without rate-limiting, an attacker
-who can reach the daemon socket (see A01 — currently mode-gated,
-not peer-authenticated) can burn Argon2id-throttled but otherwise
-unbounded guesses against the KEK. Filed in `TODO.md` with a
-cross-reference to `threat-model.md` D1 so it isn't duplicated as a
-"new" finding — it is the same gap, now confirmed at the code level.
+**Finding — gap found, closed 2026-07-03.** At audit time, v2 had
+**no attempt-rate-limiting or lockout** on repeated unlock attempts.
+Note the gap was originally traced to
+`crates/v2-babbleon-daemon/src/state.rs::DaemonState::unlock`, which
+was a mis-scoping worth recording: that function installs an
+*already-unsealed* secret into daemon memory and has no "wrong
+guess" concept to rate-limit at all (any bytes handed to it get
+installed — there's no independent check to brute-force). The real
+gate is the CLIENT-side `Vault::unseal` call in `crates/v2-babbleon/
+src/vault_lifecycle.rs::run_unlock`, which is where the Argon2id KDF
+actually runs against the operator's passphrase — the same location
+v1's `AttemptTracker` lived at
+(`crates/babbleon/src/vault/attempts.rs`, not the v1 daemon).
+
+Ported as `crates/v2-babbleon-vault/src/attempts.rs::AttemptTracker`
+(same policy: 3 free attempts, then `2^(n-3)`s backoff capped at
+60s, lockout at 10 consecutive failures), wired into `run_unlock`
+*before* the passphrase prompt and *before* the KDF runs, so a
+refused attempt costs nothing. Closes `docs/v2/threat-model.md` row
+D1 (now "Shipped") and the `TODO.md` item this finding filed.
 
 ---
 
@@ -296,19 +299,23 @@ an HTTP client dependency.
 | A04 Insecure Design | No fix | Covered by threat-model.md + security-baseline.md |
 | A05 Security Misconfiguration | Partial | daemon-seccomp-envelope.md still DRAFT — filed |
 | A06 Vulnerable/Outdated Components | Partial | `cargo vet` exemptions backfill — already tracked |
-| A07 Auth Failures | **Gap** | No v2 unlock rate-limiting — filed, elevated |
+| A07 Auth Failures | **Closed 2026-07-03** | `AttemptTracker` ported to `v2-babbleon-vault`, wired into `run_unlock` |
 | A08 Software/Data Integrity | **Gap** | v2 binaries missing from signed release pipeline — filed |
 | A09 Logging/Monitoring Failures | No fix | Covered by threat-model.md T1 + events.rs |
 | A10 SSRF | N/A | No network surface exists |
 
-Four genuine gaps surfaced (A01, A05, A07, A08); all four are filed
-in `TODO.md` under a new "v2 security-hygiene gaps (OWASP Top 10
-audit)" entry rather than scattered across unrelated phase
-headings, so a reviewer can triage them as one group. None of the
-four are novel discoveries — three were already implicitly flagged
-in `threat-model.md` or a seccomp-envelope doc; this audit's value
-is confirming each one at the code level and making it a trackable
-checklist item instead of prose an operator has to re-derive.
+Four genuine gaps surfaced (A01, A05, A07, A08), filed in `TODO.md`
+under a "v2 security-hygiene gaps (OWASP Top 10 audit)" entry rather
+than scattered across unrelated phase headings, so a reviewer can
+triage them as one group. None of the four were novel discoveries —
+three were already implicitly flagged in `threat-model.md` or a
+seccomp-envelope doc; this audit's value was confirming each one at
+the code level and making it a trackable checklist item instead of
+prose an operator has to re-derive. A07 closed the same day the
+audit landed (see that section above for the mis-scoping this audit
+corrected en route: the daemon-side `DaemonState::unlock` has no
+"wrong guess" concept at all; the actual client-side unseal call was
+the right target). A01, A05, A08 remain open.
 
 ## Update cadence
 
