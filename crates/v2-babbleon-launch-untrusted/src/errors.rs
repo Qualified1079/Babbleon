@@ -24,7 +24,7 @@ pub enum Step {
     /// command exists in `PATH`.
     Preflight,
     /// Step 2 — drop the Linux capability bounding set down to the
-    /// four caps the launcher actually needs.
+    /// five caps the launcher actually needs.
     BoundingSetTrim,
     /// Step 3 — process-wide hardening: `PR_SET_DUMPABLE = 0`,
     /// `RLIMIT_CORE = 0`, `mlockall`.

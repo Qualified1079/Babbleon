@@ -34,7 +34,7 @@ before any child exec.
 | `setuid(real_uid)` (drop back to caller) | `CAP_SETUID` |
 | `setgid(real_gid)` | `CAP_SETGID` |
 | `mlockall(MCL_CURRENT|MCL_FUTURE)` | `CAP_IPC_LOCK` |
-| `prctl(PR_CAPBSET_DROP, ...)` | none (bounding-set drop is unprivileged for self) |
+| `prctl(PR_CAPBSET_DROP, ...)` | `CAP_SETPCAP` — corrected 2026-07-03; this call is NOT unprivileged (see note below) |
 | `prctl(PR_SET_NO_NEW_PRIVS)` | none |
 | `seccompiler::apply_filter(...)` | none (with NNP set) |
 | `landlock::restrict_self(...)` | none |
@@ -42,15 +42,37 @@ before any child exec.
 | `execvp(...)` | none |
 
 **The total capability set v2 needs:** `CAP_SYS_ADMIN`,
-`CAP_SETUID`, `CAP_SETGID`, `CAP_IPC_LOCK`.
+`CAP_SETUID`, `CAP_SETGID`, `CAP_IPC_LOCK`, `CAP_SETPCAP`.
 
 **v1 grants:** all 41 capabilities (full root).
 
-**Gap:** 37 unnecessary capabilities, including
+**Gap:** 36 unnecessary capabilities, including
 `CAP_DAC_OVERRIDE`, `CAP_KILL`, `CAP_NET_RAW`, `CAP_NET_ADMIN`,
 `CAP_SYS_PTRACE`, `CAP_SYS_MODULE`, `CAP_BPF`, etc.  Every one of
 these is an escalation vector if any bug in the helper grants
 arbitrary syscall execution.
+
+> **Correction, 2026-07-03.** This table originally marked
+> `prctl(PR_CAPBSET_DROP, ...)` as needing "none", and the total
+> capability set below it listed only four caps. Both were wrong:
+> `PR_CAPBSET_DROP` requires `CAP_SETPCAP` in the calling thread's
+> *effective* set for every call (see `cap_capbset_drop()` in the
+> kernel's `security/commoncap.c`), not just for dropping
+> `CAP_SETPCAP` itself. Because v1 runs setuid-root, it always holds
+> `CAP_SETPCAP` and the bug was invisible there — it only surfaces
+> under v2's file-capability install, where nothing grants
+> `CAP_SETPCAP` unless it's explicitly listed. Caught by
+> `tests/capability_lifecycle.rs`
+> (`crates/v2-babbleon-launch-untrusted/tests/`), which found the
+> launcher's own step 10 failing with `EPERM` on `PR_CAPBSET_DROP`
+> after step 9's `setuid` had already cleared the effective set.
+> Interestingly, v1's own `policies/selinux/babbleon.te` and
+> `policies/apparmor/usr.local.bin.babbleon` already listed
+> `setpcap` as a required capability — this document and the v2
+> code just never carried that fact forward. Fixed by adding
+> `CAP_SETPCAP` to `WORKING_CAPS` and reordering the orchestrator so
+> step 10 (bounding-set clear) runs before step 9 (identity drop) —
+> see the "v2 launcher order" table below.
 
 ### `babbleon-cli` runs as the invoking user
 
@@ -130,15 +152,18 @@ v2 ships `babbleon-launch-untrusted` with **file capabilities**,
 not setuid:
 
 ```sh
-setcap 'cap_sys_admin,cap_setuid,cap_setgid,cap_ipc_lock=ep' \
+setcap 'cap_sys_admin,cap_setuid,cap_setgid,cap_ipc_lock,cap_setpcap=ep' \
     /usr/local/libexec/babbleon-launch-untrusted
 chmod 0755 /usr/local/libexec/babbleon-launch-untrusted
 ```
 
-The four capabilities listed are exactly the ones audited above.
-No file-system overhead; no setuid-root.  An attacker exploiting
-a bug in the launcher gains only those four caps, not the full
-root capability set.
+The five capabilities listed are exactly the ones audited above
+(`cap_setpcap` added 2026-07-03 — see the correction above; without
+it `PR_CAPBSET_DROP` fails at step 2, the launcher's first
+privileged call, and the binary cannot run at all under this
+install mode). No file-system overhead; no setuid-root.  An
+attacker exploiting a bug in the launcher gains only those five
+caps, not the full root capability set.
 
 ### Interaction with `PR_SET_NO_NEW_PRIVS`
 
@@ -160,27 +185,46 @@ orchestrator)**:
 | # | Step | Capability used | Note |
 |---|---|---|---|
 | 1 | Pre-flight (reject real-UID 0; NUL-byte check on args) | none | refuse before any state change |
-| 2 | Drop all caps except {SYS_ADMIN, SETUID, SETGID, IPC_LOCK} via `PR_CAPBSET_DROP` | none for self | leaves the four working caps |
+| 2 | Drop all caps except {SYS_ADMIN, SETUID, SETGID, IPC_LOCK, SETPCAP} via `PR_CAPBSET_DROP` | `CAP_SETPCAP` | leaves the five working caps |
 | 3 | Hardening: `PR_SET_DUMPABLE=0`, `RLIMIT_CORE=0`, `mlockall` | `CAP_IPC_LOCK` | secret hygiene |
 | 4 | `unshare(NEWNS\|NEWPID)` | `CAP_SYS_ADMIN` | fresh mount + PID NS |
 | 5 | make `/` `MS_PRIVATE\|MS_REC` | `CAP_SYS_ADMIN` | block mount propagation to host |
 | 6 | mount scrambled view (tmpfs + per-tool bind loop) | `CAP_SYS_ADMIN` | post-unshare; still needs the cap |
 | 7 | `PR_SET_NO_NEW_PRIVS=1` | none | seals against post-exec elevation |
-| 9 | `setgroups`, `setgid(real_gid)`, `setuid(real_uid)` | `CAP_SETUID`, `CAP_SETGID` | drop to caller identity |
-| 10 | `PR_CAPBSET_DROP` over remaining working caps | none for self | bounding set fully cleared |
+| 10 | `PR_CAPBSET_DROP` over remaining working caps | `CAP_SETPCAP` | bounding set fully cleared; MUST run before step 9 (see below) |
+| 9 | `setgroups`, `setgid(real_gid)`, `setuid(real_uid)` | `CAP_SETUID`, `CAP_SETGID` | drop to caller identity; clears effective/permitted incl. `CAP_SETPCAP` as a side effect |
 | 8 | Install seccomp allowlist | none (NNP set in step 7) | filter excludes setuid/setgid/prctl by design |
 | 11 | `execve` child | none | launches the user command |
 
-**Why steps 8 and 9/10 transpose.**  The seccomp allowlist
-deliberately omits `setuid`, `setgid`, `setgroups`, and `prctl` —
-those are privileged surface the launcher should not be able to
-touch by the time the filter is on.  Installing seccomp at the
-"natural" step 8 would either force the allowlist to include
-those four syscalls (defeating the point) or fail at step 9
-(the next syscall is `setgroups`).  So the orchestrator runs the
-strict ordering `1..=7 → 9 → 10 → 8 → 11`.  The numeric step
-identity is retained for exit-code stability (see
-`errors::Step::code`); only the *execution* order moves.
+**Why steps 8, 9, and 10 transpose.**  Two independent constraints
+reorder this lifecycle away from its numeric listing:
+
+1. **10 must run before 9.**  `PR_CAPBSET_DROP` (used by both step 2
+   and step 10) requires `CAP_SETPCAP` in the calling thread's
+   *effective* set for every call.  Step 9's `setuid` away from UID
+   0 clears the effective/permitted sets as a kernel side effect
+   (`PR_SET_KEEPCAPS=0`, set in step 3) — including `CAP_SETPCAP`.
+   Running step 10 after step 9 means the very capability
+   `PR_CAPBSET_DROP` needs to do its job is already gone, and every
+   call in step 10 fails with `EPERM`.  This was found empirically:
+   `tests/capability_lifecycle.rs` forks a child, runs the real
+   step-9-then-step-10 sequence, and the drop call fails
+   immediately on the first capability it tries to remove.
+   Swapping the two — step 10 before step 9 — fixes it: bounding-set
+   removal does not strip `CAP_SETUID`/`CAP_SETGID` from the
+   process's still-intact effective set (bounding only constrains
+   future acquisition), so step 9 succeeds normally afterward.
+2. **8 must run after 9 and 10.**  The seccomp allowlist
+   deliberately omits `setuid`, `setgid`, `setgroups`, and `prctl` —
+   those are privileged surface the launcher should not be able to
+   touch by the time the filter is on.  Installing seccomp at the
+   "natural" step 8 would either force the allowlist to include
+   those syscalls (defeating the point) or fail at step 9/10 (the
+   next syscalls are `prctl`/`setgroups`).
+
+So the orchestrator runs the strict ordering `1..=7 → 10 → 9 → 8 →
+11`.  The numeric step identity is retained for exit-code stability
+(see `errors::Step::code`); only the *execution* order moves.
 
 The orchestrator divergence is captured in
 [`crates/v2-babbleon-launch-untrusted/src/main.rs`](../../crates/v2-babbleon-launch-untrusted/src/main.rs)
@@ -263,3 +307,18 @@ documented "CAPABILITY:" comment.
 
 Drift detection: if a code change adds a new capability to the
 held set without updating the documented set, the test fails.
+
+**Closed 2026-07-03:**
+`crates/v2-babbleon-launch-untrusted/tests/capability_lifecycle.rs`
+implements this by reading `/proc/self/status`'s `CapBnd`/`CapPrm`/
+`CapEff` lines (not `capng`) around the real `bounding_set` /
+`identity_drop` calls, forked so the assertions never corrupt the
+shared test-binary process. It asserts two invariants: step 2
+narrows `CapBnd` to exactly `WORKING_CAPS`, and steps 10+9 (in that
+corrected order) leave `CapPrm`/`CapEff`/`CapBnd` all zero before
+exec. Writing this test is what surfaced the `CAP_SETPCAP` gap
+documented above — the test's own doc comment explains why it
+checks `CapBnd` rather than `CapEff` at step 2 (the rooted-test
+harness starts as literal root, unlike the real file-capability
+production install, so only the bounding-set narrowing is a
+harness-independent invariant at that point in the lifecycle).

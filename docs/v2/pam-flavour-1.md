@@ -52,7 +52,7 @@ cargo build --release \
 sudo install -m 0755 -o root -g root \
     target/release/babbleon-launch-untrusted \
     /usr/local/libexec/babbleon-launch-untrusted
-sudo setcap 'cap_sys_admin,cap_setuid,cap_setgid,cap_ipc_lock=ep' \
+sudo setcap 'cap_sys_admin,cap_setuid,cap_setgid,cap_ipc_lock,cap_setpcap=ep' \
     /usr/local/libexec/babbleon-launch-untrusted
 sudo install -m 0755 -o root -g root \
     target/release/babbleon-login-shell \

@@ -94,7 +94,7 @@ Ordered by Tactic, then by ID.
 | T1068 | Exploitation for Privilege Escalation | Out of scope | Kernel CVE concern; operator-patched | — | — |
 | T1078 | Valid Accounts | Out of scope | Account management is operator-side | — | — |
 | T1548 | Abuse Elevation Control Mechanism | Defends (process) | v2 has NO setuid-root binaries; file capabilities only (resolved from v1's `4755 root:root` ns-helper).  Removes the historical category of "setuid binary with capability creep" | D3-MA | `docs/v2/least-privilege.md`; phase 2 |
-| T1548.001 | Setuid and Setgid | Defends (architecture) | v2's `babbleon-launch-untrusted` uses file capabilities (`CAP_SYS_ADMIN`, `CAP_SETUID`, `CAP_SETGID`, `CAP_IPC_LOCK`), not setuid | D3-MA | `docs/v2/least-privilege.md`; phase 2 |
+| T1548.001 | Setuid and Setgid | Defends (architecture) | v2's `babbleon-launch-untrusted` uses file capabilities (`CAP_SYS_ADMIN`, `CAP_SETUID`, `CAP_SETGID`, `CAP_IPC_LOCK`, `CAP_SETPCAP`), not setuid | D3-MA | `docs/v2/least-privilege.md`; phase 2 |
 | T1611 | Escape to Host | Defends | Tier classification via `/proc/self/ns/mnt` inode is the canonical check; untrusted callers of trusted operations refused; seccomp denies the `unshare`-family escape | D3-HCH, D3-MA | v1 `enforcement/linux_ns.rs` + v1 `enforcement/seccomp.rs` (port owed phase 2) |
 
 ### Tactic: Defense Evasion

@@ -42,7 +42,7 @@ view via bind mounts, applies a seccomp deny-list, drops to the real
 user, and execs the requested command inside that environment.
 
 Installed with file capabilities (cap_sys_admin, cap_setuid, cap_setgid,
-cap_ipc_lock), NOT setuid-root.  See docs/v2/least-privilege.md.",
+cap_ipc_lock, cap_setpcap), NOT setuid-root.  See docs/v2/least-privilege.md.",
     disable_help_subcommand = true,
     trailing_var_arg = true,
     allow_hyphen_values = true,

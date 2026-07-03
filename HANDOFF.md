@@ -6257,3 +6257,120 @@ in first if the wrapper work is more urgent — they're orthogonal.
 Push only to `claude/magical-turing-mele8c`.  Treat v1 as
 read-only.  Commit author must be `noreply@anthropic.com` or the
 stop-hook will complain.
+
+---
+
+## 2026-07-03 (overnight autonomous session) — CAP_SETPCAP fix + seccomp/exec finding
+
+Picked up the one autonomous-safe, well-scoped open item from
+`TODO.md`'s Phase 2 list: "Capability-set test that asserts CapEff
+at each lifecycle stage matches the documented `CAPABILITY:`
+comments." Writing the test surfaced a real bug, and manually
+verifying the fix end-to-end surfaced a second, more severe one.
+
+### 1. `CAP_SETPCAP` was missing from `WORKING_CAPS` — launcher could not run at all
+
+`crates/v2-babbleon-launch-untrusted/tests/capability_lifecycle.rs`
+(new) forks a child, calls the real `bounding_set` /
+`identity_drop` functions in sequence, and reads `/proc/self/status`
+around each call. Running it (this container runs as root, so the
+rooted tests actually execute — see below) immediately failed:
+`drop_all_bounding` at step 10 died with `EPERM` on the very first
+capability it tried to drop.
+
+Root cause: `PR_CAPBSET_DROP` (what both step 2 and step 10 use to
+shrink the bounding set) requires `CAP_SETPCAP` in the calling
+thread's *effective* set for every call — not just to drop
+`CAP_SETPCAP` itself, per the kernel's `cap_capbset_drop()`. v1 never
+hit this because it runs setuid-root (always holds every capability,
+including `CAP_SETPCAP`). v2's file-capability design never granted
+it. `docs/v2/least-privilege.md`'s original v1→v2 audit table listed
+only four working caps and marked `PR_CAPBSET_DROP` as needing "none"
+— both wrong. (v1's own `policies/selinux/babbleon.te` and
+`policies/apparmor/usr.local.bin.babbleon` already listed `setpcap`;
+that fact just never carried into the v2 docs or code.)
+
+**Practical severity: this means step 2 — the launcher's first
+privileged call — would fail `EPERM` on every real file-capability
+production install.** Confirmed by direct reproduction, not just
+reasoning: built the release binary, `setcap`'d a copy with the old
+4-cap set, ran it as the non-root `ubuntu` user (`runuser -u
+ubuntu`) — died at `bounding-set-trim` immediately. Same binary
+`setcap`'d with the corrected 5-cap set (`cap_sys_admin,cap_setuid,
+cap_setgid,cap_ipc_lock,cap_setpcap=ep`) ran cleanly through all 11
+steps.
+
+**Fix landed:**
+- `bounding_set.rs`: added `CAP_SETPCAP` (cap 8) to `WORKING_CAPS`
+  (four → five caps); updated module doc, tests
+  (`working_caps_are_a_proper_subset`,
+  `working_caps_includes_the_five_documented`).
+- `main.rs`: swapped the orchestrator's execution order so step 10
+  (`bounding_set::drop_all_bounding`) now runs BEFORE step 9
+  (`identity_drop::drop_to_real_user`), not after. Reason: step 9's
+  `setuid` away from UID 0 clears the effective/permitted capability
+  sets as a kernel side effect (`PR_SET_KEEPCAPS=0`) — including
+  `CAP_SETPCAP` — so running step 10 after step 9 means the very
+  capability `PR_CAPBSET_DROP` needs is already gone. Numeric step
+  identifiers / exit codes (`errors::Step::code`) are unchanged —
+  only the execution order moved, same pattern as the existing
+  step-8-runs-last divergence.
+- `lib.rs`, `errors.rs`, `cli.rs`: doc-comment updates (four → five
+  caps, updated lifecycle table).
+- `docs/v2/least-privilege.md`: corrected the v1 audit-findings
+  table, the "total capability set" line, the `setcap` install
+  command, and the orchestrator table (added a "Why steps 8, 9, and
+  10 transpose" section covering both reorderings); added a dated
+  correction blockquote rather than silently rewriting history.
+- `docs/v2/pam-flavour-1.md`, `docs/v2/attack-mapping.md`: updated
+  the `setcap` command and capability list respectively.
+- `crates/v2-babbleon-launch-untrusted/tests/capability_lifecycle.rs`
+  (new): the test that found this. Two rooted tests — step 2's
+  `CapBnd` narrowing, and the corrected step-10-then-9 sequence's
+  `CapPrm`/`CapEff`/`CapBnd` all reaching zero before exec. Verified
+  passing in this session (root container): both green.
+
+All unprivileged + rooted tests for the crate pass (38 lib tests, 5
+`activated_table_roundtrip`, 2 `capability_lifecycle`, 2
+`daemon_socket_input`, 3 `rooted_lifecycle`, 3
+`seccomp_denies_forbidden`). Clippy clean.
+
+### 2. Filed, NOT fixed — seccomp filter appears to make the launcher unable to run any real child
+
+While manually verifying fix #1 end-to-end (build release, `setcap`
+the corrected 5-cap set, run as non-root `ubuntu` against
+`/bin/echo`), the launcher ran cleanly through every step up to and
+including `apply-seccomp`, then the child died with `Bad system
+call` (SIGSYS) on `execve`.
+
+Root cause: `seccomp_profile::ALLOWED_SYSCALLS` is a 16-syscall
+allowlist sized for the launcher's own remaining fork+exec work.
+Seccomp-bpf filters are inherited across `execve` by kernel design
+(the whole point of pairing them with `NO_NEW_PRIVS`) — so the CHILD
+process runs under this same 16-syscall allowlist for its entire
+life. No real program can survive that (even `/bin/echo` needs
+`openat` for its dynamic linker). No existing test caught this
+because `rooted_lifecycle.rs` exercises library functions directly
+and never runs the compiled binary end-to-end with a real child.
+
+This is filed in `TODO.md`'s Phase 2 section (search "post-step-8
+seccomp filter") with full reproduction steps and three options for
+the operator to weigh (deny-list like `babbleon-cli`; split the
+launcher into two processes so the strict filter only ever covers
+one of them; or document the current allowlist as viable only for a
+fixed minimal command set). Deliberately not fixed autonomously:
+choosing the untrusted-tier child's syscall envelope is a
+security-architecture tradeoff on the same order as the daemon's
+seccomp sign-off in `docs/v2/daemon-seccomp-envelope.md`, which this
+project's own culture already treats as needing explicit operator
+review rather than a session's unilateral call.
+
+### For the next session
+
+- The `CAP_SETPCAP` fix is complete, tested, and safe to build on.
+- The seccomp/exec finding is the highest-leverage next item once an
+  operator picks a direction — until then, `babbleon-launch-untrusted`
+  cannot successfully launch a real user command in production,
+  which is a bigger gap than anything else currently open in Phase 2.
+- Push target confirmed via this file's own header instruction:
+  `claude/magical-turing-mele8c`.

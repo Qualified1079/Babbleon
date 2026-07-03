@@ -173,14 +173,16 @@ not doc text).
 ### Phase 2 — v2 launcher + PAM
 
 - [x] **`crates/babbleon-launch-untrusted/` (NOT setuid; file caps:
-      cap_sys_admin, cap_setuid, cap_setgid, cap_ipc_lock).**
-      Reconciled 2026-07-03 alongside Phase 1, same stale-checklist
-      cause.  `crates/v2-babbleon-launch-untrusted/src/
+      cap_sys_admin, cap_setuid, cap_setgid, cap_ipc_lock,
+      cap_setpcap).**  Reconciled 2026-07-03 alongside Phase 1, same
+      stale-checklist cause.  `crates/v2-babbleon-launch-untrusted/src/
       bounding_set.rs` documents and implements exactly this file-
-      capability set (`CAP_SYS_ADMIN`, `CAP_SETUID`, `CAP_SETGID`,
-      `CAP_IPC_LOCK`) on a non-setuid binary, contrasted explicitly
+      capability set on a non-setuid binary, contrasted explicitly
       against v1's setuid-root `babbleon-ns-helper` in the module's
-      own doc comment.
+      own doc comment.  **Note (2026-07-03, later same day):** the
+      capability list above was corrected from four to five caps as
+      part of closing the CapEff-test item below — see that entry
+      for the bug this test found and fixed.
 - [ ] **PAM module wires through the new launcher.**  Verified
       2026-07-03: genuinely still open, do NOT check this off.
       `crates/v2-babbleon-pam/src/lib.rs`'s own module doc says so
@@ -194,8 +196,92 @@ not doc text).
       picks one before this module ships in a release."  Explicitly
       operator-gated by the crate's own design doc; not an
       autonomous-safe pickup.
-- [ ] Capability-set test that asserts CapEff at each lifecycle
-      stage matches the documented `CAPABILITY:` comments
+- [x] **Capability-set test that asserts CapEff at each lifecycle
+      stage matches the documented `CAPABILITY:` comments.**  Closed
+      2026-07-03.  `crates/v2-babbleon-launch-untrusted/tests/
+      capability_lifecycle.rs` — two rooted tests reading `/proc/
+      self/status` around the real `bounding_set`/`identity_drop`
+      calls (not a reimplementation). Writing this test surfaced a
+      real bug, not just a missing test: `WORKING_CAPS` was missing
+      `CAP_SETPCAP`, which `PR_CAPBSET_DROP` requires in the
+      effective set for EVERY call (kernel's `cap_capbset_drop()`),
+      not just to drop `CAP_SETPCAP` itself. Without it, step 2 (the
+      launcher's very first privileged call) fails `EPERM` on a real
+      file-capability install — **the launcher as previously
+      committed could not run at all outside a literal-root test
+      harness.** Confirmed by direct reproduction: built the release
+      binary, `setcap`'d it with the old 4-cap set, ran it as a
+      non-root user (`runuser -u ubuntu`) — died immediately at
+      `bounding-set-trim` with `EPERM`; same binary with the fixed
+      5-cap set (`cap_sys_admin,cap_setuid,cap_setgid,cap_ipc_lock,
+      cap_setpcap=ep`) proceeded through the entire 11-step
+      lifecycle. Fix: added `CAP_SETPCAP` to `WORKING_CAPS`
+      (`bounding_set.rs`) AND reordered the orchestrator so step 10
+      (`bounding_set::drop_all_bounding`, needs `CAP_SETPCAP`
+      effective) runs BEFORE step 9 (`identity_drop`, whose `setuid`
+      clears the effective set as a kernel side effect, taking
+      `CAP_SETPCAP` down with it) — running 10 after 9, as the code
+      previously did, means step 10 always fails too, for the same
+      reason. v1's own `policies/selinux/babbleon.te` and
+      `policies/apparmor/usr.local.bin.babbleon` already listed
+      `setpcap`; this fact just never made it into the v2 rewrite's
+      `docs/v2/least-privilege.md` audit table or code. Full
+      correction recorded in that doc's "v1 audit findings" section
+      and orchestrator table. See the next item for a second,
+      more severe finding surfaced by the same manual reproduction.
+- [ ] **`babbleon-launch-untrusted`'s post-step-8 seccomp filter
+      appears to make it impossible to launch any real child
+      command — needs operator review, not an autonomous fix.**
+      Found 2026-07-03 while manually verifying the `CAP_SETPCAP`
+      fix above end-to-end: with the fix applied, the launcher
+      (built release, file-capped, invoked as a non-root user)
+      completes every lifecycle step through `apply-seccomp`
+      successfully, then dies with `Bad system call` (SIGSYS) the
+      moment it tries to `execve` `/bin/echo`. Root cause:
+      `seccomp_profile::ALLOWED_SYSCALLS`
+      (`crates/v2-babbleon-launch-untrusted/src/seccomp_profile.rs`)
+      is a 16-syscall ALLOWLIST (`read`, `write`, `wait4`, `waitid`,
+      `rt_sigreturn`, `rt_sigaction`, `rt_sigprocmask`, `exit`,
+      `exit_group`, `clone`, `execve`, `execveat`, `mmap`,
+      `mprotect`, `munmap`, `brk`) sized for the LAUNCHER's own
+      remaining fork+exec work — but seccomp-bpf filters are
+      inherited across `execve` by kernel design (that's the whole
+      point of pairing them with `NO_NEW_PRIVS`), so the CHILD
+      process runs under this same 16-syscall allowlist too. Any
+      real program — even `/bin/echo`, which just needs `openat` for
+      `ld.so`/libc — gets killed on its first syscall outside that
+      set. No existing test exercises this path (`rooted_lifecycle.rs`
+      calls library functions directly, never the compiled binary
+      end-to-end with a real child), which is why this was never
+      caught. This is NOT a simple omission fixable by adding a few
+      syscall numbers: an allowlist wide enough for arbitrary
+      untrusted-tier user commands (arbitrary shells, editors,
+      compilers, ...) is close to "allow everything except the
+      dangerous syscalls" — i.e. the deny-list shape
+      `docs/v2/least-privilege.md` already uses for `babbleon-cli`
+      and considered-and-rejected for `babbleon-daemon` ("daemon's
+      envelope is bounded enough that allowlisting is honest" — the
+      launcher's child envelope is NOT bounded the same way, since
+      the child is an arbitrary user command by design). Choosing
+      that tradeoff is a security-architecture decision on the same
+      order as the daemon's seccomp envelope sign-off in
+      `docs/v2/daemon-seccomp-envelope.md`, not something an
+      autonomous session should decide unilaterally. Options for the
+      operator to weigh: (a) switch step 8 to a deny-list of the
+      same dangerous syscalls `babbleon-cli` denies, accepting a
+      larger post-exec surface for the child; (b) keep the strict
+      allowlist but scope it to ONLY the launcher's own pre-exec
+      window somehow (not achievable with a single process-wide BPF
+      filter — would need e.g. a second short-lived helper process
+      that installs the filter and execs, splitting "launcher work"
+      from "seccomp-protected child" more precisely — bigger
+      redesign); (c) accept the current allowlist is only viable for
+      a fixed, minimal command set and document that constraint
+      instead of fixing it. Reproduction: build release, `setcap
+      'cap_sys_admin,cap_setuid,cap_setgid,cap_ipc_lock,
+      cap_setpcap=ep'`, `mkdir -p /run/babbleon/scrambled`, run as a
+      non-root user with no `--activated-table-*` flag (smoke mode)
+      against any real binary.
 
 ### Phase 3 — structural scrambling
 

@@ -89,7 +89,7 @@ fn run(args: &Args) -> i32 {
         );
     }
 
-    // ---- Step 2 — trim bounding set to 4-cap working set --------
+    // ---- Step 2 — trim bounding set to 5-cap working set --------
     step!(Step::BoundingSetTrim, bounding_set::trim_to_working_set());
     tracing::info!(step = %Step::BoundingSetTrim, "bounding set trimmed");
 
@@ -133,6 +133,23 @@ fn run(args: &Args) -> i32 {
     step!(Step::SetNoNewPrivs, process_hardening::set_no_new_privs());
     tracing::info!(step = %Step::SetNoNewPrivs, "NO_NEW_PRIVS=1");
 
+    // ---- Step 10 — drop remaining permitted caps -----------------
+    // Runs BEFORE step 9 (identity drop), not after: `PR_CAPBSET_DROP`
+    // requires `CAP_SETPCAP` in the calling thread's EFFECTIVE set
+    // for every call, and step 9's `setuid` away from UID 0 clears
+    // the effective/permitted sets as a kernel side effect
+    // (`PR_SET_KEEPCAPS=0`, set in step 3). Run this after step 9
+    // and every `PR_CAPBSET_DROP` call fails with EPERM — there is
+    // no `CAP_SETPCAP` left to authorize it. See
+    // `bounding_set`'s module doc ("Why CAP_SETPCAP is a working
+    // cap") and `docs/v2/least-privilege.md`'s orchestrator table
+    // for the full rationale. Bounding-set removal does not strip
+    // the CAP_SETUID/CAP_SETGID the process still holds in its
+    // effective set, so step 9 (next) is unaffected by running
+    // second.
+    step!(Step::DropAllPermitted, bounding_set::drop_all_bounding());
+    tracing::info!(step = %Step::DropAllPermitted, "bounding set fully cleared");
+
     // ---- Step 9 — drop identity ---------------------------------
     // NOTE: identity drop happens BEFORE seccomp install in this
     // ordering because the v2 baseline requires seccomp to allow
@@ -140,20 +157,14 @@ fn run(args: &Args) -> i32 {
     // setuid/setgid to NOT be in the post-seccomp allowlist, so
     // they must run first.  Document this divergence from the
     // strict 1..=11 ordering in least-privilege.md: step 9 runs
-    // before step 8 by design.  Step 8 (seccomp) closes the window
-    // on every cap-requiring syscall before step 11 fires.
+    // before step 8 by design (and after step 10 — see the note
+    // above).  Step 8 (seccomp) closes the window on every
+    // cap-requiring syscall before step 11 fires.
     step!(
         Step::DropIdentity,
         identity_drop::drop_to_real_user(outcome.real_uid, outcome.real_gid)
     );
     tracing::info!(step = %Step::DropIdentity, uid = outcome.real_uid, "identity dropped");
-
-    // ---- Step 10 — drop remaining permitted caps ----------------
-    // After setuid with KEEPCAPS=0 the effective set is already
-    // cleared by the kernel; tightening the bounding set here
-    // prevents file-cap regain across step-11 execve.
-    step!(Step::DropAllPermitted, bounding_set::drop_all_bounding());
-    tracing::info!(step = %Step::DropAllPermitted, "bounding set fully cleared");
 
     // ---- Step 8 (deferred to here) — seccomp ---------------------
     step!(Step::ApplySeccomp, seccomp_profile::apply());

@@ -7,22 +7,26 @@
 //! into an exploit primitive: arbitrary mount, kernel-module load,
 //! ptrace, BPF, etc.  v2 ships **file capabilities**, not setuid: the
 //! launcher is granted only `CAP_SYS_ADMIN`, `CAP_SETUID`,
-//! `CAP_SETGID`, and `CAP_IPC_LOCK` and drops each as soon as the
-//! step that needs it has completed.  An attacker exploiting a
-//! launcher bug gains at most those four capabilities, never the
-//! other 37.
+//! `CAP_SETGID`, `CAP_IPC_LOCK`, and `CAP_SETPCAP` (the last is
+//! required to perform the bounding-set drops below, not for any
+//! privileged work of its own — see `bounding_set`'s module doc) and
+//! drops each as soon as the step that needs it has completed.  An
+//! attacker exploiting a launcher bug gains at most those five
+//! capabilities, never the other 36.
 //!
 //! # Mechanism — the 11-step lifecycle
 //!
 //! `docs/v2/least-privilege.md` documents the ordering verbatim.
 //! Each step is its own module so a failure can be precisely
 //! attributed and so reviewers can audit the privilege envelope at
-//! each step in isolation:
+//! each step in isolation.  The table below is in STEP-NUMBER order;
+//! the orchestrator's actual EXECUTION order swaps 9 and 10 (see
+//! `main.rs::run` and the note on row 10):
 //!
 //! | Step | Module               | Capability consumed |
 //! |------|----------------------|---------------------|
 //! | 1    | (kernel-side)        | grants from file caps |
-//! | 2    | [`bounding_set`]     | drops 37 unwanted bits |
+//! | 2    | [`bounding_set`]     | `CAP_SETPCAP` (to drop the other 36 bits) |
 //! | 3    | [`process_hardening`]| `CAP_IPC_LOCK` for `mlockall` |
 //! | 4    | [`namespaces`]       | `CAP_SYS_ADMIN` for `unshare(NEWNS|NEWPID)` |
 //! | 5    | [`namespaces`]       | `CAP_SYS_ADMIN` for `MS_PRIVATE` remount |
@@ -30,17 +34,21 @@
 //! | 7    | [`process_hardening::set_no_new_privs`] | none |
 //! | 8    | [`seccomp_profile`]  | none (NNP allows unprivileged install) |
 //! | 9    | [`identity_drop`]    | `CAP_SETUID` / `CAP_SETGID` |
-//! | 10   | [`bounding_set::drop_all_bounding`] | none |
+//! | 10   | [`bounding_set::drop_all_bounding`] | `CAP_SETPCAP`; runs BEFORE step 9 (see below) |
 //! | 11   | (caller)             | none — `execve` of child |
 //!
-//! By step 10 the process holds NO capabilities and `NO_NEW_PRIVS`
-//! is set, so the child cannot regain any capability even via file
-//! caps on `execve`.
+//! Row 10 executes before row 9 because `setuid` (step 9) clears the
+//! effective/permitted capability sets as a kernel side effect —
+//! including `CAP_SETPCAP` — so a `PR_CAPBSET_DROP` call issued
+//! after step 9 has nothing to authorize it with. By the time
+//! `execve` fires the process holds NO capabilities and
+//! `NO_NEW_PRIVS` is set, so the child cannot regain any capability
+//! even via file caps on `execve`.
 //!
 //! # Threat model boundaries
 //!
 //! - Defeats: a launcher bug becoming root-equivalent.  An exploit
-//!   restricted to the four capabilities cannot load kernel modules,
+//!   restricted to the five capabilities cannot load kernel modules,
 //!   attach a debugger, raw-socket-sniff, etc.
 //! - Defeats: a child process re-acquiring any capability — `NNP=1`
 //!   plus an empty bounding set forbids it.

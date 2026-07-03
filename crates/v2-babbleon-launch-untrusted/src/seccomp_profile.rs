@@ -33,6 +33,23 @@
 //! - Does NOT defeat: anything the seven allowed syscalls can be
 //!   coerced into doing.  Of those, `execve` is the broadest;
 //!   `NO_NEW_PRIVS` constrains it.
+//!
+//! # ⚠ Open finding (2026-07-03, needs operator review — see TODO.md
+//! # Phase 2)
+//!
+//! Seccomp-bpf filters are inherited across `execve` by kernel
+//! design — that is the whole point of pairing this filter with
+//! `NO_NEW_PRIVS`. Which means [`ALLOWED_SYSCALLS`] constrains not
+//! only the launcher's own pre-exec work but the CHILD command too,
+//! for its entire lifetime. A 16-syscall allowlist sized for "fork +
+//! execve" cannot support any real untrusted-tier command (even
+//! `/bin/echo` needs `openat` for its dynamic linker) — confirmed by
+//! running the built binary end-to-end as a non-root file-capped
+//! user; the child dies with SIGSYS on its first syscall. See
+//! `TODO.md`'s Phase-2 section for the full writeup and the three
+//! redesign options filed for operator sign-off. Not fixed here:
+//! choosing the child's syscall envelope is a security-architecture
+//! decision, not a bug-fix.
 
 #![cfg(target_os = "linux")]
 
