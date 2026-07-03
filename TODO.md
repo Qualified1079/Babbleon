@@ -326,24 +326,80 @@ composes with the phase-3 five-layer base; they don't replace it.
 
 ### Missed-standards remediation (v2-tagged)
 
-- [ ] ATT&CK technique mapping in threat model (T1059, T1057,
-      T1083, T1552.*, T1574, T1518, T1003, ...)
-- [ ] D3FEND technique mapping (D3-HCH, D3-MA, D3-PSEP, D3-FAPA,
-      D3-DSE, ...)
-- [ ] NIST SP 800-190 §4.4 section-by-section threat-model map
-- [ ] NIST SP 800-207 zero-trust tenet map
-- [ ] in-toto + TUF substrate adopted (already implied by sigstore
-      toolchain)
-- [ ] CycloneDX 1.6 chosen as the SBOM format (decision recorded
-      in `docs/v2/standards-alignment.md`)
-- [ ] GUAC-ingestible SBOM publication
-- [ ] CSAF 2.0 JSON output for advisories
-- [ ] SARIF upload from SAST jobs
-- [ ] FIPS 140-3 deferred to v3 (decision recorded)
-- [ ] CIS deployment doc
-- [ ] DISA STIG deployment doc (lower priority than CIS)
-- [ ] OWASP Top 10 (2021) documentary audit (most items n/a; sweep
-      anyway)
+This section predates the phase-0 doc work and the CI hardening
+pass below; most items were reconciled 2026-07-03 against what
+actually landed under those other headings (verified by reading the
+cited files, not just checking they exist).  Six were stale
+duplicates left unstruck; two are partially done (a stance is
+recorded but the actual integration isn't built); four are still
+genuinely open — see each item.
+
+- [x] **ATT&CK technique mapping in threat model** (T1059, T1057,
+      T1083, T1552.*, T1574, T1518, T1003, ...).  Duplicate of the
+      Phase 0 `docs/v2/attack-mapping.md` item above — §1's
+      Tactic-ordered table covers all of these IDs (T1059/.001/
+      .004/.006, T1057, T1083, T1552/.001/.003/.004/.005/.007,
+      T1574/.001/.006, T1518/.001, T1003/.007/.008) across ~60
+      techniques, 12 tactics.
+- [x] **D3FEND technique mapping** (D3-HCH, D3-MA, D3-PSEP,
+      D3-FAPA, D3-DSE, ...).  Same file, §2 "D3FEND coverage
+      (reverse direction)" — all five plus D3-RAPA, D3-OAM, D3-NTA,
+      each with mechanism + ATT&CK back-references.
+- [x] **NIST SP 800-190 §4.4 section-by-section threat-model map.**
+      `docs/v2/threat-model.md` §7, subsections 4.4.1–4.4.5 mapped
+      row-by-row.  Duplicate of the Phase 0 `threat-model.md` item.
+- [x] **NIST SP 800-207 zero-trust tenet map.**  Same file, §8 —
+      all seven NIST tenets mapped to Babbleon mechanisms.
+- [~] **in-toto + TUF substrate adopted.**  Half-true: the shipped
+      SLSA provenance job (`.github/workflows/release.yml`) emits
+      in-toto-format attestations via `slsa-github-generator`, so
+      in-toto is genuinely adopted.  TUF is NOT — `docs/v2/
+      standards-alignment.md` only asserts a stance ("Sigstore +
+      cosign already produces in-toto-compatible attestations; we
+      adopt the v1 toolchain"); there is no TUF metadata repo or
+      role structure anywhere in the tree.  Re-scope: either build
+      an actual TUF root, or correct the doc to say "in-toto: yes,
+      TUF: not adopted" and drop TUF from this line.
+- [x] **CycloneDX 1.6 chosen as the SBOM format.**  Decision in
+      `docs/v2/standards-alignment.md` §"CycloneDX vs SPDX";
+      implemented via `cargo cyclonedx` in `ci.yml`/`release.yml`.
+      Duplicate of the "SBOM generation in CycloneDX or SPDX." item
+      under Supply-chain + build integrity above.
+- [~] **GUAC-ingestible SBOM publication.**  The CycloneDX SBOMs
+      generated above are a format GUAC can ingest in principle,
+      but nothing publishes them to a GUAC-reachable location or
+      verifies GUAC can actually pull them — `standards-alignment.md`
+      itself calls GUAC integration "a downstream concern."  Open:
+      decide a publication target (release asset is already public;
+      does GUAC need more than that?) before closing this.
+- [ ] **CSAF 2.0 JSON output for advisories.**  Genuinely open —
+      `standards-alignment.md` only states future intent ("when we
+      publish advisories, we publish them in CSAF 2.0 JSON").  No
+      advisory has been published yet, so there's nothing to format;
+      revisit when the first advisory is filed.
+- [x] **SARIF upload from SAST jobs.**  `codeql.yml`'s
+      `github/codeql-action/analyze@v3` step uploads SARIF by
+      default; `scorecard.yml` explicitly runs `github/codeql-
+      action/upload-sarif@v3`.  Duplicate of the CodeQL and
+      Scorecard items under Compliance / publication signals above.
+- [x] **FIPS 140-3 deferred to v3 (decision recorded).**
+      `docs/v2/standards-alignment.md` §"FIPS 140-3" and
+      `threat-model.md`'s summary table both record "out of scope
+      for v2.0."  Duplicate of the Phase 0 `standards-alignment.md`
+      item.
+- [ ] **CIS deployment doc.**  Genuinely open.
+      `standards-alignment.md` commits to shipping `docs/v2/
+      cis-deployment.md` "filed for phase 6"; the file does not
+      exist yet.  Phase 6 (release engineering) work, not phase 0-4.
+- [ ] **DISA STIG deployment doc.**  Genuinely open, same shape as
+      CIS above — only a one-line stance in `standards-alignment.md`,
+      no `stig-deployment.md`.  Lower priority than CIS per the
+      original note.
+- [ ] **OWASP Top 10 (2021) documentary audit** (most items n/a;
+      sweep anyway).  Genuinely open.  `standards-alignment.md`
+      commits to `docs/v2/owasp-top10-audit.md`; the file does not
+      exist.  NOT satisfied by `docs/cwe-top25-audit.md`, which
+      audits a different (CWE, not OWASP Top 10) list.
 
 ---
 
