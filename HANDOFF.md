@@ -24,24 +24,25 @@ lands, push here)
 
 Date: 2026-07-03 (third user-asleep session — claude-sonnet-5)
 
-Last commit before this handoff section: `7635649` —
-docs(HANDOFF): restructure session-3 narrative, record commit 9
-(A07 closure).  See the 2026-07-03 (session 3) block immediately
-below for context, then the 2026-07-02 (session 2) block below
-that for the role-partitioning tool this session builds on.
+Last commit before this handoff section: `1ecd0ad` —
+docs: sharpen A08 finding — release pipeline ships v1, which won't
+ship.  See the 2026-07-03 (session 3) block immediately below for
+context, then the 2026-07-02 (session 2) block below that for the
+role-partitioning tool this session builds on.
 
 ---
 
 ## 2026-07-03 (session 3) — sleeping-operator: autonomous-safe follow-ups from session 2's backlog
 
 Author: Claude Sonnet 5 (autonomous overnight continuation).
-Branch: `claude/magical-turing-mele8c`.  12 commits (6 feature/fix
-landing session-2's backlog, 1 more feature/fix closing an OWASP
-gap the audit surfaced, 5 docs), all green tests (both feature
-configs where relevant), zero clippy warnings introduced, no new
-default-workspace deps (one new optional/feature-gated dep, one new
-dep on an already-audited workspace crate — both noted in their
-commit's section below).
+Branch: `claude/magical-turing-mele8c`.  16 commits (7 feature/fix,
+9 docs — session ran long because the OWASP audit this session wrote
+kept surfacing follow-on work worth finishing same-day rather than
+leaving half-triaged), all green tests (both feature configs where
+relevant), zero clippy warnings introduced, no new unconditional
+default-workspace deps (one optional/feature-gated dep, two deps on
+already-audited workspace crates — each noted in its commit's
+section below).
 
 ### Entry state
 
@@ -56,7 +57,7 @@ lifecycle seccomp, runtime wiring review, SentencePiece bundling —
 all still blocked, none touched this session). This session picked
 up that backlog in priority order.
 
-### Net commits this session: 14 (+ this refresh)
+### Net commits this session: 16
 
 | # | Hash | Subject |
 |---|---|---|
@@ -73,7 +74,9 @@ up that backlog in priority order.
 | 11 | `98f08d7` | feat(v2-vault): port AttemptTracker rate-limiting to v2 unlock path |
 | 12 | `7635649` | docs(HANDOFF): restructure session-3 narrative, record commit 9 (A07 closure) |
 | 13 | `8915f13` | feat(v2-daemon): SO_PEERCRED peer-uid auth on the daemon socket; correct A05 |
-| 14 | (this commit) | docs(HANDOFF): record commit 13 (A01 closure + A05 correction) |
+| 14 | `74f78e4` | docs(HANDOFF): record commit 13 (A01 closure + A05 correction) |
+| 15 | `1ecd0ad` | docs: sharpen A08 finding — release pipeline ships v1, which won't ship |
+| 16 | (this commit) | docs(HANDOFF): final session-3 close-out |
 | 12 | (this commit) | docs(HANDOFF): restructure session-3 narrative, record commit 9 (A07 closure) |
 
 ### Commit 1 — `derive_domain_seed` in `v2-babbleon-core::key_derivation`
@@ -540,30 +543,65 @@ cases — pre-existing, unrelated to this diff, confirmed by running it
 filtered out and separately confirming the change it doesn't touch);
 zero clippy warnings on both crates (`--all-targets`).
 
+### Commit 15 — A08 re-scoped: it's bigger than "add a build step"
+
+Went back to close A08 the same way A01/A07 closed, and stopped
+partway through on purpose. `.github/workflows/release.yml`'s
+`build` job bundles only `babbleon` + `babbleon-ns-helper` (v1) —
+fixing that looked mechanical (add v2 binaries to the `tar`
+command) until reading `crates/DEPRECATED-V1.md`, which states
+flatly: **"v1 is not the public product and will not ship."** That
+reframes the finding entirely: the release pipeline isn't
+*incomplete*, it is *actively contradicting* a recorded operator
+decision on every run, publishing v1 under the project's cosign
+identity and SLSA provenance.
+
+Fixing that properly is three bundled decisions, not one:
+
+1. **Which v2 binaries ship.** Identified the candidate set —
+   `babbleon-daemon`, `babbleon-v2`, `babbleon-launch-untrusted`,
+   `babbleon-login-shell`, `babbleon-python` (system/runtime
+   components) — excluding `babbleon-bench`
+   (`v2-babbleon-resilience-bench`'s CLI, an internal adversarial-
+   measurement tool, not something an end-user installs).
+2. **Is v2 release-complete?** TODO.md's phase 1-6 lists are still
+   substantially `[ ]`. Tagging a signed, SLSA-attested v2 release
+   implies a completeness claim those lists don't yet support.
+3. **Transition window or hard cutover?** Ship v1 and v2 side by
+   side for a release or two, or swap immediately?
+
+None of these three is a call an autonomous session should make
+unilaterally on a supply-chain-security-relevant workflow file —
+unlike A01/A07, which were unambiguous "close the gap" fixes with a
+single correct answer, A08 is a release-shape decision with real
+tradeoffs an operator needs to weigh. Re-filed in `TODO.md` and
+`docs/v2/owasp-top10-audit.md` with this sharper framing instead of
+either closing it with an under-considered fix or leaving the
+original undersized framing in place.
+
 ### Where session 3 stopped
 
 Every autonomous-safe follow-up session 2 explicitly filed has
 landed (commits 1-6); this session's own research fallback (`TODO.md`
 reconciliation + the OWASP audit it surfaced) is closed (commits
-7-8); and of the four items that audit found, two are closed (commit
-9, A07; commit 10, A01), one turned out to be a false positive in the
-audit itself rather than a real gap (also commit 10, A05 — corrected,
-not built), and one remains:
+7-8); and of the four items that audit found: two closed with code
+(commit 9, A07; commit 10, A01), one was a false positive in the
+audit itself, corrected rather than built (also commit 10, A05), and
+one was re-scoped as a genuine operator decision rather than closed
+or left under-described (commit 15, A08). Every OWASP-audit-derived
+item is now in its correct final state — closed, corrected, or
+properly filed for the operator; none are sitting half-triaged.
 
-1. **v2 binaries into the signed release pipeline (A08).**
-   `.github/workflows/release.yml`.  Needs one small decision (which
-   v2 binaries ship — `babbleon-daemon`, `v2-babbleon`,
-   `babbleon-launch-untrusted`, others?) that a session can make and
-   document rather than defer; not a hard operator gate. This is the
-   only item left from the OWASP audit's original four, and the only
-   one of the four that still needs anything built.
+No autonomous-safe item is queued as of this refresh.  A future
+session should either (a) unblock one of the operator-gated items
+below with the operator's decision, or (b) do what this session's
+own research-fallback did: pick a doc, a standards checklist, or a
+"someone should verify this" claim and actually verify it against
+running code rather than trusting what the doc says — that pattern
+(the OWASP audit, this session's A05 correction, the TODO.md
+reconciliation) has now paid off twice in one session.
 
-The narrower question A05's correction left open — has an operator
-reviewed and signed off on the *specific* 41-syscall envelope as
-final — is a policy review, not code to write; not queued as an
-autonomous-safe item for that reason.
-
-Also still blocked on operator input, unchanged since session 2:
+Still blocked on operator input, unchanged since session 2:
 
 1. **Adversarial-LLM re-test with variable ALIAS_COUNT** — needs
    API keys + operator approval to run.  Gates "wire chosen filtered
