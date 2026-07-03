@@ -35,9 +35,9 @@ role-partitioning tool this session builds on.
 ## 2026-07-03 (session 3) — sleeping-operator: autonomous-safe follow-ups from session 2's backlog
 
 Author: Claude Sonnet 5 (autonomous overnight continuation).
-Branch: `claude/magical-turing-mele8c`.  In progress — this is an
-interim refresh, not the final stopping-point note for this
-session.
+Branch: `claude/magical-turing-mele8c`.  5 commits, all green
+tests (both feature configs where relevant), zero clippy warnings
+introduced, no new default-workspace deps.
 
 ### Entry state
 
@@ -52,13 +52,17 @@ lifecycle seccomp, runtime wiring review, SentencePiece bundling —
 all still blocked, none touched this session). This session picked
 up that backlog in priority order.
 
-### Net commits this session so far: 3
+### Net commits this session: 5 (+ this refresh)
 
 | # | Hash | Subject |
 |---|---|---|
 | 1 | `b23875f` | feat(v2-babbleon-core): derive_domain_seed mirrors role-partitioning tool's HKDF |
 | 2 | `1099c10` | feat(wordlist-role-partitioning): --normalise-diacritics on the extractor |
 | 3 | `ca7f595` | feat(wordlist-role-partitioning): --source-weight weighted union |
+| 4 | `4f9e3d6` | docs(HANDOFF): interim refresh — session 3 commits 1-3 |
+| 5 | `3b645e3` | feat(wordlist-role-partitioning): --role-wordlist-variant auto-populates tokens |
+| 6 | `cfcd52a` | feat(v2-resilience-bench): optional token-metrics feature for smaller-model tokenizer axis |
+| 7 | (this commit) | docs(HANDOFF): final stopping-point note — session-2 backlog cleared |
 
 ### Commit 1 — `derive_domain_seed` in `v2-babbleon-core::key_derivation`
 
@@ -170,38 +174,188 @@ rejection, and the weighted-bias integration test) + parser/call-
 site tests in `main.rs`. Test count 72 → 89 across commits 2+3.
 Zero clippy warnings.
 
-### Stats so far this session
+### Commit 5 — `--role-wordlist-variant` auto-populates `--role-tokens`
+
+Closes session-2 priority 6's follow-up, with a correction to its
+premise.  The follow-up said "auto-populate from
+`tools/tokenizer-benchmark/RESULTS.md`" — but that file has no
+role-indexable table, only per-N per-tokenizer compound/spaced
+ratios (`3 | 5000 | cl100k_base | 1.060× | ...`).  The actual
+per-wordlist-variant compound-cost numbers the README's
+`--role-tokens identifier=13.80` example has always cited live in
+`tools/wordlist-density-analysis/RESULTS.md`'s filter-matrix table
+(Baseline / cl100k[3,4] / cl100k[3,5] / o200k[3,4] / o200k[3,5] /
+intersect[3,5] rows).  New module `src/tokenizer_results.rs` parses
+that table (bold-markdown-aware, tolerant of the header/separator
+rows) into normalised lookup keys (`baseline`, `cl100k34`,
+`cl100k35`, `o200k34`, `o200k35`, `intersect35`).
+
+CLI: `--role-wordlist-variant role=variant-key` (repeatable)
+resolves `Role.tokens_per_compound` from the parsed table via
+`--role-tokens-from` (default: the sibling tool's `RESULTS.md`) and
+`--role-wordlist-tokenizer cl100k|o200k`.  An explicit `--role-tokens
+role=value` for the same role still wins (applied after variant
+resolution).  Unknown keys error out listing every key the table
+actually has.  This only removes the copy-paste step — which role
+should use which wordlist variant remains an open operator call per
+`docs/v2/phase0-research-notes.md` §11; the tool does not guess an
+assignment.
+
+Verified end-to-end against the real `RESULTS.md`:
+`--role-wordlist-variant identifier=intersect35` reproduces the
+exact `1.33×` Attention× figure the README's hand-typed
+`--role-tokens identifier=13.80` example has always shown (13.80
+being `intersect[3,5]`'s cl100k mean).  24 new tests
+(`tokenizer_results` module: normalise-key worked examples, table
+parsing incl. bold cells and em-dash delta cells, disk I/O,
+malformed-input rejection; `main.rs`: variant-arg parser + CLI
+wiring).  Test count 89 → 96.  Zero clippy warnings (two
+`doc_lazy_continuation`/`doc_markdown` nits fixed along the way).
+
+### Commit 6 — `token-metrics` opt-in feature for `v2-babbleon-resilience-bench`
+
+Closes the "Extend the resilience-bench harness with the
+smaller-model tokenizers" item from session 2's "Where session 2
+stopped" note.  Load-bearing constraint this session had to work
+around: `v2-babbleon-resilience-bench` is a **default-workspace
+member** (`crates/v2-babbleon-resilience-bench`, listed in the root
+`Cargo.toml`), unlike `tools/tokenizer-benchmark`, which is a
+*standalone* workspace specifically so `tiktoken-rs` (≈2 MB of BPE
+merge tables per tokenizer) never touches the default build.  Adding
+`tiktoken-rs` unconditionally here would have silently bloated every
+`cargo build`/`cargo test` in the workspace — a regression `CLAUDE.md`
+§4's "no new default-workspace deps" discipline (implicit in every
+prior session's stats table) exists to prevent.
+
+Fix: `tiktoken-rs` is an **optional** dependency behind a new
+`token-metrics` Cargo feature (default off) — the same pattern
+`crates/babbleon/Cargo.toml` already uses for its `tpm`/`fido2`
+hardware-backend features.  `cargo tree -p v2-babbleon-resilience-bench
+-e normal` confirms no `tiktoken-rs` edge without the feature; `cargo
+build -p v2-babbleon-resilience-bench` (no `--features`) does not
+compile it.
+
+- `run_record::TokenCounts` — plain data (cl100k/o200k always,
+  r50k/p50k `Option`), no `tiktoken-rs` dependency of its own, so
+  `RunRecord`'s JSONL schema is byte-identical regardless of build
+  config.  New `RunRecord.token_counts` field + `with_token_counts`
+  builder, same `Option<T>` + `skip_serializing_if` back-compat
+  pattern the existing hygiene fields use.
+- `token_metrics` (feature-gated module) — `compute(source,
+  include_smaller)` counts under `cl100k_base`/`o200k_base` always,
+  `r50k_base`/`p50k_base` when `include_smaller`, mirroring `tools/
+  tokenizer-benchmark --include-smaller`'s exact tokenizer set.
+- CLI: `babbleon-bench score --record-token-counts
+  [--include-smaller-tokenizers]` re-scrambles the challenge source
+  under the cell's layer config (the same call the `prompt`
+  subcommand already makes) and attaches the measured counts.  Built
+  *without* the feature, the flag fails loudly with a clear
+  rebuild-with instruction instead of silently no-op'ing — two
+  `#[cfg]`-selected implementations of a private helper, chosen so
+  `subcommand_score`'s own body carries no `#[cfg]`.
+- `summary::render_token_density_markdown` aggregates by
+  `(challenge, layer_config)` — deliberately ignoring evaluator /
+  attempt, since token count is a property of the deterministic
+  scrambled source, not of any one evaluator's attempt at it — and
+  the `summary` subcommand appends it as a `## Token density` section
+  when non-empty.  The existing crack-fraction table and its tests
+  are untouched.
+
+Verified end-to-end in both feature configs (release build): `score
+--record-token-counts --include-smaller-tokenizers` against a real
+seed challenge attaches `token_counts` to the JSONL; `summary`
+renders the Token density table from it; the same flag on a binary
+built without `--features token-metrics` errors clearly rather than
+silently ignoring the request.  17 new tests (6 in `run_record.rs`,
+5 in `summary.rs`, 4 in `token_metrics.rs`, plus the CLI plumbing).
+Test count 165 → 169 with the feature on; 165 without (the
+feature-gated module's tests don't exist to run).  Zero clippy
+warnings introduced (verified with `--all-targets` in both configs;
+three pre-existing warnings in `scramble_pipeline.rs` and
+`tests/cli_end_to_end.rs`, both untouched this session, are not
+this session's to fix).
+
+### Stats this session
 
 | Metric | Before | After | Δ |
 |---|---|---|---|
 | `v2-babbleon-core` tests | 92 | 97 | +5 |
-| `wordlist-role-partitioning` tests | 72 | 89 | +17 |
-| New deps | 0 | 1 (`unicode-normalization`, tool-local) | +1 |
+| `wordlist-role-partitioning` tests | 72 | 96 | +24 |
+| `v2-babbleon-resilience-bench` tests (default) | 154 | 165 | +11 |
+| `v2-babbleon-resilience-bench` tests (`--features token-metrics`) | n/a | 169 | +169 (new axis) |
+| New standalone-tool deps | 0 | 1 (`unicode-normalization`, tool-local) | +1 |
+| New *optional* default-workspace deps | 0 | 1 (`tiktoken-rs`, feature-gated off) | +1 (never compiled by default) |
+| New unconditional default-workspace deps | 0 | 0 | 0 |
 | `forbid(unsafe_code)` violations | 0 | 0 | 0 |
-| Clippy warnings across touched crates | 0 | 0 | 0 |
+| Clippy warnings introduced | 0 | 0 | 0 |
 
-### Where this session is headed next
+### Where session 3 stopped
 
-Still queued from session 2's autonomous-safe list, not yet
-started as of this refresh:
+Every autonomous-safe follow-up session 2 explicitly filed
+("Refreshed next-session priorities" list + "Where session 2
+stopped" note) has now landed:
 
-- **Auto-populate `--role-tokens` from
-  `tools/tokenizer-benchmark/RESULTS.md` at startup** (session-2
-  priority 6's follow-up). Currently the operator has to
-  hand-type `--role-tokens identifier=13.80 ...`; the benchmark
-  tool's `RESULTS.md` already has these numbers in a markdown
-  table. Parse it once at startup as a soft default the CLI flag
-  can still override.
-- **Extend `v2-babbleon-resilience-bench` with the smaller-model
-  tokenizer axis** (mentioned in session 2's "Where session 2
-  stopped"). `tools/tokenizer-benchmark --include-smaller` already
-  measures r50k/p50k; the resilience-bench harness's per-run
-  reports don't yet include that vocab-size sensitivity axis.
+1. `derive_domain_seed` in `v2-babbleon-core::key_derivation`
+   (priority 7) — commit 1.
+2. `--normalise-diacritics` on the role-partitioning extractor
+   (priority 12) — commit 2.
+3. `--source-weight` weighted union (priority 13) — commit 3.
+4. `--role-wordlist-variant` auto-populate (priority 6, corrected
+   to read from `wordlist-density-analysis/RESULTS.md` instead of
+   `tokenizer-benchmark/RESULTS.md` since that's where the actual
+   role-relevant numbers live) — commit 5.
+5. Smaller-model tokenizer axis in `v2-babbleon-resilience-bench`
+   ("Where session 2 stopped") — commit 6, landed as an opt-in
+   feature rather than an unconditional dependency to protect the
+   default-workspace build.
 
-Will refresh this section again (or add a new dated block) once
-those land or once the session concludes, per `CLAUDE.md` §4's "no
-new top-level `.md` files" rule — updates land in this file, not a
-new one.
+The remaining items on every prior session's priority list are all
+**BLOCKED on operator input**, unchanged by this session:
+
+1. **Adversarial-LLM re-test with variable ALIAS_COUNT** — needs
+   API keys + operator approval to run.  This is the gate that
+   unblocks "wire chosen filtered wordlist into
+   `v2-babbleon-core::wordlist`" and the per-role wordlist runtime
+   wiring (`crates/babbleon/wordlist/roles/` placement, `wordlist::
+   Wordlist::role(name)` accessor) — both fully spec'd, both waiting
+   on this one operator-gated measurement.
+2. **Corpus-lifecycle seccomp** — operator review recommended; see
+   HANDOFF 2026-06-26 (night) for the three design paths.
+3. **Open-weights tokenizer superlinear hypothesis** (Llama-3
+   SentencePiece, Mistral, Phi) — needs `sentencepiece` crate +
+   bundled model files + a license check per family before an
+   autonomous session can touch it.
+4. **Bare-metal validation pass** (M3, TODO.md) — needs real
+   hardware.
+5. **FIDO2 / TPM2 hardware backends** (M2) — needs real hardware.
+
+No autonomous-safe item is queued as of this refresh.  A future
+session should either (a) unblock one of the five above with
+operator input, or (b) do what this session's own "search for
+something worth researching" fallback would do: read `TODO.md`'s
+"Missed-standards remediation (v2-tagged)" section against the
+phase-0 doc list — several of those checkboxes (ATT&CK/D3FEND
+mapping, NIST 800-190/800-207 maps) read `[ ]` there but `[x]` in
+the phase-0 section above them, which looks like a stale duplicate
+list rather than genuinely open work; a session with time to spare
+should audit and reconcile it rather than build against it blind.
+
+### Process notes for next autonomous session
+
+- `wordlist-role-partitioning` and `wordlist-density-analysis`
+  remain standalone workspaces — `cd` into the tool directory before
+  running `cargo`, same warning every prior session has logged.
+- `v2-babbleon-resilience-bench`'s new `token-metrics` feature is
+  the first optional Cargo feature landed on a *default-workspace*
+  v2 crate.  `cargo test --workspace` is still forbidden per
+  `CLAUDE.md` §4 regardless (compiles v1); this feature doesn't
+  change that.  Test both configs when touching this crate:
+  `cargo test -p v2-babbleon-resilience-bench` and `cargo test -p
+  v2-babbleon-resilience-bench --features token-metrics`.
+- The uniform-vs-weighted extractor split in
+  `wordlist-role-partitioning/src/extract.rs` (commit 3) is
+  deliberate, not an oversight — see that commit's writeup above
+  before "simplifying" it.
 
 ---
 
