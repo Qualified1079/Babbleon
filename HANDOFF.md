@@ -6374,3 +6374,60 @@ review rather than a session's unilateral call.
   which is a bigger gap than anything else currently open in Phase 2.
 - Push target confirmed via this file's own header instruction:
   `claude/magical-turing-mele8c`.
+
+### Same session, continued — CIS/STIG docs, mount hardening, TUF re-scope
+
+After the `CAP_SETPCAP` fix above, kept going rather than stopping at
+one item (overnight token budget, no operator to hand off to yet):
+
+1. **`docs/v2/cis-deployment.md` filed** (closes a Phase-6 TODO item).
+   Maps CIS Linux Benchmark control families to Babbleon v2
+   mechanisms by control TITLE, not per-edition number — research
+   while writing it confirmed the SUID/SGID-review control's numeric
+   ID differs across benchmark editions (`6.1.13`/`6.1.14` vs. a
+   merged `7.1.13`), so a bare number is fragile. Corrected a stale
+   "CIS 4.1" claim in `standards-alignment.md` for the same reason.
+2. **`docs/v2/stig-deployment.md` filed** (closes the matching
+   lower-priority TODO item). Deliberately short — covers only where
+   DISA STIG differs from CIS for Babbleon's surface, points back to
+   the CIS doc for the rest.
+3. **Real hardening gap found writing doc #1, then fixed and
+   verified, not just described:** `mounts::mount_scrambled_view_tmpfs`,
+   `credential_gate::mount_one`, and (in a same-night follow-up)
+   `mounts::bind_mount_entries` were all creating/binding tmpfs with
+   `MsFlags::empty()` — no `nosuid`/`nodev`, and the credential-gate
+   overlay was also missing `noexec`. All three restrictions cost
+   nothing functionally where added (`noexec` deliberately excluded
+   from the scrambled-view tmpfs and the per-tool bind mounts, since
+   the whole point is the child execs wrapper scripts from there).
+   The bind-mount fix needed a real two-step `mount(2)` dance
+   (`MS_BIND` first, then `MS_REMOUNT|MS_BIND` to add flags to the
+   now-existing bind — a bind mount's own flags can't be set in the
+   creating call). Every change is backed by a rooted test asserting
+   the actual `/proc/self/mountinfo` options, not just "mount didn't
+   error" — see `crates/v2-babbleon-launch-untrusted/tests/
+   rooted_lifecycle.rs`'s three mount-flag assertions.
+4. **TUF re-scope resolved by correcting the doc, not building
+   unused infrastructure.** `standards-alignment.md`'s in-toto+TUF
+   section conflated the two; corrected to say in-toto is adopted
+   (via the existing SLSA/sigstore pipeline) and TUF deliberately is
+   not (no consuming client exists yet — a TUF root with nothing
+   verifying it is metadata, not security).
+
+All changes tested (unprivileged + rooted, this container runs as
+literal root so the rooted suite actually executes) and clippy-clean
+before each push. Four commits total this session, all on
+`claude/magical-turing-mele8c`:
+`e8cabd9` (CAP_SETPCAP fix), `baf31bd` (CIS doc + mount hardening),
+`755d52f` (STIG doc), `9694bbb` (bind-mount nosuid/nodev),
+`23b77b3` (TUF re-scope).
+
+### What's left for the next session
+
+- The seccomp/exec finding (item 2 in the section above) is still
+  the single highest-leverage next step and still needs an operator
+  decision before anyone touches it.
+- PAM module wiring — still explicitly operator-gated, unchanged.
+- The `nosuid`/`nodev` fixes above only apply to Babbleon's OWN
+  internal mounts; they don't change anything about the seccomp
+  finding, which is a separate, more severe gap.

@@ -694,6 +694,20 @@ genuinely open — see each item.
       execs the wrapper). Verified with a mountinfo assertion added
       to the existing `bind_mount_entries_succeeds_in_fresh_namespace`
       rooted test, checking every bound entry, not just one.
+- [ ] **Explicit `root:root` ownership on installed Babbleon
+      artifacts.**  Noted in `docs/v2/cis-deployment.md`'s Section 6
+      table (CIS's "no unowned files or directories" control family)
+      but not independently verified: does the (currently
+      hand-written, not yet a packaged installer) install path for
+      `/usr/local/libexec/babbleon-*` and `/run/babbleon/` set
+      explicit ownership, or does it inherit whatever the invoking
+      `install`/`setcap` command's ambient umask/ownership happens to
+      produce? Low urgency (no packaged installer exists yet to audit
+      — see `docs/v2/pam-flavour-1.md`'s manual `install`/`setcap`
+      sequence, which does pass `-o root -g root` today, for what
+      currently exists), but worth a real installer script asserting
+      it explicitly once phase 6 packaging lands, rather than relying
+      on operators copying the doc's example commands correctly.
 - [x] **OWASP Top 10 (2021) documentary audit** (most items n/a;
       sweep anyway).  Closed 2026-07-03: `docs/v2/owasp-top10-audit.md`
       covers all 10 categories against `crates/v2-*` (Surface /
