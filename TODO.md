@@ -665,10 +665,18 @@ genuinely open — see each item.
       bind mounts in `bind_mount_entries`, which would need a
       `MS_REMOUNT|MS_BIND` second call to add flags to an existing
       bind mount — filed as a follow-up below rather than guessed at.
-- [ ] **DISA STIG deployment doc.**  Genuinely open, same shape as
-      CIS above — only a one-line stance in `standards-alignment.md`,
-      no `stig-deployment.md`.  Lower priority than CIS per the
-      original note.
+- [x] **DISA STIG deployment doc.**  Closed 2026-07-03.  `docs/v2/
+      stig-deployment.md` filed — deliberately short (per the
+      original note's "lower priority than CIS"): covers only where
+      STIG differs from or is stricter than CIS for Babbleon's
+      surface (MAC enforcement is a hard STIG requirement, not a
+      recommendation; distinguishes Babbleon's own vault-unlock
+      lockout from STIG's host-login-session controls), and points
+      back to `cis-deployment.md` for the overlapping rows rather
+      than duplicating them. References STIG requirement concepts,
+      not `V-`-numbers, for the same reason `cis-deployment.md`
+      avoids per-edition CIS numbers — DISA STIG `V-` IDs renumber
+      across release revisions too.
 - [ ] **`nosuid`/`nodev` on the per-tool bind mounts in
       `mounts::bind_mount_entries`.**  Filed 2026-07-03 alongside the
       CIS deployment doc above. The scrambled-view tmpfs itself now
