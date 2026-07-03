@@ -205,10 +205,22 @@ proptest! {
 
     /// Soundness on oversize input: the size-cap rejection path must
     /// never panic and must return Err.
+    ///
+    /// `Request::parse` checks `line.len() > MAX_REQUEST_BYTES` as its
+    /// very first statement, before any JSON parsing touches the
+    /// content (`src/protocol.rs`) — so this property is entirely a
+    /// function of LENGTH, not content. Generating real random bytes
+    /// for a multi-megabyte buffer via `vec(any::<u8>(), ...)` was
+    /// measured taking over 20 minutes for this one test (proptest's
+    /// per-element shrink bookkeeping doesn't scale to million-element
+    /// collections); building a same-length buffer of a constant byte
+    /// exercises the identical code path in a fraction of a second
+    /// with no loss of coverage.
     #[test]
     fn request_parse_rejects_oversize_without_panic(
-        bytes in vec(any::<u8>(), (MAX_REQUEST_BYTES + 1)..(MAX_REQUEST_BYTES + 256))
+        len in (MAX_REQUEST_BYTES + 1)..(MAX_REQUEST_BYTES + 256)
     ) {
+        let bytes = vec![0u8; len];
         let r = Request::parse(&bytes);
         prop_assert!(r.is_err(), "oversize input must be rejected");
     }

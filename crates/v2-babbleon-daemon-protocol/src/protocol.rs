@@ -32,8 +32,9 @@
 //!
 //! Size caps:
 //!
-//! - Request: [`MAX_REQUEST_BYTES`] (8 KiB; any plausible request is
-//!   under 1 KiB).
+//! - Request: [`MAX_REQUEST_BYTES`] (4 MiB; most requests are under
+//!   1 KiB, but `GetTokenMapping` can be much larger for files with
+//!   many unique tokens — see the constant's own doc comment).
 //! - Response: bounded transitively by
 //!   `babbleon_core_v2::MAX_TABLE_BYTES` (16 MiB).
 //!

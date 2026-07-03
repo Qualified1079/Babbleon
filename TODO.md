@@ -718,6 +718,33 @@ genuinely open — see each item.
       A05, A07, A08) surfaced and are filed above under "v2
       security-hygiene gaps (OWASP Top 10 audit, 2026-07-03)".
 
+### v2 test-suite performance
+
+- [x] **`v2-babbleon-daemon-protocol`'s oversize-request proptest took
+      ~22 minutes (1328s) to run.**  Found and closed 2026-07-03,
+      noticed only because a routine health-check run of
+      `cargo test -p v2-babbleon-daemon-protocol` (unrelated to that
+      night's other work) hung far longer than every other v2 crate's
+      suite combined.
+      `tests/proptest_protocol.rs::request_parse_rejects_oversize_without_panic`
+      generated ~256 cases of TRULY RANDOM byte vectors sized just
+      above `MAX_REQUEST_BYTES` (4 MiB) via
+      `vec(any::<u8>(), (MAX_REQUEST_BYTES+1)..(MAX_REQUEST_BYTES+256))`
+      — proptest's per-element shrink bookkeeping doesn't scale to
+      multi-million-element collections. Confirmed by reading
+      `Request::parse` (`src/protocol.rs`) that the size-cap check
+      (`line.len() > MAX_REQUEST_BYTES`) is the very first statement,
+      before any content is touched — the property under test is
+      purely a function of LENGTH, so random content was pure waste.
+      Fixed by generating only the length via proptest and building
+      the buffer with `vec![0u8; len]` — same code path, same
+      coverage, 0.17s instead of 1328s (full crate suite: 1.4s
+      instead of ~22 minutes). Also fixed a stale module-doc line in
+      the same file claiming `MAX_REQUEST_BYTES` was "8 KiB" when the
+      constant (with its own correct doc comment two lines below) is
+      4 MiB — the two had drifted apart at some point and nothing
+      caught it since the module doc isn't load-bearing for any test.
+
 ---
 
 ## M1 — Sandbox demo (Rust) ✅
