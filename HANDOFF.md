@@ -6431,3 +6431,39 @@ before each push. Four commits total this session, all on
 - The `nosuid`/`nodev` fixes above only apply to Babbleon's OWN
   internal mounts; they don't change anything about the seccomp
   finding, which is a separate, more severe gap.
+
+### Same session, continued — full v2-* crate sweep
+
+After the fixes above, ran the full test suite for every `crates/
+v2-*` crate individually (per `CLAUDE.md`'s "don't run `cargo test
+--workspace`" rule) as a final health check:
+
+- `v2-babbleon-core`, `v2-babbleon-launch-untrusted` (covered above),
+  `v2-babbleon-daemon` (147 tests incl. a real seccomp-enabled
+  end-to-end run), `v2-babbleon-preprocessor` (property tests +
+  execution-identity round trips), `v2-babbleon` CLI,
+  `v2-babbleon-vault`, `v2-babbleon-launch-artefacts`,
+  `v2-babbleon-python-shim`, `v2-babbleon-resilience-bench` — all
+  green, no anomalies.
+- `v2-babbleon-daemon-protocol` was the one outlier:
+  `request_parse_rejects_oversize_without_panic` took ~1328s (22
+  minutes) on its own — found only because this crate's suite dwarfed
+  every other crate's combined during the sweep. Root cause: the
+  proptest generated ~256 cases of truly random multi-megabyte byte
+  vectors when the property under test (`Request::parse`'s size-cap
+  rejection) is provably length-only, not content-dependent —
+  confirmed by reading the code before touching the test. Fixed by
+  generating only the length and filling a constant-byte buffer:
+  1328s → 0.17s, full crate suite now 1.4s. Also fixed a stale
+  module-doc line in the same file ("8 KiB" vs. the actual 4 MiB
+  constant two lines below).
+
+Commit `708a1e3`. Seven commits total this session, all green,
+all pushed to `claude/magical-turing-mele8c`.
+
+This was a genuinely comprehensive pass over the entire `v2-*`
+surface, not just the launcher crate the session started on. The
+next session can trust that every v2 crate's test suite is fast and
+green as a starting baseline; the seccomp/exec finding remains the
+one substantive thing blocking real end-to-end functionality, and it
+still needs the operator, not another autonomous attempt.
