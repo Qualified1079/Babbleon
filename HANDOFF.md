@@ -6601,9 +6601,11 @@ been published, so there's nothing to format yet).
 
 ### For the next session
 
-- Get a real `apparmor_parser`/`checkmodule` environment (or ask the
-  operator to run one) and load-test these five profiles + the
-  SELinux module before treating them as anything more than
+- Compile-verified (see the "actually parser-verified" update above)
+  but NOT load-tested against a live AppArmor/SELinux LSM — get a
+  real Ubuntu/Fedora box (or ask the operator) to `apparmor_parser -r`
+  / `semodule -i` these for real and exercise an actual login through
+  the launcher before treating them as anything more than
   "conservative starting templates," same caveat the v1 profiles
   already carry.
 - The seccomp/exec finding (`TODO.md`, "post-step-8 seccomp filter")
@@ -6614,3 +6616,67 @@ been published, so there's nothing to format yet).
   operator decision bundling three separate calls; unchanged by this
   session's Phase 6 checklist cleanup, which only corrected what the
   checklist claims about mechanisms that already exist.
+
+---
+
+## 2026-07-03 (overnight autonomous session, continued) — v2 installer script (`tools/install-v2/`)
+
+Picked up the "Explicit `root:root` ownership on installed Babbleon
+artifacts" item from `TODO.md` (also referenced from
+`docs/v2/cis-deployment.md`'s Section 6 CIS-control table) — flagged
+"low urgency" but scoped exactly as "worth a real installer script
+asserting it explicitly," which doesn't require Phase 6's bigger
+packaging-format decision to land first. Doc/tooling-only, no crate
+code touched.
+
+`tools/install-v2/install.sh` installs all five v2 release binaries
+(`babbleon` — renamed from cargo's `babbleon-v2` output, matching
+`docs/v2/pam-flavour-1.md`'s existing manual step exactly —
+`babbleon-login-shell`, `babbleon-python`, `babbleon-launch-untrusted`,
+`babbleon-daemon`) plus the three runtime directories
+(`/run/babbleon`, `/usr/local/libexec/babbleon/wrappers`,
+`/etc/babbleon`), asserting `uid=0 gid=0` on every installed path
+right after the `install`/`setcap` calls rather than trusting them
+silently — a mismatch is `exit 2`, not a warning that could be missed
+in install logs. Supports `--prefix` (for testing without touching a
+real system) and `--no-setcap` (containers/CI without `CAP_SETFCAP`
+on the filesystem).
+
+Verified two ways, not just written:
+
+1. `tools/install-v2/test.sh` fabricates five stand-in executables
+   (a real cargo build is a multi-minute cost a smoke test shouldn't
+   pay) and asserts the full install tree — right paths, right
+   rename, `0:0` `0755` on every entry — plus a second case asserting
+   a missing source binary is a hard `exit 1`, not silently skipped.
+   Both cases pass in this (root) container.
+2. Ran a REAL `cargo build --release` for all five v2 binaries
+   (`-p v2-babbleon -p v2-babbleon-daemon -p v2-babbleon-launch-
+   untrusted -p v2-babbleon-login-shell -p v2-babbleon-python-shim`,
+   ~1m04s clean build), then ran `install.sh` against the actual
+   build output into a scratch `--prefix`. Confirmed with `getcap`
+   that the launcher carries exactly the five documented capabilities
+   and that the installed `babbleon` binary runs `--help` correctly
+   end-to-end. This is real evidence the script works against the
+   real artifacts, not just its own fabricated test doubles.
+
+`docs/v2/pam-flavour-1.md`'s install section now points at the
+script first and keeps the manual sequence below it for operators who
+want to see or customize what an install does — not replaced,
+since the manual walkthrough still documents the individual steps
+the script automates. `docs/v2/cis-deployment.md`'s "no unowned
+files" row updated from "not independently verified" to "verified,"
+cross-referencing the same evidence.
+
+### For the next session
+
+- `tools/install-v2/install.sh` is untested on a non-Linux or
+  non-GNU-coreutils host (relies on GNU `install -d` applying
+  mode/owner to already-existing directories, which is standard on
+  every target distro this project ships for, but worth naming).
+- No uninstall path — out of scope for what this item asked for
+  (ownership assertion on install), and Phase 6 packaging is still
+  the right place for install/uninstall lifecycle management once
+  that decision lands.
+- Same three items as the previous entry: seccomp/exec finding, PAM
+  wiring, and A08 remain operator-gated and untouched.

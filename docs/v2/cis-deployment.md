@@ -126,7 +126,7 @@ is a deliberate non-goal, not an oversight).
 |---|---|
 | SUID/SGID executables reviewed | See Section 5 row above — same control, this benchmark edition files it here instead. |
 | File permissions on system files (`/etc/passwd`, `/etc/shadow`, etc.) | N/A — host baseline, unrelated to Babbleon. |
-| No unowned files or directories | Applies equally to anything Babbleon installs (`/usr/local/libexec/babbleon-*`, `/run/babbleon/`) — installer should set explicit `root:root` ownership; not independently verified in this pass. Filed as a lightweight follow-up, not urgent. |
+| No unowned files or directories | **Verified 2026-07-03.** `tools/install-v2/install.sh` installs every v2 binary plus `/run/babbleon/`, `/usr/local/libexec/babbleon/wrappers`, and `/etc/babbleon` with explicit `root:root` ownership and asserts it (hard failure, not a warning, on any mismatch); `tools/install-v2/test.sh` exercises this. See `TODO.md`'s matching item for the full closure note. |
 
 ## What this doc is NOT
 

@@ -43,6 +43,16 @@ shell from the registry, chshes back, removes the entry.
 
 ## Install steps
 
+`tools/install-v2/install.sh` automates steps 1's `install`/`setcap`
+sequence below for all five v2 binaries (including
+`babbleon-daemon` and `babbleon-python`, which this flavour's
+minimal walkthrough doesn't need but a full deployment does) and
+asserts root:root ownership on every installed path explicitly
+rather than trusting the invoking shell's ambient umask — see its
+`--help` and `tools/install-v2/test.sh` for what it checks. The
+manual sequence is kept below for operators who want to see (or
+customize) exactly what an install does.
+
 ```sh
 # 1. Build + install (operator's build pipeline).
 cargo build --release \

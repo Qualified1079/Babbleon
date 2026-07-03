@@ -736,20 +736,27 @@ genuinely open — see each item.
       execs the wrapper). Verified with a mountinfo assertion added
       to the existing `bind_mount_entries_succeeds_in_fresh_namespace`
       rooted test, checking every bound entry, not just one.
-- [ ] **Explicit `root:root` ownership on installed Babbleon
-      artifacts.**  Noted in `docs/v2/cis-deployment.md`'s Section 6
-      table (CIS's "no unowned files or directories" control family)
-      but not independently verified: does the (currently
-      hand-written, not yet a packaged installer) install path for
-      `/usr/local/libexec/babbleon-*` and `/run/babbleon/` set
-      explicit ownership, or does it inherit whatever the invoking
-      `install`/`setcap` command's ambient umask/ownership happens to
-      produce? Low urgency (no packaged installer exists yet to audit
-      — see `docs/v2/pam-flavour-1.md`'s manual `install`/`setcap`
-      sequence, which does pass `-o root -g root` today, for what
-      currently exists), but worth a real installer script asserting
-      it explicitly once phase 6 packaging lands, rather than relying
-      on operators copying the doc's example commands correctly.
+- [x] **Explicit `root:root` ownership on installed Babbleon
+      artifacts.**  Closed 2026-07-03. `tools/install-v2/install.sh`
+      installs all five v2 binaries plus the `/run/babbleon`,
+      `/usr/local/libexec/babbleon/wrappers`, and `/etc/babbleon`
+      runtime directories, asserting `uid=0 gid=0` on every installed
+      path immediately after `install`/`setcap` rather than trusting
+      them silently — a mismatch is a hard failure (exit 2), not a
+      warning. `tools/install-v2/test.sh` exercises both the happy
+      path (fabricated stand-in binaries, since a real cargo build is
+      a multi-minute cost a smoke test shouldn't pay) and the
+      missing-source-binary failure path. Also verified once for real
+      in this session: `cargo build --release` for all five v2
+      binaries, then `install.sh` against the actual build output,
+      confirmed `getcap` shows the five-capability set on the
+      launcher and the installed `babbleon` binary runs `--help`
+      correctly. Deliberately still NOT a packaged installer (`.deb`/
+      `.rpm`) — that's the bigger, still-open Phase 6 packaging
+      decision this item originally deferred to; this is the
+      standalone script that decision doesn't need to have landed
+      first, matching the item's own "worth a real installer script"
+      framing.
 - [x] **OWASP Top 10 (2021) documentary audit** (most items n/a;
       sweep anyway).  Closed 2026-07-03: `docs/v2/owasp-top10-audit.md`
       covers all 10 categories against `crates/v2-*` (Surface /
