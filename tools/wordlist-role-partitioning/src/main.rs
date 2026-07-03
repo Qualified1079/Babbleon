@@ -33,6 +33,7 @@ mod normalise;
 mod params;
 mod report;
 mod seed;
+mod tokenizer_results;
 
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
@@ -64,6 +65,15 @@ impl WordlistPreset {
 enum RolePreset {
     /// Six roles from `docs/v2/phase0-research-notes.md` §11.
     ProvisionalV2,
+}
+
+/// Which tokenizer column of the parsed
+/// `wordlist-density-analysis` filter matrix
+/// `--role-wordlist-variant` reads from.
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum VariantTokenizer {
+    Cl100k,
+    O200k,
 }
 
 impl RolePreset {
@@ -100,6 +110,59 @@ fn parse_source_weight_arg(raw: &str) -> Result<(PathBuf, f64), String> {
         ));
     }
     Ok((PathBuf::from(path), value))
+}
+
+fn parse_role_wordlist_variant_arg(raw: &str) -> Result<(String, String), String> {
+    let (role, variant_key) = raw
+        .split_once('=')
+        .ok_or_else(|| format!("expected `role=variant-key`, got {raw:?}"))?;
+    if variant_key.is_empty() {
+        return Err(format!("empty variant key for role {role}"));
+    }
+    Ok((role.to_string(), variant_key.to_string()))
+}
+
+/// Resolve each `(role, variant_key)` pair against the parsed
+/// filter-matrix rows, picking the `cl100k_mean` or `o200k_mean`
+/// column per `tokenizer`.  Returns `(role, tokens)` pairs in the
+/// same shape `--role-tokens` uses, so the two sources can be
+/// concatenated and handed to [`apply_role_tokens_overrides`]
+/// together.
+///
+/// # Errors
+///
+/// - Unknown `variant_key` — message lists every key the table
+///   actually contains.
+/// - The matched row's chosen-tokenizer column didn't parse to a
+///   number (e.g. an `n/a` or `—` cell).
+fn resolve_role_wordlist_variants(
+    assignments: &[(String, String)],
+    variants: &[tokenizer_results::WordlistVariant],
+    tokenizer: VariantTokenizer,
+) -> Result<Vec<(String, f64)>, String> {
+    let mut resolved = Vec::with_capacity(assignments.len());
+    for (role, key) in assignments {
+        let row = variants.iter().find(|v| &v.key == key).ok_or_else(|| {
+            let available: Vec<&str> = variants.iter().map(|v| v.key.as_str()).collect();
+            format!(
+                "unknown wordlist-variant key {key:?} for role {role} \
+                 (--role-wordlist-variant); available: {available:?}"
+            )
+        })?;
+        let value = match tokenizer {
+            VariantTokenizer::Cl100k => row.cl100k_mean,
+            VariantTokenizer::O200k => row.o200k_mean,
+        }
+        .ok_or_else(|| {
+            format!(
+                "wordlist-variant {key:?} (row {:?}) has no parseable \
+                 {tokenizer:?} mean cell for role {role}",
+                row.label
+            )
+        })?;
+        resolved.push((role.clone(), value));
+    }
+    Ok(resolved)
 }
 
 fn apply_role_tokens_overrides(
@@ -154,6 +217,31 @@ struct Args {
     /// the identifier role directly.
     #[arg(long = "role-tokens", value_parser = parse_role_tokens_arg)]
     role_tokens: Vec<(String, f64)>,
+
+    /// Auto-populate a role's tokens-per-compound from a parsed
+    /// wordlist-density-analysis-style RESULTS.md filter-matrix
+    /// table instead of hand-typing the number. Repeated
+    /// role=variant-key pairs, for example identifier=intersect35.
+    /// Resolved via --role-tokens-from plus --role-wordlist-tokenizer.
+    /// An explicit --role-tokens role=value for the same role always
+    /// wins, since it is applied after variant resolution. Unknown
+    /// variant keys error out listing the keys the table has.
+    #[arg(long = "role-wordlist-variant", value_parser = parse_role_wordlist_variant_arg)]
+    role_wordlist_variant: Vec<(String, String)>,
+
+    /// Path to the `RESULTS.md`-shaped file `--role-wordlist-variant`
+    /// resolves keys against.  Defaults to the sibling
+    /// `wordlist-density-analysis` tool's measured results.
+    #[arg(
+        long,
+        default_value = "../wordlist-density-analysis/RESULTS.md"
+    )]
+    role_tokens_from: PathBuf,
+
+    /// Which tokenizer column `--role-wordlist-variant` reads from
+    /// the parsed table.
+    #[arg(long, value_enum, default_value_t = VariantTokenizer::Cl100k)]
+    role_wordlist_tokenizer: VariantTokenizer,
 
     /// Switch to the `paranoid_default` attacker preset (1e-12
     /// lifetime collision probability, 2 000 events/epoch, 8 760-
@@ -301,7 +389,32 @@ fn main() -> Result<()> {
     };
 
     let mut roles = args.roles.resolve();
-    apply_role_tokens_overrides(&mut roles, &args.role_tokens)
+
+    // Variant-derived overrides apply first; explicit --role-tokens
+    // for the same role are appended after, so they win (later
+    // entries overwrite earlier ones in apply_role_tokens_overrides).
+    let mut combined_role_tokens = Vec::new();
+    if !args.role_wordlist_variant.is_empty() {
+        let variants = tokenizer_results::load_variants(&args.role_tokens_from)
+            .map_err(|e| anyhow::anyhow!("--role-tokens-from: {e}"))?;
+        let resolved = resolve_role_wordlist_variants(
+            &args.role_wordlist_variant,
+            &variants,
+            args.role_wordlist_tokenizer,
+        )
+        .map_err(|e| anyhow::anyhow!("--role-wordlist-variant: {e}"))?;
+        if !args.quiet {
+            for (role, value) in &resolved {
+                println!(
+                    "  role-wordlist-variant: {role} -> {value:.2} tokens/compound"
+                );
+            }
+        }
+        combined_role_tokens.extend(resolved);
+    }
+    combined_role_tokens.extend(args.role_tokens.clone());
+
+    apply_role_tokens_overrides(&mut roles, &combined_role_tokens)
         .map_err(|e| anyhow::anyhow!("--role-tokens: {e}"))?;
     let table = AllocationTable::compute(&roles, &attacker, &wordlist);
 

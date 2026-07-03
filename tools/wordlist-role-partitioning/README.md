@@ -130,6 +130,32 @@ leading-order transformer-attention gain from swapping to a
 denser wordlist for that role.  Numbers come from
 `tools/tokenizer-benchmark/RESULTS.md`.
 
+Auto-populate those numbers instead of hand-typing them, by
+reading `tools/wordlist-density-analysis/RESULTS.md`'s filter-
+matrix table directly:
+
+```
+cargo run --release -- \
+  --role-wordlist-variant identifier=intersect35 \
+  --role-wordlist-variant decoy=baseline
+```
+
+`--role-wordlist-variant role=variant-key` resolves `variant-key`
+against the parsed table (default path
+`../wordlist-density-analysis/RESULTS.md`, override with
+`--role-tokens-from`; tokenizer column via
+`--role-wordlist-tokenizer cl100k|o200k`, default `cl100k`).
+Variant keys are the table's row labels lowercased with brackets/
+commas/whitespace stripped — as of this table, `baseline`,
+`cl100k34`, `cl100k35`, `o200k34`, `o200k35`, `intersect35`.  An
+unknown key errors out listing every key the
+table actually has, so a stale/renamed row fails loudly instead of
+silently falling back to a default.  An explicit `--role-tokens
+role=value` for the same role always wins over a resolved variant.
+This only removes the copy-paste step — deciding which role should
+use which wordlist variant is still an open operator call (see
+`docs/v2/phase0-research-notes.md` §11).
+
 Extract disjoint per-role wordlist subsets into an output
 directory (dev-seed path):
 
