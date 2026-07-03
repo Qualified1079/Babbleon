@@ -109,6 +109,36 @@ fn require_root() -> bool {
     nix::unistd::geteuid().is_root()
 }
 
+/// Look up the mount-options field for the mount whose mount point
+/// is exactly `path`, by reading `/proc/self/mountinfo`.  Returns the
+/// LAST matching line's options (mountinfo lists mounts in the order
+/// they were established, so the last match is the currently active
+/// mount at that path — relevant when a path is mounted over more
+/// than once, which doesn't happen in these tests but is cheap to
+/// get right).
+///
+/// Field layout (see `proc_pid_mountinfo(5)`): mount ID, parent ID,
+/// major:minor, root, mount point, mount options, then optional
+/// fields, a literal `-` separator, filesystem type, mount source,
+/// super options. Mount point is field index 4; mount options is
+/// field index 5 (both 0-indexed, both before the optional fields so
+/// their position is fixed regardless of how many optional fields a
+/// given line has).
+fn mount_options_for(path: &std::path::Path) -> Option<String> {
+    let info = std::fs::read_to_string("/proc/self/mountinfo").ok()?;
+    let mut found = None;
+    for line in info.lines() {
+        let fields: Vec<&str> = line.split(' ').collect();
+        if fields.len() < 6 {
+            continue;
+        }
+        if std::path::Path::new(fields[4]) == path {
+            found = Some(fields[5].to_string());
+        }
+    }
+    found
+}
+
 #[test]
 #[ignore = "requires root + Linux; runs only under `cargo test -- --ignored`"]
 fn bind_mount_entries_succeeds_in_fresh_namespace() {
@@ -244,6 +274,29 @@ fn credential_gate_overlays_empty_tmpfs_on_each_discovered_dir() {
             return 6;
         }
 
+        // CIS-style hardening check: this decoy tmpfs never
+        // legitimately needs devices, setuid execution, or exec at
+        // all — confirm the mount actually carries all three
+        // restrictions (see `credential_gate::mount_one`).
+        for dir in &dirs {
+            let opts = match mount_options_for(dir) {
+                Some(o) => o,
+                None => {
+                    eprintln!("no mountinfo entry found for {}", dir.display());
+                    return 10;
+                }
+            };
+            for want in ["nosuid", "nodev", "noexec"] {
+                if !opts.split(',').any(|o| o == want) {
+                    eprintln!(
+                        "credential-gate tmpfs at {} missing '{want}' (opts: {opts})",
+                        dir.display()
+                    );
+                    return 11;
+                }
+            }
+        }
+
         // Post-overlay: each dir exists but is empty.  The
         // sentinel file must be inaccessible (overlay shadows it).
         for dir in &dirs {
@@ -268,6 +321,59 @@ fn credential_gate_overlays_empty_tmpfs_on_each_discovered_dir() {
         if std::fs::read(kube_dir.join("config")).is_ok() {
             eprintln!(".kube/config should be unreadable after overlay");
             return 9;
+        }
+
+        0
+    });
+}
+
+#[test]
+#[ignore = "requires root + Linux; runs only under `cargo test -- --ignored`"]
+fn scrambled_view_tmpfs_sets_nosuid_and_nodev_but_allows_exec() {
+    if !require_root() {
+        eprintln!("SKIP: rooted-test requires effective UID 0");
+        return;
+    }
+
+    run_in_forked_mount_ns(|| {
+        use v2_babbleon_launch_untrusted::mounts;
+
+        // `mount_scrambled_view_tmpfs` hard-codes `SCRAMBLED_ROOT`
+        // ("/run/babbleon/scrambled"); a real install pre-creates it.
+        // Creating it here is safe: we're inside a forked child that
+        // already entered a private mount namespace, so the mount
+        // this test performs never becomes visible outside this
+        // child. The directory creation itself (not the mount) does
+        // land on the real filesystem, matching what a real
+        // installer does.
+        if let Err(e) = std::fs::create_dir_all(mounts::SCRAMBLED_ROOT) {
+            eprintln!("create_dir_all({}): {e}", mounts::SCRAMBLED_ROOT);
+            return 4;
+        }
+
+        if let Err(e) = mounts::mount_scrambled_view_tmpfs() {
+            eprintln!("mount_scrambled_view_tmpfs: {e}");
+            return 5;
+        }
+
+        let opts = match mount_options_for(std::path::Path::new(mounts::SCRAMBLED_ROOT)) {
+            Some(o) => o,
+            None => {
+                eprintln!("no mountinfo entry found for {}", mounts::SCRAMBLED_ROOT);
+                return 6;
+            }
+        };
+        for want in ["nosuid", "nodev"] {
+            if !opts.split(',').any(|o| o == want) {
+                eprintln!("scrambled-view tmpfs missing '{want}' (opts: {opts})");
+                return 7;
+            }
+        }
+        // The one flag that must NOT be set: the child execs wrapper
+        // scripts out of this tmpfs, so noexec would break Babbleon.
+        if opts.split(',').any(|o| o == "noexec") {
+            eprintln!("scrambled-view tmpfs must stay executable (opts: {opts})");
+            return 8;
         }
 
         0

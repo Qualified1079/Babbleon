@@ -136,11 +136,19 @@ enum MountOneError {
 
 fn mount_one(dir: &Path, options: &str) -> std::result::Result<(), MountOneError> {
     // CAPABILITY: CAP_SYS_ADMIN for mount(2).  Dropped at step 10.
+    //
+    // MS_NOSUID | MS_NODEV | MS_NOEXEC: this overlay is meant to look
+    // like an empty directory and never legitimately holds a device
+    // node, a setuid/setgid binary, or anything the child should
+    // execute — all three restrictions are free (no legitimate use
+    // case they block) and close off an escalation path if an
+    // attacker ever gets write access inside the decoy. See
+    // `docs/v2/cis-deployment.md`.
     let result = mount(
         Some("tmpfs"),
         dir,
         Some("tmpfs"),
-        MsFlags::empty(),
+        MsFlags::MS_NOSUID | MsFlags::MS_NODEV | MsFlags::MS_NOEXEC,
         Some(options),
     );
     match result {

@@ -188,8 +188,23 @@ Babbleon may want "CIS-aligned" deployment documentation.
 
 **v2 stance:** ship `docs/v2/cis-deployment.md` that explains
 how Babbleon's settings interact with CIS controls.  Notably,
-Babbleon's setuid (v1) violated CIS 4.1; v2's file-cap install
-satisfies CIS 4.1.
+Babbleon's setuid (v1) is exactly what CIS's SUID/SGID-executable
+review control flags; v2's file-cap install closes that finding.
+
+> **Correction, 2026-07-03.** This line previously cited a specific
+> control number ("CIS 4.1") for the SUID/SGID finding above. That
+> number is wrong and has been removed rather than corrected to a
+> different number, because there isn't a single stable number to
+> put there: cross-checking two CIS Ubuntu Benchmark editions (v2.0.0
+> covering 16.04/20.04/22.04, and v1.0.0 for 24.04) shows the
+> SUID/SGID-executable-review control sits in the benchmark's final
+> section ("System Maintenance") but at *different* numeric IDs
+> across editions (`6.1.13`/`6.1.14` vs. a single merged `7.1.13`) —
+> CIS renumbers between major benchmark revisions, so a bare number
+> without a pinned edition is close to meaningless and risks reading
+> as a more precise claim than it is. `docs/v2/cis-deployment.md`
+> (filed the same day) references CIS controls by stable title, not
+> fragile per-edition number, for exactly this reason.
 
 ### DISA STIGs
 

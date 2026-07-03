@@ -89,11 +89,21 @@ pub fn mount_scrambled_view_tmpfs() -> Result<()> {
         )));
     }
     // CAPABILITY: CAP_SYS_ADMIN for mount(2).  Dropped at step 10.
+    //
+    // MS_NOSUID | MS_NODEV, NOT MS_NOEXEC: the whole point of this
+    // tmpfs is that the child execs wrapper scripts out of it, so
+    // noexec would break Babbleon's core function. Nothing placed
+    // here is ever meant to carry a setuid/setgid bit or be a device
+    // node, so those two cost nothing functionally while closing off
+    // a would-be escalation/device-creation path in an
+    // attacker-adjacent, dynamically-composed directory. See
+    // `docs/v2/cis-deployment.md` (CIS "noexec/nosuid/nodev on
+    // temporary filesystems" family of controls).
     mount(
         Some("tmpfs"),
         target,
         Some("tmpfs"),
-        MsFlags::empty(),
+        MsFlags::MS_NOSUID | MsFlags::MS_NODEV,
         Some("mode=0555"),
     )
     .map_err(|e| Error::Mount(format!("tmpfs at {SCRAMBLED_ROOT}: {e}")))

@@ -636,14 +636,54 @@ genuinely open — see each item.
       `threat-model.md`'s summary table both record "out of scope
       for v2.0."  Duplicate of the Phase 0 `standards-alignment.md`
       item.
-- [ ] **CIS deployment doc.**  Genuinely open.
-      `standards-alignment.md` commits to shipping `docs/v2/
-      cis-deployment.md` "filed for phase 6"; the file does not
-      exist yet.  Phase 6 (release engineering) work, not phase 0-4.
+- [x] **CIS deployment doc.**  Closed 2026-07-03.  `docs/v2/
+      cis-deployment.md` filed — maps CIS Linux Benchmark control
+      FAMILIES (by title, not fragile per-edition number; see the
+      doc's own rationale, confirmed by cross-checking two benchmark
+      editions during research) to Babbleon v2 mechanisms across all
+      six benchmark sections. Honest about what's satisfied (v2's
+      file-cap launcher vs. the SUID/SGID-review control; the
+      AppArmor/SELinux policies already in `policies/`), what's the
+      operator's job regardless of Babbleon (auditd, PAM password
+      policy, network services), and what's still open elsewhere
+      (PAM module wiring, `yama.ptrace_scope` decision — both
+      cross-referenced, not silently glossed over). Also corrected a
+      stale, wrong specific-number claim in `standards-alignment.md`
+      ("CIS 4.1" for the SUID/SGID finding — that number doesn't
+      exist in the editions checked). Writing this doc's "Babbleon's
+      internal mounts" section led to an actual code fix, not just
+      documentation: `mounts::mount_scrambled_view_tmpfs` and
+      `credential_gate::mount_one` were mounting their tmpfs with
+      `MsFlags::empty()` — neither had `nosuid`/`nodev` (the
+      credential-gate one was also missing `noexec`, safe there since
+      it's meant to look like an empty directory). Both now set the
+      restrictions that cost nothing functionally; both changes are
+      covered by new rooted tests asserting the actual
+      `/proc/self/mountinfo` options, not just that the mount call
+      didn't error (`crates/v2-babbleon-launch-untrusted/tests/
+      rooted_lifecycle.rs`). Deliberately NOT touched: the per-tool
+      bind mounts in `bind_mount_entries`, which would need a
+      `MS_REMOUNT|MS_BIND` second call to add flags to an existing
+      bind mount — filed as a follow-up below rather than guessed at.
 - [ ] **DISA STIG deployment doc.**  Genuinely open, same shape as
       CIS above — only a one-line stance in `standards-alignment.md`,
       no `stig-deployment.md`.  Lower priority than CIS per the
       original note.
+- [ ] **`nosuid`/`nodev` on the per-tool bind mounts in
+      `mounts::bind_mount_entries`.**  Filed 2026-07-03 alongside the
+      CIS deployment doc above. The scrambled-view tmpfs itself now
+      carries `nosuid,nodev`, but each individual wrapper's bind mount
+      is its own vfsmount with its own flags (inherited from the
+      source file's mount, not the parent tmpfs) — `MS_BIND` alone
+      doesn't let you set new flags in the same `mount(2)` call; it
+      needs a second `mount(2)` with `MS_REMOUNT|MS_BIND` plus the
+      desired flags applied to each bind target after the initial
+      bind. Real, low-risk-in-principle hardening (wrapper scripts
+      never need setuid or device-node semantics) but touches the hot
+      loop over every tool in the corpus, so it wants its own
+      focused test (assert via `/proc/self/mountinfo` per bind
+      target, the same pattern `rooted_lifecycle.rs` already uses)
+      rather than being bundled into an unrelated pass.
 - [x] **OWASP Top 10 (2021) documentary audit** (most items n/a;
       sweep anyway).  Closed 2026-07-03: `docs/v2/owasp-top10-audit.md`
       covers all 10 categories against `crates/v2-*` (Surface /
