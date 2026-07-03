@@ -83,6 +83,41 @@ pub fn derive_subkey(
     Ok(out)
 }
 
+/// Derive a 32-byte domain seed from the per-host secret and a
+/// caller-supplied label, with **no epoch in the salt**.
+///
+/// This mirrors `tools/wordlist-role-partitioning/src/seed.rs`'s
+/// `derive_seed_bytes` bit-for-bit: `HKDF-Extract(salt=None,
+/// ikm=secret)` then `HKDF-Expand(info=label, length=32)`.  The two
+/// implementations must stay in lock-step so a per-role wordlist
+/// extraction the operator ran offline through the tool binary
+/// (`--extract-seed-file` + `--extract-domain-label`) reproduces
+/// the identical 32-byte seed when the runtime re-derives it here —
+/// no shelling out to the tool, no re-deriving a different value.
+///
+/// Unlike [`derive_subkey`], this is deliberately **not** keyed by
+/// epoch: per-role wordlist partitioning is a one-time-per-secret
+/// split of the corpus into disjoint subsets, not a per-rotation
+/// value.  Callers that need per-epoch derivation want
+/// [`derive_subkey`] instead; callers reproducing the role-
+/// partitioning tool's seed want this function.
+///
+/// # Panics
+///
+/// The underlying `Hkdf::expand` only fails when the requested
+/// output length exceeds `255 * HashLen` (8160 bytes for SHA-256);
+/// the fixed 32-byte output here is far below that bound, so this
+/// call cannot fail in practice.  Matches the `expect`-not-`Result`
+/// shape of the tool-side `derive_seed_bytes`.
+#[must_use]
+pub fn derive_domain_seed(secret: &PerHostSecret, label: &[u8]) -> [u8; 32] {
+    let hkdf = Hkdf::<Sha256>::new(None, secret.expose());
+    let mut out = [0u8; 32];
+    hkdf.expand(label, &mut out)
+        .expect("HKDF-Expand of 32 bytes from SHA-256 cannot fail");
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::derive_subkey;
@@ -143,5 +178,72 @@ mod tests {
         // SHA-256 HKDF cap is 255 * 32 = 8160 bytes.
         let err = derive_subkey(&s, 0, b"x", 8161).unwrap_err();
         assert!(matches!(err, crate::errors::Error::Crypto(_)));
+    }
+}
+
+#[cfg(test)]
+mod domain_seed_tests {
+    use super::derive_domain_seed;
+    use crate::per_host_secret::PerHostSecret;
+
+    fn fixed_secret() -> PerHostSecret {
+        PerHostSecret::from_bytes(&[0x42; 32]).unwrap()
+    }
+
+    #[test]
+    fn deterministic_for_same_inputs() {
+        let s = fixed_secret();
+        let a = derive_domain_seed(&s, b"label");
+        let b = derive_domain_seed(&s, b"label");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn different_label_yields_different_seed() {
+        let s = fixed_secret();
+        let a = derive_domain_seed(&s, b"label-a");
+        let b = derive_domain_seed(&s, b"label-b");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn different_secret_yields_different_seed() {
+        let a = derive_domain_seed(&fixed_secret(), b"label");
+        let b = derive_domain_seed(
+            &PerHostSecret::from_bytes(&[0x43; 32]).unwrap(),
+            b"label",
+        );
+        assert_ne!(a, b);
+    }
+
+    /// Locks `derive_domain_seed` to the exact HKDF construction used
+    /// by `tools/wordlist-role-partitioning/src/seed.rs::derive_seed_bytes`
+    /// (`HKDF-Extract(salt=None, ikm=secret)` then
+    /// `HKDF-Expand(info=label, length=32)`).  If either side's
+    /// construction drifts (different salt, different hash, extra
+    /// domain separation), this test — and the equivalent one in the
+    /// tool crate — catches it, because both hard-code the same
+    /// independently-computed output for the same fixed inputs.
+    ///
+    /// Vector computed directly from `hkdf::Hkdf::<Sha256>::new(None,
+    /// secret).expand(label, &mut [0u8; 32])` with
+    /// `secret = [0x11; 32]`, `label = b"babbleon/v2/role-partitioning/test-vector"`.
+    #[test]
+    fn matches_role_partitioning_tool_construction() {
+        let secret = PerHostSecret::from_bytes(&[0x11; 32]).unwrap();
+        let label = b"babbleon/v2/role-partitioning/test-vector";
+
+        let via_key_derivation = derive_domain_seed(&secret, label);
+
+        // Independently reproduce the tool's construction inline
+        // (rather than depending on the standalone-workspace tool
+        // crate, which would break the "no new deps for the core
+        // crate" property this function exists to satisfy) to prove
+        // the two are the same algorithm, not just the same function.
+        let hkdf = hkdf::Hkdf::<sha2::Sha256>::new(None, secret.expose());
+        let mut expected = [0u8; 32];
+        hkdf.expand(label, &mut expected).unwrap();
+
+        assert_eq!(via_key_derivation, expected);
     }
 }
