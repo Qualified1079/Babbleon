@@ -291,7 +291,14 @@ fashion).
   `unconfined_t`) because the open seccomp/exec finding below means
   the child's real containment isn't seccomp-enforced yet either —
   tightening MAC ahead of that would be layering theatre on a known
-  gap.
+  gap.  All five AppArmor profiles compile clean under
+  `apparmor_parser -Q`; the SELinux module compiles clean under
+  `checkmodule`/`selinux-policy-dev` after one real fix caught by
+  that compile step — `domain_auto_trans` isn't a valid macro in
+  `selinux-policy-dev 2:2.20240202-1` (only `domtrans_pattern` is),
+  which also breaks v1's own `policies/selinux/babbleon.te` the same
+  way (confirmed by compiling it standalone; left unfixed there,
+  v1 is read-only — see `policies/README.md`'s "Known issue" note).
 - **`yama.ptrace_scope = 2` enforcement.**  v1 documents it as a
   recommended host setting; v2 either enforces it at install
   time or refuses to start.  The latter is friendlier to

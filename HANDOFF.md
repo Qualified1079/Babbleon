@@ -6531,17 +6531,47 @@ does:
   (they'd collide on `/usr/local/bin/babbleon`, since v1 and v2 are
   alternate generations of the same install path, never concurrent).
 
-**Not verified by a parser.** This container has neither
-`apparmor_parser` nor `checkmodule`/`checkpolicy` installed, so
-syntax correctness rests on close adherence to the v1 templates'
-already-working structure (same rule shapes, same macro usage)
-rather than a real parse-check. Flagging this explicitly rather than
-claiming "tested" — the next session (or the operator, on a real
-Ubuntu/Fedora box) should run `apparmor_parser -r` / `checkmodule` /
-`semodule -i` for real before relying on these in production. This
-matches the existing v1 templates' own posture (no CI job parses
-them either), so it's not a new gap, but it's worth naming rather
-than leaving implicit.
+**Update, same session: actually parser-verified, and it found a real
+bug — in v1's policy too, not just the new v2 one.** `apt-get install
+apparmor-utils` and `checkpolicy selinux-policy-dev` both succeeded in
+this container (no reason not to — this project's own culture is
+"confirm by running the thing," per the CAP_SETPCAP/seccomp findings
+above). Results:
+
+- All five AppArmor profiles compile clean:
+  `apparmor_parser -Q policies/v2/apparmor/*` (full parse/compile,
+  skip-kernel-load only) — every file, zero errors.
+- The SELinux module did NOT compile on first try. `checkmodule` (via
+  `make -f /usr/share/selinux/devel/Makefile babbleon_v2.pp`) failed
+  with `ERROR 'syntax error' at token 'domain_auto_trans'` — that
+  macro is not defined as an `interface()` anywhere in this
+  refpolicy-dev package version (`2:2.20240202-1`); only
+  `domtrans_pattern` (a `.spt` support pattern, not an `interface()`)
+  is. **Confirmed this is not a v2-only mistake: copying v1's own
+  `policies/selinux/babbleon.te` into a scratch dir and compiling it
+  with the identical toolchain fails on the exact same token, same
+  reason.** v1's SELinux module has apparently never been compiled
+  against a real refpolicy-dev package — nothing in CI does it, and
+  no prior session's notes mention trying. Left v1's file untouched
+  (read-only per `CLAUDE.md`) but recording the finding here since
+  it's real and someone should know. Fixed in the new v2 module by
+  swapping both `domain_auto_trans(...)` calls for
+  `domtrans_pattern(...)` (same three arguments, same semantics for
+  what this module needs — the extra role/init-script scaffolding
+  `domain_auto_trans` layers on in refpolicy versions where it DOES
+  exist isn't needed here since neither the login-shell nor the
+  launcher domain is an init-started daemon domain). Recompiled clean
+  after the fix: `Compiling default babbleon_v2 module` /
+  `Creating default babbleon_v2.pp policy package`, no errors,
+  build artifacts (`tmp/`, `*.pp`) removed before commit — the repo
+  ships source, not build output.
+- Not independently verified: actually loading either policy into a
+  live kernel (`apparmor_parser -r`, `semodule -i`) and exercising a
+  real binary against it — this container has no AppArmor/SELinux
+  LSM active to load into. Compile-clean is real signal (it's what
+  caught the `domain_auto_trans` bug) but isn't the same as a live
+  enforcement test; that step is still an operator-only follow-up on
+  a real Ubuntu/Fedora box.
 
 ### 2. `docs/v2/least-privilege.md` + `TODO.md` updated to close the item
 

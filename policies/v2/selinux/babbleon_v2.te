@@ -87,15 +87,15 @@ init_daemon_domain(babbleon_v2_login_shell_t, babbleon_v2_login_shell_exec_t)
 init_daemon_domain(babbleon_v2_python_t, babbleon_v2_python_exec_t)
 
 # The login-shell wrapper always execs the launcher next.
-domain_auto_trans(babbleon_v2_login_shell_t, babbleon_v2_launch_exec_t, babbleon_v2_launch_t)
+domtrans_pattern(babbleon_v2_login_shell_t, babbleon_v2_launch_exec_t, babbleon_v2_launch_t)
 
 # The launcher execs the user's arbitrary requested command last
 # (step 11, after every capability is dropped and seccomp installs).
 # It lands in the ordinary interactive-session domain, NOT a
 # Babbleon-specific one — Babbleon's containment for this step is
 # the mount/PID namespace + seccomp + zero capabilities, not MAC.
-domain_auto_trans(babbleon_v2_launch_t, bin_t, unconfined_t)
-domain_auto_trans(babbleon_v2_launch_t, shell_exec_t, unconfined_t)
+domtrans_pattern(babbleon_v2_launch_t, bin_t, unconfined_t)
+domtrans_pattern(babbleon_v2_launch_t, shell_exec_t, unconfined_t)
 
 ########################################
 # babbleon_v2_cli_t — the trusted CLI

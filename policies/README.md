@@ -10,6 +10,16 @@ Both are written to fail open at the application level (Babbleon will
 keep working if the profile isn't loaded) and to be tightened by the
 operator after a few days of audit-log review.
 
+**Known issue, found 2026-07-03 while parser-verifying the v2
+templates:** `selinux/babbleon.te` does not compile against
+`selinux-policy-dev` `2:2.20240202-1` (`checkmodule` fails with
+`ERROR 'syntax error' at token 'domain_auto_trans'` — that macro
+isn't an `interface()` in this refpolicy version; `domtrans_pattern`
+is the one actually available). Left unfixed here since v1 is
+read-only/deprecated (see the banner above), but recorded so nobody
+assumes this module has ever been built successfully. `policies/v2/`
+uses `domtrans_pattern` and compiles clean under the same toolchain.
+
 | Distro family | Use | Files |
 |---|---|---|
 | Ubuntu, Debian, SUSE | AppArmor | `apparmor/usr.local.bin.babbleon` |
