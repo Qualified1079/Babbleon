@@ -24,20 +24,21 @@ lands, push here)
 
 Date: 2026-07-03 (third user-asleep session — claude-sonnet-5)
 
-Last commit before this handoff section: `ca7f595` —
-feat(wordlist-role-partitioning): --source-weight weighted union.
-See the 2026-07-03 (session 3) block immediately below for
-context, then the 2026-07-02 (session 2) block below that for the
-role-partitioning tool this session builds on.
+Last commit before this handoff section: `75b3a2b` —
+docs(v2): OWASP Top 10 (2021) documentary audit against
+`crates/v2-*`.  See the 2026-07-03 (session 3) block immediately
+below for context, then the 2026-07-02 (session 2) block below
+that for the role-partitioning tool this session builds on.
 
 ---
 
 ## 2026-07-03 (session 3) — sleeping-operator: autonomous-safe follow-ups from session 2's backlog
 
 Author: Claude Sonnet 5 (autonomous overnight continuation).
-Branch: `claude/magical-turing-mele8c`.  5 commits, all green
-tests (both feature configs where relevant), zero clippy warnings
-introduced, no new default-workspace deps.
+Branch: `claude/magical-turing-mele8c`.  9 commits (5 feature/fix,
+3 docs, 1 more docs refresh below), all green tests (both feature
+configs where relevant), zero clippy warnings introduced, no new
+default-workspace deps.
 
 ### Entry state
 
@@ -329,16 +330,124 @@ The remaining items on every prior session's priority list are all
    hardware.
 5. **FIDO2 / TPM2 hardware backends** (M2) — needs real hardware.
 
-No autonomous-safe item is queued as of this refresh.  A future
-session should either (a) unblock one of the five above with
-operator input, or (b) do what this session's own "search for
-something worth researching" fallback would do: read `TODO.md`'s
-"Missed-standards remediation (v2-tagged)" section against the
-phase-0 doc list — several of those checkboxes (ATT&CK/D3FEND
-mapping, NIST 800-190/800-207 maps) read `[ ]` there but `[x]` in
-the phase-0 section above them, which looks like a stale duplicate
-list rather than genuinely open work; a session with time to spare
-should audit and reconcile it rather than build against it blind.
+With the five priority items closed, this session picked up its own
+research-fallback: reconciling `TODO.md`'s "Missed-standards
+remediation (v2-tagged)" section, which turned into two more
+commits.
+
+### Commit 7 — `TODO.md` missed-standards reconciliation
+
+An agent-assisted audit (each claim independently spot-verified
+against actual file content, not just existence) found the
+13-item "Missed-standards remediation" list was stale: 6 items were
+genuine duplicates of work already marked `[x]` elsewhere in the
+same file (ATT&CK/D3FEND mapping, NIST 800-190/800-207 maps,
+CycloneDX SBOM-format decision, SARIF upload, FIPS 140-3 deferral —
+all satisfied by `docs/v2/attack-mapping.md`, `docs/v2/threat-model.md`
+§§7-8, `docs/v2/standards-alignment.md`, and the CodeQL/Scorecard CI
+jobs respectively).  2 were half-done and re-scoped with the precise
+gap (in-toto is adopted via the SLSA provenance job, TUF is not;
+CycloneDX SBOMs exist but aren't published anywhere GUAC-reachable).
+4 were genuinely open and now say so plainly instead of sitting in
+a list that looked uniformly stale (CSAF 2.0, CIS deployment doc,
+DISA STIG doc, OWASP Top 10 audit).  Doc-only, no code changes.
+
+### Commit 8 — `docs/v2/owasp-top10-audit.md`
+
+Closed the "OWASP Top 10 documentary audit" item commit 7 flagged
+as genuinely open, itself a phase-0 commitment recorded in
+`docs/v2/standards-alignment.md` since before this session started.
+Followed `docs/cwe-top25-audit.md`'s Surface/Mechanism/Finding
+structure, scoped to `crates/v2-*` (v1 is out of scope — read-only
+per `CLAUDE.md` §4).  A research agent gathered grounded, file-cited
+facts per OWASP category first; every citation used in the final
+doc was independently re-verified against the actual source before
+writing (`grep`-confirmed: `bind_socket`'s `0o660` + "SO_PEERCRED
+... filed" comment, `DaemonState::unlock`'s missing attempt counter,
+`daemon-seccomp-envelope.md`'s literal "DRAFT" status line,
+`release.yml`'s `build` job bundling only `babbleon
+babbleon-ns-helper`).
+
+Result: 6 of 10 categories are no-fix cross-references to
+`security-baseline.md` / `threat-model.md` (nothing new to build);
+A03 (Injection) confirms the v1-audited wrapper-renderer pattern
+ported forward clean; A10 (SSRF) is N/A *verified* by dependency-
+tree absence (no `reqwest`/`hyper`/`ureq`/`TcpStream` anywhere in
+`crates/v2-*`), not assumed by category name.  4 genuine gaps
+surfaced and are filed in `TODO.md` under a new grouped
+"v2 security-hygiene gaps (OWASP Top 10 audit, 2026-07-03)"
+checklist rather than scattered across phase headings:
+
+- **A01** — daemon Unix socket is mode-gated (`0o660`) but has no
+  `SO_PEERCRED` peer-uid check yet.
+- **A05** — `daemon-seccomp-envelope.md` is still DRAFT and not
+  wired into the daemon binary; it runs unfiltered today.
+- **A07** — `DaemonState::unlock` has no rate-limiting/lockout; v1's
+  `AttemptTracker` has no v2 port.  Corroborates `threat-model.md`
+  row D1 at the code level and elevates it: combined with A01, an
+  attacker who reaches the socket can burn unbounded unlock guesses.
+- **A08** — the signed/SLSA-attested release bundle still only ships
+  v1 binaries; v2 is the shipping product but isn't in its own
+  signing pipeline.
+
+None of the four are novel — three were already implicitly flagged
+in `threat-model.md` or the seccomp-envelope doc.  This audit's
+value is confirming each at the code level and making it a
+trackable checklist item instead of prose a future reviewer has to
+re-derive.  These four gaps are NOT operator-gated in the sense of
+"needs external input" — A05 needs operator sign-off on the draft
+allowlist specifically, but A01/A07/A08 are buildable now.  Flagging
+them here rather than building them this session because each
+touches a live daemon security boundary (socket auth, unlock rate
+limiting, release signing) that deserves a dedicated session with
+room to get the design right, not a rushed add-on at the tail of an
+already-long session.
+
+### Where session 3 stopped
+
+Every autonomous-safe follow-up session 2 explicitly filed has
+landed (commits 1-6 above), and this session's own research
+fallback (`TODO.md` reconciliation + the OWASP audit it surfaced)
+is also closed (commits 7-8).  Four new, well-scoped, NOT
+operator-gated items are now on the board for the next session:
+
+1. **Daemon socket `SO_PEERCRED` peer-uid authentication (A01).**
+   `crates/v2-babbleon-daemon/src/socket.rs`.  Buildable now — no
+   external dependency, no operator decision needed beyond "confirm
+   this is the intended trust boundary."  Natural next pickup: it's
+   the highest-leverage of the four (unblocks meaningfully tightening
+   A07 too).
+2. **v2 vault-unlock rate-limiting port (A07).**
+   `crates/v2-babbleon-daemon/src/state.rs::DaemonState::unlock`.
+   v1's `crates/babbleon/src/vault/attempts.rs::AttemptTracker` is a
+   ready-made reference implementation to port, not a from-scratch
+   design.  Buildable now.
+3. **v2 binaries into the signed release pipeline (A08).**
+   `.github/workflows/release.yml`.  Needs one small decision (which
+   v2 binaries ship — `babbleon-daemon`, `v2-babbleon`,
+   `babbleon-launch-untrusted`, others?) that a session can make and
+   document rather than defer; not a hard operator gate.
+4. **Daemon seccomp profile — needs operator sign-off (A05).**
+   `docs/v2/daemon-seccomp-envelope.md` is DRAFT specifically because
+   it wants an operator to confirm the strace-derived allowlist
+   before it's wired in live — this ONE is genuinely operator-gated,
+   unlike the other three.
+
+Also still blocked on operator input, unchanged since session 2:
+
+1. **Adversarial-LLM re-test with variable ALIAS_COUNT** — needs
+   API keys + operator approval to run.  Gates "wire chosen filtered
+   wordlist into `v2-babbleon-core::wordlist`" and the per-role
+   wordlist runtime wiring — both fully spec'd, both waiting on this
+   one measurement.
+2. **Corpus-lifecycle seccomp** — operator review recommended; see
+   HANDOFF 2026-06-26 (night) for the three design paths.
+3. **Open-weights tokenizer superlinear hypothesis** (Llama-3
+   SentencePiece, Mistral, Phi) — needs `sentencepiece` crate +
+   bundled model files + a license check per family.
+4. **Bare-metal validation pass** (M3, TODO.md) — needs real
+   hardware.
+5. **FIDO2 / TPM2 hardware backends** (M2) — needs real hardware.
 
 ### Process notes for next autonomous session
 
