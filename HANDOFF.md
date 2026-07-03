@@ -24,10 +24,10 @@ lands, push here)
 
 Date: 2026-07-03 (third user-asleep session — claude-sonnet-5)
 
-Last commit before this handoff section: `1ecd0ad` —
-docs: sharpen A08 finding — release pipeline ships v1, which won't
-ship.  See the 2026-07-03 (session 3) block immediately below for
-context, then the 2026-07-02 (session 2) block below that for the
+Last commit before this handoff section: `7e716ea` —
+docs(TODO): reconcile Phase 1 and Phase 2 launcher checkboxes.  See
+the 2026-07-03 (session 3) block immediately below for context,
+then the 2026-07-02 (session 2) block below that for the
 role-partitioning tool this session builds on.
 
 ---
@@ -35,11 +35,11 @@ role-partitioning tool this session builds on.
 ## 2026-07-03 (session 3) — sleeping-operator: autonomous-safe follow-ups from session 2's backlog
 
 Author: Claude Sonnet 5 (autonomous overnight continuation).
-Branch: `claude/magical-turing-mele8c`.  16 commits (7 feature/fix,
-9 docs — session ran long because the OWASP audit this session wrote
-kept surfacing follow-on work worth finishing same-day rather than
-leaving half-triaged), all green tests (both feature configs where
-relevant), zero clippy warnings introduced, no new unconditional
+Branch: `claude/magical-turing-mele8c`.  18 commits (7 feature/fix,
+11 docs — session ran long because the OWASP audit this session
+wrote kept surfacing follow-on work worth finishing same-day rather
+than leaving half-triaged), all green tests (both feature configs
+where relevant), zero clippy warnings introduced, no new unconditional
 default-workspace deps (one optional/feature-gated dep, two deps on
 already-audited workspace crates — each noted in its commit's
 section below).
@@ -57,7 +57,7 @@ lifecycle seccomp, runtime wiring review, SentencePiece bundling —
 all still blocked, none touched this session). This session picked
 up that backlog in priority order.
 
-### Net commits this session: 16
+### Net commits this session: 18
 
 | # | Hash | Subject |
 |---|---|---|
@@ -76,8 +76,9 @@ up that backlog in priority order.
 | 13 | `8915f13` | feat(v2-daemon): SO_PEERCRED peer-uid auth on the daemon socket; correct A05 |
 | 14 | `74f78e4` | docs(HANDOFF): record commit 13 (A01 closure + A05 correction) |
 | 15 | `1ecd0ad` | docs: sharpen A08 finding — release pipeline ships v1, which won't ship |
-| 16 | (this commit) | docs(HANDOFF): final session-3 close-out |
-| 12 | (this commit) | docs(HANDOFF): restructure session-3 narrative, record commit 9 (A07 closure) |
+| 16 | `a456668` | docs(HANDOFF): final session-3 close-out |
+| 17 | `7e716ea` | docs(TODO): reconcile Phase 1 and Phase 2 launcher checkboxes |
+| 18 | (this commit) | docs(HANDOFF): record commit 17, true final close-out |
 
 ### Commit 1 — `derive_domain_seed` in `v2-babbleon-core::key_derivation`
 
@@ -579,27 +580,67 @@ tradeoffs an operator needs to weigh. Re-filed in `TODO.md` and
 either closing it with an under-considered fix or leaving the
 original undersized framing in place.
 
+### Commit 16 — Phase 1 / Phase 2 launcher checklist reconciliation
+
+One more pass of the same pattern before stopping: a scan for
+remaining autonomous-safe `TODO.md` items (v1 excluded per
+`CLAUDE.md` §1) turned up `TODO.md`'s "Phase 1 — v2 core crate" (6
+items) and half of "Phase 2 — v2 launcher + PAM", all still `[ ]`
+despite being fully implemented in `crates/v2-*` — the checklist
+predates the `v2-` naming convention and never got refreshed.
+Verified each of the 6 Phase-1 items individually against source
+(not the scan agent's report — independently re-checked every claim,
+which caught one real error: the agent's initial pass said Phase 2's
+PAM item was also done, but `crates/v2-babbleon-pam/src/lib.rs`'s
+own module doc says the crate is still "SKELETON," explicitly
+blocked on the operator picking one of three documented candidate
+architectures in `docs/v2/pam-architecture.md`. Left that item open.
+
+One wording correction along the way: "secrecy::SecretBox for every
+secret-holding type" is satisfied in spirit (zeroize-on-drop, no
+Clone/Debug) but not literal text — the codebase uses
+`zeroize::Zeroizing` uniformly, which `docs/v2/security-baseline.md`
+Rule 3 documents as an equally valid alternative, not a missing
+requirement. Recorded the distinction rather than silently checking
+the box as if the literal wording were true.
+
+No code changes; doc-only, same low-risk category as commits 7 and
+8's reconciliation work.
+
 ### Where session 3 stopped
 
 Every autonomous-safe follow-up session 2 explicitly filed has
 landed (commits 1-6); this session's own research fallback (`TODO.md`
 reconciliation + the OWASP audit it surfaced) is closed (commits
-7-8); and of the four items that audit found: two closed with code
+7-8); of the four items that audit found: two closed with code
 (commit 9, A07; commit 10, A01), one was a false positive in the
 audit itself, corrected rather than built (also commit 10, A05), and
 one was re-scoped as a genuine operator decision rather than closed
-or left under-described (commit 15, A08). Every OWASP-audit-derived
-item is now in its correct final state — closed, corrected, or
-properly filed for the operator; none are sitting half-triaged.
+or left under-described (commit 15, A08); and a second reconciliation
+pass (commit 16) closed out Phase 1 and half of Phase 2's checklist.
+Every item touched this session is now in its correct final state —
+closed with code, corrected, or properly filed for the operator;
+none are sitting half-triaged.
+
+A third scan for further autonomous-safe work (post-commit-16) found
+nothing more clearing the bar: the only remaining `[ ]` items are
+either v1 (out of scope), already-known operator/hardware/API-key
+gates, or genuine design decisions (the PAM architecture pick, A08's
+release-shape decisions, the Phase-2 CapEff lifecycle test which
+needs privileged capability-inspection infra this session couldn't
+confirm is available). This is a legitimate stopping point, not a
+paused-mid-task one — the branch is fully green, fully pushed, and
+every open thread is either correctly closed or correctly documented
+as blocked.
 
 No autonomous-safe item is queued as of this refresh.  A future
 session should either (a) unblock one of the operator-gated items
 below with the operator's decision, or (b) do what this session's
-own research-fallback did: pick a doc, a standards checklist, or a
-"someone should verify this" claim and actually verify it against
-running code rather than trusting what the doc says — that pattern
-(the OWASP audit, this session's A05 correction, the TODO.md
-reconciliation) has now paid off twice in one session.
+own research-fallback did twice successfully: pick a doc, a
+standards checklist, or a "someone should verify this" claim and
+actually verify it against running code rather than trusting what
+the doc says — the OWASP audit's A05 correction and both TODO.md
+reconciliation passes all paid off exactly that way.
 
 Still blocked on operator input, unchanged since session 2:
 
