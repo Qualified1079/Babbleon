@@ -24,21 +24,24 @@ lands, push here)
 
 Date: 2026-07-03 (third user-asleep session — claude-sonnet-5)
 
-Last commit before this handoff section: `75b3a2b` —
-docs(v2): OWASP Top 10 (2021) documentary audit against
-`crates/v2-*`.  See the 2026-07-03 (session 3) block immediately
-below for context, then the 2026-07-02 (session 2) block below
-that for the role-partitioning tool this session builds on.
+Last commit before this handoff section: `98f08d7` —
+feat(v2-vault): port `AttemptTracker` rate-limiting to v2 unlock
+path.  See the 2026-07-03 (session 3) block immediately below for
+context, then the 2026-07-02 (session 2) block below that for the
+role-partitioning tool this session builds on.
 
 ---
 
 ## 2026-07-03 (session 3) — sleeping-operator: autonomous-safe follow-ups from session 2's backlog
 
 Author: Claude Sonnet 5 (autonomous overnight continuation).
-Branch: `claude/magical-turing-mele8c`.  9 commits (5 feature/fix,
-3 docs, 1 more docs refresh below), all green tests (both feature
+Branch: `claude/magical-turing-mele8c`.  12 commits (6 feature/fix
+landing session-2's backlog, 1 more feature/fix closing an OWASP
+gap the audit surfaced, 5 docs), all green tests (both feature
 configs where relevant), zero clippy warnings introduced, no new
-default-workspace deps.
+default-workspace deps (one new optional/feature-gated dep, one new
+dep on an already-audited workspace crate — both noted in their
+commit's section below).
 
 ### Entry state
 
@@ -53,7 +56,7 @@ lifecycle seccomp, runtime wiring review, SentencePiece bundling —
 all still blocked, none touched this session). This session picked
 up that backlog in priority order.
 
-### Net commits this session: 5 (+ this refresh)
+### Net commits this session: 11 (+ this refresh)
 
 | # | Hash | Subject |
 |---|---|---|
@@ -63,7 +66,12 @@ up that backlog in priority order.
 | 4 | `4f9e3d6` | docs(HANDOFF): interim refresh — session 3 commits 1-3 |
 | 5 | `3b645e3` | feat(wordlist-role-partitioning): --role-wordlist-variant auto-populates tokens |
 | 6 | `cfcd52a` | feat(v2-resilience-bench): optional token-metrics feature for smaller-model tokenizer axis |
-| 7 | (this commit) | docs(HANDOFF): final stopping-point note — session-2 backlog cleared |
+| 7 | `2965f51` | docs(HANDOFF): final stopping-point note — session-2 backlog cleared |
+| 8 | `7e77c9a` | docs(TODO): reconcile missed-standards remediation section |
+| 9 | `75b3a2b` | docs(v2): OWASP Top 10 (2021) documentary audit against crates/v2-* |
+| 10 | `5794f10` | docs(HANDOFF): record commits 7-8 (TODO reconciliation + OWASP audit) |
+| 11 | `98f08d7` | feat(v2-vault): port AttemptTracker rate-limiting to v2 unlock path |
+| 12 | (this commit) | docs(HANDOFF): restructure session-3 narrative, record commit 9 (A07 closure) |
 
 ### Commit 1 — `derive_domain_seed` in `v2-babbleon-core::key_derivation`
 
@@ -290,11 +298,11 @@ this session's to fix).
 | `forbid(unsafe_code)` violations | 0 | 0 | 0 |
 | Clippy warnings introduced | 0 | 0 | 0 |
 
-### Where session 3 stopped
+### Session-2 priority backlog closed
 
 Every autonomous-safe follow-up session 2 explicitly filed
 ("Refreshed next-session priorities" list + "Where session 2
-stopped" note) has now landed:
+stopped" note) landed in commits 1-6:
 
 1. `derive_domain_seed` in `v2-babbleon-core::key_derivation`
    (priority 7) — commit 1.
@@ -310,29 +318,15 @@ stopped" note) has now landed:
    feature rather than an unconditional dependency to protect the
    default-workspace build.
 
-The remaining items on every prior session's priority list are all
-**BLOCKED on operator input**, unchanged by this session:
-
-1. **Adversarial-LLM re-test with variable ALIAS_COUNT** — needs
-   API keys + operator approval to run.  This is the gate that
-   unblocks "wire chosen filtered wordlist into
-   `v2-babbleon-core::wordlist`" and the per-role wordlist runtime
-   wiring (`crates/babbleon/wordlist/roles/` placement, `wordlist::
-   Wordlist::role(name)` accessor) — both fully spec'd, both waiting
-   on this one operator-gated measurement.
-2. **Corpus-lifecycle seccomp** — operator review recommended; see
-   HANDOFF 2026-06-26 (night) for the three design paths.
-3. **Open-weights tokenizer superlinear hypothesis** (Llama-3
-   SentencePiece, Mistral, Phi) — needs `sentencepiece` crate +
-   bundled model files + a license check per family before an
-   autonomous session can touch it.
-4. **Bare-metal validation pass** (M3, TODO.md) — needs real
-   hardware.
-5. **FIDO2 / TPM2 hardware backends** (M2) — needs real hardware.
+Every item still blocked on operator input (adversarial-LLM
+re-test, corpus-lifecycle seccomp, open-weights tokenizer bindings,
+bare-metal validation, FIDO2/TPM2 hardware) remains blocked,
+unchanged by this session — see the consolidated list at the bottom
+of this block rather than repeated here.
 
 With the five priority items closed, this session picked up its own
 research-fallback: reconciling `TODO.md`'s "Missed-standards
-remediation (v2-tagged)" section, which turned into two more
+remediation (v2-tagged)" section, which cascaded into four more
 commits.
 
 ### Commit 7 — `TODO.md` missed-standards reconciliation
@@ -382,10 +376,11 @@ checklist rather than scattered across phase headings:
   `SO_PEERCRED` peer-uid check yet.
 - **A05** — `daemon-seccomp-envelope.md` is still DRAFT and not
   wired into the daemon binary; it runs unfiltered today.
-- **A07** — `DaemonState::unlock` has no rate-limiting/lockout; v1's
-  `AttemptTracker` has no v2 port.  Corroborates `threat-model.md`
-  row D1 at the code level and elevates it: combined with A01, an
-  attacker who reaches the socket can burn unbounded unlock guesses.
+- **A07** — no rate-limiting/lockout on vault-unlock attempts.
+  **Closed same day, commit 9 below** — see that section for the
+  mis-scoping this finding needed correcting (the gap traced to
+  `DaemonState::unlock` originally; the real fix landed in
+  `v2-babbleon-vault`/`vault_lifecycle.rs` instead).
 - **A08** — the signed/SLSA-attested release bundle still only ships
   v1 binaries; v2 is the shipping product but isn't in its own
   signing pipeline.
@@ -394,44 +389,107 @@ None of the four are novel — three were already implicitly flagged
 in `threat-model.md` or the seccomp-envelope doc.  This audit's
 value is confirming each at the code level and making it a
 trackable checklist item instead of prose a future reviewer has to
-re-derive.  These four gaps are NOT operator-gated in the sense of
-"needs external input" — A05 needs operator sign-off on the draft
-allowlist specifically, but A01/A07/A08 are buildable now.  Flagging
-them here rather than building them this session because each
-touches a live daemon security boundary (socket auth, unlock rate
-limiting, release signing) that deserves a dedicated session with
-room to get the design right, not a rushed add-on at the tail of an
-already-long session.
+re-derive.
+
+### Commit 9 — `v2-babbleon-vault::AttemptTracker` (closes A07)
+
+Picked up immediately after filing A07 above rather than deferring
+it — it was the most self-contained of the four new gaps (a
+ready-made v1 reference implementation to port, no external
+dependency, no operator decision) and directly closes a real
+brute-force exposure.
+
+Investigating the port surfaced a mis-scoping in the OWASP audit's
+own A07 finding, worth recording so it isn't repeated: the finding
+named `crates/v2-babbleon-daemon/src/state.rs::DaemonState::unlock`
+as the gap, but that function installs an **already-unsealed**
+secret into daemon memory — it has no "wrong guess" concept at all
+to rate-limit, since any bytes handed to it get installed as the
+operating secret with no independent correctness check. The actual
+Argon2id KDF boundary — where a wrong passphrase genuinely fails and
+where brute-force pressure genuinely lands — is the **client-side**
+`Vault::unseal` call in `crates/v2-babbleon/src/
+vault_lifecycle.rs::run_unlock`. That's also exactly where v1's
+`AttemptTracker` lived (`crates/babbleon/src/vault/attempts.rs`,
+under the *vault* crate, never the v1 daemon) — the v1 precedent
+was pointing at the right place the whole time; the OWASP audit's
+citation of the v2 daemon function was the error, not the underlying
+finding.
+
+Ported `crates/v2-babbleon-vault/src/attempts.rs::AttemptTracker`
+1:1 in policy from v1 (3 free attempts, then `2^(n-3)`s exponential
+backoff capped at 60s, lockout at 10 consecutive failures; sidecar
+`<vault_path>.attempts` file, mode `0o600`, defaults to "no
+attempts" on any read/parse failure — a corrupted sidecar must never
+lock out a legitimate operator). Two new `Error` variants
+(`UnlockLockedOut`, `UnlockBackoff`). Wired into `run_unlock`
+**before** the passphrase prompt and **before** the KDF call, so a
+refused attempt costs nothing — matching v1's own documented
+rationale ("check runs before the Argon2id KDF so a brute-force
+attacker can't burn CPU on refused attempts"). `run_init` clears any
+stale sidecar so a `--force`-reinitialized vault never inherits a
+previous lockout.
+
+12 new unit tests in `attempts.rs` (ported from v1's suite,
+unchanged assertions) plus one new CLI integration test,
+`cli_unlock_hits_backoff_after_rapid_wrong_passphrase_attempts`.
+That test deliberately verifies the **backoff** property, not the
+10-failure **lockout** — worth explaining because the obvious test
+design doesn't work: a refused-by-backoff attempt does not call
+`record_failure` (no passphrase was actually tested against the
+KDF), so a rapid-fire loop past the 4th real failure would spend
+every subsequent attempt re-hitting the same 2-second-then-4-then-8
+backoff window and never advance the counter to 10 without the test
+actually waiting out each window in real wall-clock time (minutes,
+for a CI test). The fast, deterministic property a CI-safe
+integration test *can* assert is that the window fires at all: 4
+rapid wrong-passphrase attempts each reach the KDF and fail
+normally, a 5th fired immediately is refused before a passphrase is
+even read. Lockout itself is fully covered by `attempts.rs`'s own
+sub-second, wall-clock-independent unit test
+(`lockout_at_threshold`, which drives the counter directly rather
+than through 10 real Argon2id calls).
+
+New dep: `tracing` on `v2-babbleon-vault` (best-effort warn on
+sidecar-persist failure only, never load-bearing — already a
+workspace dep used elsewhere by `v2-babbleon`). Updated
+`docs/v2/threat-model.md` rows D1 and D4 to Shipped, and
+`docs/v2/owasp-top10-audit.md`'s A07 section + summary table to
+record the closure and the mis-scoping correction.
+
+Verified: `cargo test -p v2-babbleon-vault` = 42/42,
+`cargo test -p v2-babbleon` = 57 lib + 13 integration, all pass;
+zero clippy warnings on both crates (`--all-targets`); wide sanity
+build `cargo build -p v2-babbleon-core -p v2-babbleon -p
+v2-babbleon-daemon -p v2-babbleon-vault` clean.
 
 ### Where session 3 stopped
 
 Every autonomous-safe follow-up session 2 explicitly filed has
-landed (commits 1-6 above), and this session's own research
-fallback (`TODO.md` reconciliation + the OWASP audit it surfaced)
-is also closed (commits 7-8).  Four new, well-scoped, NOT
-operator-gated items are now on the board for the next session:
+landed (commits 1-6), this session's own research fallback (`TODO.md`
+reconciliation + the OWASP audit it surfaced) is closed (commits
+7-8), and the first of the four gaps that audit found is closed too
+(commit 9, A07). Three well-scoped items remain on the board:
 
 1. **Daemon socket `SO_PEERCRED` peer-uid authentication (A01).**
    `crates/v2-babbleon-daemon/src/socket.rs`.  Buildable now — no
    external dependency, no operator decision needed beyond "confirm
    this is the intended trust boundary."  Natural next pickup: it's
-   the highest-leverage of the four (unblocks meaningfully tightening
-   A07 too).
-2. **v2 vault-unlock rate-limiting port (A07).**
-   `crates/v2-babbleon-daemon/src/state.rs::DaemonState::unlock`.
-   v1's `crates/babbleon/src/vault/attempts.rs::AttemptTracker` is a
-   ready-made reference implementation to port, not a from-scratch
-   design.  Buildable now.
-3. **v2 binaries into the signed release pipeline (A08).**
+   the highest-leverage of the three, and tightens the value of the
+   A07 rate-limiting just landed (a rate-limited-but-unauthenticated
+   socket is a real improvement over no rate limit, but peer auth is
+   what actually keeps an unrelated local process from reaching the
+   unlock path at all).
+2. **v2 binaries into the signed release pipeline (A08).**
    `.github/workflows/release.yml`.  Needs one small decision (which
    v2 binaries ship — `babbleon-daemon`, `v2-babbleon`,
    `babbleon-launch-untrusted`, others?) that a session can make and
    document rather than defer; not a hard operator gate.
-4. **Daemon seccomp profile — needs operator sign-off (A05).**
+3. **Daemon seccomp profile — needs operator sign-off (A05).**
    `docs/v2/daemon-seccomp-envelope.md` is DRAFT specifically because
    it wants an operator to confirm the strace-derived allowlist
    before it's wired in live — this ONE is genuinely operator-gated,
-   unlike the other three.
+   unlike the other two.
 
 Also still blocked on operator input, unchanged since session 2:
 
