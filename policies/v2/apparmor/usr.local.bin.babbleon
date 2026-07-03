@@ -1,0 +1,104 @@
+# AppArmor profile for /usr/local/bin/babbleon (the v2 trusted-tier
+# CLI: vault unlock, epoch rotation, enroll/unenroll).
+#
+# Conservative starting point.  Unlike v1's babbleon, this binary
+# never execs a setuid helper directly — enrollment execs `chsh`,
+# and the untrusted-tier environment is entered via the login-shell
+# wrapper on the NEXT login, not synchronously by this process. See
+# docs/v2/pam-flavour-1.md.
+#
+# Install:
+#   sudo cp policies/v2/apparmor/usr.local.bin.babbleon \
+#           /etc/apparmor.d/usr.local.bin.babbleon
+#   sudo apparmor_parser -r /etc/apparmor.d/usr.local.bin.babbleon
+#
+# NOTE: this profile and policies/apparmor/usr.local.bin.babbleon
+# (v1) confine the SAME path. Install only one, matching whichever
+# generation of babbleon you actually deployed — see
+# policies/v2/README.md.
+#
+# Toggle complain -> enforce after a few days of clean audit.log:
+#   sudo aa-complain /usr/local/bin/babbleon
+#   sudo aa-enforce  /usr/local/bin/babbleon
+
+#include <tunables/global>
+
+/usr/local/bin/babbleon {
+  #include <abstractions/base>
+  #include <abstractions/nameservice>
+  #include <abstractions/openssl>
+
+  # Self.
+  /usr/local/bin/babbleon mr,
+
+  # Read-only system surfaces.
+  /etc/os-release r,
+  /etc/passwd r,
+  /etc/nsswitch.conf r,
+  /etc/ld.so.cache r,
+  /etc/ssl/certs/ r,
+  /etc/ssl/certs/** r,
+  /etc/shells r,
+
+  # Enrollment registry (mode 0600, root-only in practice; the CLI
+  # runs enroll/unenroll via sudo). See
+  # crates/v2-babbleon/src/enroll.rs.
+  /etc/babbleon/ rw,
+  /etc/babbleon/enrolled-shells.toml rwk,
+
+  # System-install vault (root-run `babbleon` with no per-user HOME
+  # resolvable — see crates/v2-babbleon-vault/src/file_layout.rs).
+  /etc/babbleon/vault.age rwk,
+
+  # Per-user vault (XDG-compliant location; the default for
+  # non-system installs).
+  owner @{HOME}/.config/babbleon/ rw,
+  owner @{HOME}/.config/babbleon/** rwk,
+
+  # Daemon socket — client only, never binds/listens here.
+  /run/babbleon/daemon.sock rw,
+
+  # Enrollment execs `chsh` to change a user's shell-of-record.
+  /usr/bin/chsh Cx -> chsh,
+  /bin/chsh Cx -> chsh,
+
+  # Process introspection.
+  /proc/self/ r,
+  /proc/self/status r,
+
+  # Terminal output / passphrase prompt.
+  /dev/tty rw,
+  /dev/pts/* rw,
+
+  # Hardening calls this binary makes on itself (no capability
+  # needed for the first two; mlockall degrades gracefully without
+  # CAP_IPC_LOCK per crates/v2-babbleon-vault's own doc comment).
+  capability ipc_lock,
+
+  # Block what we never need.
+  deny /etc/shadow rw,
+  deny /etc/sudoers rw,
+  deny /etc/sudoers.d/** rw,
+  deny owner @{HOME}/.ssh/** w,
+  deny owner @{HOME}/.gnupg/** w,
+  deny capability sys_admin,
+  deny capability sys_module,
+  deny capability dac_override,
+  deny capability setuid,
+  deny capability setgid,
+
+  # `chsh` itself: a small, well-understood setuid-ish utility.
+  # Unconfined-by-this-profile child; the system's own chsh policy
+  # (shadow-utils) governs it. Kept as its own child profile so a
+  # bug in babbleon can't be laundered through inherited permissions.
+  profile chsh {
+    #include <abstractions/base>
+    #include <abstractions/nameservice>
+    /usr/bin/chsh mr,
+    /bin/chsh mr,
+    /etc/passwd rwk,
+    /etc/shells r,
+    capability chown,
+    capability fowner,
+  }
+}

@@ -6467,3 +6467,120 @@ next session can trust that every v2 crate's test suite is fast and
 green as a starting baseline; the seccomp/exec finding remains the
 one substantive thing blocking real end-to-end functionality, and it
 still needs the operator, not another autonomous attempt.
+
+---
+
+## 2026-07-03 (overnight autonomous session, continued) — v2 AppArmor/SELinux templates + Phase 6 checklist reconciliation
+
+Picked up from `docs/v2/least-privilege.md`'s own "Open audit items
+carried into v2" list — "AppArmor / SELinux profile templates ...
+v1 has these filed in TODO; v2 ships them" — and `TODO.md`'s matching
+Phase 6 line. Genuinely open (v1's `policies/` templates only confine
+v1's setuid-helper design; nothing existed for v2's five shipped
+binaries), well-scoped, and doc/policy-only — no code paths touched,
+so no risk of the kind of regression the seccomp/exec finding
+represents. Did NOT touch the seccomp/exec finding itself or PAM
+wiring; both remain explicitly operator-gated per the previous
+session's notes above.
+
+### 1. New: `policies/v2/` — AppArmor + SELinux for all five v2 release binaries
+
+Read `docs/v2/least-privilege.md`'s capability table and the actual
+source (`socket_path.rs`, `mounts.rs`, `file_layout.rs`,
+`materialization.rs`, `enroll.rs`, `pam-flavour-1.md`) rather than
+guessing at paths, so the profiles reflect what the code actually
+does:
+
+- `apparmor/usr.local.bin.babbleon` — the CLI: per-user/system vault
+  RW, enrollment registry, daemon-socket client, `chsh` child
+  profile for `enroll`/`unenroll`.
+- `apparmor/usr.local.libexec.babbleon-daemon` — the secret-holding
+  daemon: `CAP_IPC_LOCK` only, `/run/babbleon/daemon.sock` bind, the
+  wrapper-materialisation directory (including the `.next` atomic-
+  swap staging sibling) as the only content it writes, explicit
+  denials for every capability it must never hold. No wordlist file
+  rule needed — confirmed by reading `state.rs` that v2's wordlist is
+  a `&'static Wordlist` compiled into the binary, unlike anything
+  read from disk at runtime.
+- `apparmor/usr.local.libexec.babbleon-launch-untrusted` — the
+  file-capped launcher: all five working capabilities, `mount`/
+  `umount` for the unshare + scrambled-view + bind-mount steps, a
+  `Cx`-transitioned `untrusted-child` profile deliberately kept
+  permissive (documented why: the seccomp/exec finding above means
+  the real containment for that step isn't seccomp-enforced yet
+  either, so tightening MAC ahead of resolving that would be
+  papering over a known gap, not fixing anything).
+- `apparmor/usr.local.bin.babbleon-login-shell` — thin exec shim:
+  no capabilities, one `px` (no-fallback profile-exec) transition
+  into the launcher's own separately-loaded profile.
+- `apparmor/usr.local.bin.babbleon-python` — the layer-3 Python
+  shim: daemon-socket client, scoped to `$HOME`/`\tmp` for the
+  scrambled source (not `/**` — a legitimate invocation never needs
+  the rest of the filesystem), `Cx` into a `python3` child profile
+  with the interpreter's own normal rights.
+- `selinux/babbleon_v2.{te,fc,if}` — five domains
+  (`babbleon_v2_{cli,daemon,launch,login_shell,python}_t`) plus
+  three state types (`babbleon_v2_{runtime,wrapper,vault}_t`),
+  mirroring v1's `babbleon.te` structure. The launcher's child
+  transition goes to `unconfined_t` (documented as targeted-policy-
+  specific, with a note on what to change for a strict/MLS store)
+  for the same "MAC isn't the load-bearing control here" reason as
+  the AppArmor child profile.
+- `policies/v2/README.md` — install steps for both, explicit
+  warning against installing v1 and v2 profiles simultaneously
+  (they'd collide on `/usr/local/bin/babbleon`, since v1 and v2 are
+  alternate generations of the same install path, never concurrent).
+
+**Not verified by a parser.** This container has neither
+`apparmor_parser` nor `checkmodule`/`checkpolicy` installed, so
+syntax correctness rests on close adherence to the v1 templates'
+already-working structure (same rule shapes, same macro usage)
+rather than a real parse-check. Flagging this explicitly rather than
+claiming "tested" — the next session (or the operator, on a real
+Ubuntu/Fedora box) should run `apparmor_parser -r` / `checkmodule` /
+`semodule -i` for real before relying on these in production. This
+matches the existing v1 templates' own posture (no CI job parses
+them either), so it's not a new gap, but it's worth naming rather
+than leaving implicit.
+
+### 2. `docs/v2/least-privilege.md` + `TODO.md` updated to close the item
+
+`least-privilege.md`'s "Open audit items carried into v2" bullet now
+records the closure with the same "why permissive on purpose" note
+as above, instead of silently deleting the historical "still open"
+framing.
+
+While in `TODO.md`'s Phase 6 section to close this line, noticed the
+whole section was stale in the same way the "Missed-standards
+remediation" section was before an earlier reconciliation pass:
+`SLSA L3 reusable workflow`, `CycloneDX 1.6 SBOM`, `cosign signing`,
+`CIS + STIG deployment docs`, `SARIF emission`, and `Adopt CycloneDX
+as the only format` were all still marked `[ ]` despite being
+genuinely done and cross-referenced elsewhere in the same file.
+Verified each against the actual file (`.github/workflows/
+release.yml` for the first three, the cited docs for the rest)
+before checking it off, same discipline as the earlier reconciliation
+passes rather than trusting the duplicate entries' own claims blindly.
+One nuance recorded rather than glossed over: the SLSA/cosign/SBOM
+mechanism is real and wired end-to-end, but it currently signs and
+attests **v1's** binaries — that's the pre-existing, still-open A08
+item ("v2 binaries missing from the signed release pipeline"), not a
+reason to leave the mechanism-exists checkbox unchecked. Only `CSAF
+2.0 advisory pipeline` is genuinely still open (no advisory has ever
+been published, so there's nothing to format yet).
+
+### For the next session
+
+- Get a real `apparmor_parser`/`checkmodule` environment (or ask the
+  operator to run one) and load-test these five profiles + the
+  SELinux module before treating them as anything more than
+  "conservative starting templates," same caveat the v1 profiles
+  already carry.
+- The seccomp/exec finding (`TODO.md`, "post-step-8 seccomp filter")
+  is still the single highest-leverage open item and still needs an
+  operator decision — this session deliberately left it alone.
+- PAM module wiring — still explicitly operator-gated, unchanged.
+- A08 (v2 binaries missing from the release pipeline) — still an
+  operator decision bundling three separate calls; unchanged by this
+  session's Phase 6 checklist cleanup, which only corrected what the
+  checklist claims about mechanisms that already exist.

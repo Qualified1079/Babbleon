@@ -1,0 +1,25 @@
+# SELinux file-context patterns for Babbleon v2.
+#
+# Bound types defined in babbleon_v2.te:
+#   - babbleon_v2_cli_exec_t         — /usr/local/bin/babbleon
+#   - babbleon_v2_daemon_exec_t      — /usr/local/libexec/babbleon-daemon
+#   - babbleon_v2_launch_exec_t      — /usr/local/libexec/babbleon-launch-untrusted
+#   - babbleon_v2_login_shell_exec_t — /usr/local/bin/babbleon-login-shell
+#   - babbleon_v2_python_exec_t      — /usr/local/bin/babbleon-python
+#   - babbleon_v2_runtime_t          — /run/babbleon (socket, scrambled view)
+#   - babbleon_v2_wrapper_t          — /usr/local/libexec/babbleon/wrappers[.next]
+#   - babbleon_v2_vault_t            — per-user vault + /etc/babbleon
+
+/usr/local/bin/babbleon                          --  gen_context(system_u:object_r:babbleon_v2_cli_exec_t,s0)
+/usr/local/libexec/babbleon-daemon               --  gen_context(system_u:object_r:babbleon_v2_daemon_exec_t,s0)
+/usr/local/libexec/babbleon-launch-untrusted     --  gen_context(system_u:object_r:babbleon_v2_launch_exec_t,s0)
+/usr/local/bin/babbleon-login-shell              --  gen_context(system_u:object_r:babbleon_v2_login_shell_exec_t,s0)
+/usr/local/bin/babbleon-python                   --  gen_context(system_u:object_r:babbleon_v2_python_exec_t,s0)
+
+/run/babbleon(/.*)?                                  gen_context(system_u:object_r:babbleon_v2_runtime_t,s0)
+
+/usr/local/libexec/babbleon/wrappers(/.*)?           gen_context(system_u:object_r:babbleon_v2_wrapper_t,s0)
+/usr/local/libexec/babbleon/wrappers\.next(/.*)?     gen_context(system_u:object_r:babbleon_v2_wrapper_t,s0)
+
+/etc/babbleon(/.*)?                                  gen_context(system_u:object_r:babbleon_v2_vault_t,s0)
+HOME_DIR/\.config/babbleon(/.*)?                     gen_context(system_u:object_r:babbleon_v2_vault_t,s0)

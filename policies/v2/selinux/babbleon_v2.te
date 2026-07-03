@@ -1,0 +1,202 @@
+# SELinux type-enforcement module for Babbleon v2.
+#
+# Conservative starting point, parallel to policies/selinux/babbleon.te
+# (v1) but reworked for v2's five shipped binaries and file-capability
+# (not setuid) launcher. Defines five domains:
+#   - `babbleon_v2_cli_t`          — trusted-tier CLI (vault, enroll)
+#   - `babbleon_v2_daemon_t`       — long-running secret-holding daemon
+#   - `babbleon_v2_launch_t`       — file-capped launcher
+#   - `babbleon_v2_login_shell_t`  — PAM flavour-1 shell-of-record shim
+#   - `babbleon_v2_python_t`       — layer-3 Python runtime shim
+#
+# Build + install:
+#   cd policies/v2/selinux
+#   make -f /usr/share/selinux/devel/Makefile babbleon_v2.pp
+#   sudo semodule -i babbleon_v2.pp
+#
+# Label binaries:
+#   sudo semanage fcontext -a -t babbleon_v2_cli_exec_t '/usr/local/bin/babbleon'
+#   sudo semanage fcontext -a -t babbleon_v2_daemon_exec_t '/usr/local/libexec/babbleon-daemon'
+#   sudo semanage fcontext -a -t babbleon_v2_launch_exec_t '/usr/local/libexec/babbleon-launch-untrusted'
+#   sudo semanage fcontext -a -t babbleon_v2_login_shell_exec_t '/usr/local/bin/babbleon-login-shell'
+#   sudo semanage fcontext -a -t babbleon_v2_python_exec_t '/usr/local/bin/babbleon-python'
+#   sudo restorecon -v /usr/local/bin/babbleon \
+#                       /usr/local/libexec/babbleon-daemon \
+#                       /usr/local/libexec/babbleon-launch-untrusted \
+#                       /usr/local/bin/babbleon-login-shell \
+#                       /usr/local/bin/babbleon-python
+#
+# Label runtime + state directories (after installation):
+#   sudo semanage fcontext -a -t babbleon_v2_runtime_t '/run/babbleon(/.*)?'
+#   sudo semanage fcontext -a -t babbleon_v2_wrapper_t '/usr/local/libexec/babbleon/wrappers(\.next)?(/.*)?'
+#   sudo restorecon -Rv /run/babbleon /usr/local/libexec/babbleon
+#
+# Start in permissive for each domain
+# (`semanage permissive -a babbleon_v2_cli_t`, one per domain above)
+# for a day, review denials with `ausearch -m AVC -ts recent`, then
+# move to enforcing once clean.
+#
+# NOTE on the launcher->child transition: this module targets the
+# common "targeted" policy store, where `unconfined_t` exists and is
+# the domain an ordinary interactive login lands in. Under a strict
+# or MLS policy store without `unconfined_t`, replace that one
+# `domain_auto_trans` rule with a transition into whatever domain
+# your policy uses for ordinary user sessions.
+
+policy_module(babbleon_v2, 0.1.0)
+
+########################################
+# Required system interfaces
+require {
+    type init_t, kernel_t, sysfs_t, proc_t, tmpfs_t, devpts_t, unconfined_t;
+    type bin_t, shell_exec_t, user_home_dir_t, user_home_t, etc_t;
+    class file { read write open create getattr setattr execute execute_no_trans unlink rename lock };
+    class dir { read write open search add_name remove_name create rmdir getattr setattr };
+    class sock_file { read write open create unlink getattr };
+    class unix_stream_socket { create bind listen accept read write connectto };
+    class process { transition fork sigchld signal getsched setsched };
+    class capability { sys_admin setpcap setuid setgid ipc_lock dac_override };
+    class filesystem { mount remount unmount associate };
+}
+
+########################################
+# Types — executables
+type babbleon_v2_cli_t;
+type babbleon_v2_cli_exec_t;
+type babbleon_v2_daemon_t;
+type babbleon_v2_daemon_exec_t;
+type babbleon_v2_launch_t;
+type babbleon_v2_launch_exec_t;
+type babbleon_v2_login_shell_t;
+type babbleon_v2_login_shell_exec_t;
+type babbleon_v2_python_t;
+type babbleon_v2_python_exec_t;
+
+########################################
+# Types — state
+type babbleon_v2_runtime_t;    # /run/babbleon (socket, scrambled view, table.current)
+type babbleon_v2_wrapper_t;    # /usr/local/libexec/babbleon/wrappers[.next]
+type babbleon_v2_vault_t;      # $HOME/.config/babbleon + /etc/babbleon
+
+########################################
+# Domain transitions
+init_daemon_domain(babbleon_v2_cli_t, babbleon_v2_cli_exec_t)
+init_daemon_domain(babbleon_v2_daemon_t, babbleon_v2_daemon_exec_t)
+init_daemon_domain(babbleon_v2_launch_t, babbleon_v2_launch_exec_t)
+init_daemon_domain(babbleon_v2_login_shell_t, babbleon_v2_login_shell_exec_t)
+init_daemon_domain(babbleon_v2_python_t, babbleon_v2_python_exec_t)
+
+# The login-shell wrapper always execs the launcher next.
+domain_auto_trans(babbleon_v2_login_shell_t, babbleon_v2_launch_exec_t, babbleon_v2_launch_t)
+
+# The launcher execs the user's arbitrary requested command last
+# (step 11, after every capability is dropped and seccomp installs).
+# It lands in the ordinary interactive-session domain, NOT a
+# Babbleon-specific one — Babbleon's containment for this step is
+# the mount/PID namespace + seccomp + zero capabilities, not MAC.
+domain_auto_trans(babbleon_v2_launch_t, bin_t, unconfined_t)
+domain_auto_trans(babbleon_v2_launch_t, shell_exec_t, unconfined_t)
+
+########################################
+# babbleon_v2_cli_t — the trusted CLI
+allow babbleon_v2_cli_t self:process { fork signal getsched setsched };
+allow babbleon_v2_cli_t self:capability ipc_lock;
+
+allow babbleon_v2_cli_t bin_t:file { read open execute getattr };
+allow babbleon_v2_cli_t proc_t:dir { read open search getattr };
+allow babbleon_v2_cli_t proc_t:file { read open getattr };
+
+# Vault + enrollment registry.
+allow babbleon_v2_cli_t babbleon_v2_vault_t:dir { read write open search add_name remove_name create getattr };
+allow babbleon_v2_cli_t babbleon_v2_vault_t:file { read write open create unlink rename getattr setattr lock };
+allow babbleon_v2_cli_t user_home_dir_t:dir search;
+allow babbleon_v2_cli_t user_home_t:dir { read search getattr };
+allow babbleon_v2_cli_t etc_t:dir { read search getattr };
+
+# Daemon socket — client only.
+allow babbleon_v2_cli_t babbleon_v2_runtime_t:dir { read search getattr };
+allow babbleon_v2_cli_t babbleon_v2_runtime_t:sock_file { read write open getattr };
+allow babbleon_v2_cli_t babbleon_v2_daemon_t:unix_stream_socket connectto;
+
+########################################
+# babbleon_v2_daemon_t — the secret-holding daemon
+# Dedicated unprivileged UID; the ONLY capability it should ever
+# need is CAP_IPC_LOCK (mlockall on the in-memory per-host secret).
+allow babbleon_v2_daemon_t self:process { fork sigchld signal };
+allow babbleon_v2_daemon_t self:capability ipc_lock;
+allow babbleon_v2_daemon_t self:unix_stream_socket { create bind listen accept read write };
+
+allow babbleon_v2_daemon_t proc_t:dir { read open search };
+allow babbleon_v2_daemon_t proc_t:file { read open };
+
+# Socket + scrambled-scaffold directory.
+allow babbleon_v2_daemon_t babbleon_v2_runtime_t:dir { read write open search add_name create getattr };
+allow babbleon_v2_daemon_t babbleon_v2_runtime_t:sock_file { read write open create unlink getattr };
+
+# Wrapper materialisation (atomic staging-dir-then-rename swap).
+allow babbleon_v2_daemon_t babbleon_v2_wrapper_t:dir { read write open search add_name remove_name create rmdir getattr setattr };
+allow babbleon_v2_daemon_t babbleon_v2_wrapper_t:file { read write open create unlink rename getattr setattr };
+
+########################################
+# babbleon_v2_launch_t — the file-capped launcher
+# Holds the five caps only through step 10 of the lifecycle; by
+# step 11 (execve) the process has none and cannot reacquire any.
+allow babbleon_v2_launch_t self:process { fork sigchld signal };
+allow babbleon_v2_launch_t self:capability { sys_admin setpcap setuid setgid ipc_lock };
+allow babbleon_v2_launch_t self:filesystem { mount remount unmount associate };
+
+allow babbleon_v2_launch_t proc_t:dir { read open search };
+allow babbleon_v2_launch_t proc_t:file { read open };
+
+# Daemon socket — client, for the activated-table request.
+allow babbleon_v2_launch_t babbleon_v2_runtime_t:sock_file { read write open getattr };
+allow babbleon_v2_launch_t babbleon_v2_daemon_t:unix_stream_socket connectto;
+
+# Scrambled-view tmpfs it mounts and populates post-unshare.
+allow babbleon_v2_launch_t babbleon_v2_runtime_t:dir { read write open search add_name remove_name create rmdir getattr setattr };
+allow babbleon_v2_launch_t babbleon_v2_runtime_t:file { read write open create unlink rename getattr setattr };
+allow babbleon_v2_launch_t tmpfs_t:filesystem { mount remount unmount associate };
+allow babbleon_v2_launch_t tmpfs_t:dir { read write open search add_name remove_name create rmdir getattr setattr };
+
+# Wrapper scripts it bind-mounts into the scrambled view (read only —
+# the launcher never writes into the wrapper tree, only the daemon does).
+allow babbleon_v2_launch_t babbleon_v2_wrapper_t:dir { read open search getattr };
+allow babbleon_v2_launch_t babbleon_v2_wrapper_t:file { read open getattr execute execute_no_trans };
+
+# Hand-off to the user's requested command.
+allow babbleon_v2_launch_t bin_t:file { read open execute execute_no_trans getattr };
+allow babbleon_v2_launch_t shell_exec_t:file { read open execute execute_no_trans getattr };
+
+########################################
+# babbleon_v2_login_shell_t — PAM flavour-1 shim
+# No capabilities; its only job is to exec the launcher.
+allow babbleon_v2_login_shell_t self:process { fork signal };
+allow babbleon_v2_login_shell_t babbleon_v2_launch_exec_t:file { read open execute execute_no_trans getattr };
+
+########################################
+# babbleon_v2_python_t — layer-3 Python runtime shim
+allow babbleon_v2_python_t self:process { fork sigchld signal };
+allow babbleon_v2_python_t self:capability ipc_lock;
+
+# Daemon socket — client, for the unscramble request.
+allow babbleon_v2_python_t babbleon_v2_runtime_t:sock_file { read write open getattr };
+allow babbleon_v2_python_t babbleon_v2_daemon_t:unix_stream_socket connectto;
+
+# Scrambled source under the invoking user's home directory.
+allow babbleon_v2_python_t user_home_dir_t:dir search;
+allow babbleon_v2_python_t user_home_t:file { read open getattr };
+
+# Hand off to the real interpreter (unconfined by this module —
+# python3 has its own, separately maintained base-policy domain on
+# most distributions; this module does not attempt to redefine it).
+allow babbleon_v2_python_t bin_t:file { read open execute execute_no_trans getattr };
+
+########################################
+# Hard denials — surface explicitly even though SELinux's default-deny
+# already excludes these. Documents the threat-model intent.
+neverallow babbleon_v2_daemon_t self:capability { sys_admin setuid setgid setpcap };
+neverallow babbleon_v2_daemon_t self:capability sys_module;
+neverallow babbleon_v2_daemon_t self:capability sys_ptrace;
+neverallow babbleon_v2_cli_t self:capability sys_module;
+neverallow babbleon_v2_login_shell_t self:capability { sys_admin setuid setgid setpcap ipc_lock };
+neverallow babbleon_v2_python_t self:capability { sys_admin setuid setgid setpcap };

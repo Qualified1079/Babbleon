@@ -1,0 +1,82 @@
+# AppArmor profile for /usr/local/bin/babbleon-python (the v2
+# layer-3 Python runtime shim; see
+# crates/v2-babbleon-python-shim/src/lib.rs).
+#
+# This binary: connects to the daemon socket to unscramble a layer-3
+# source file named on argv, spawns /usr/bin/python3 with the
+# unscrambled source piped to its stdin, forwards signals to the
+# child, and exits with the child's status. It reads whatever
+# script path the operator names on argv (arbitrary, like an
+# interpreter would) — this profile intentionally scopes that to the
+# operator's home directory and standard temp locations rather than
+# `/**`, since a legitimate use never needs the rest of the
+# filesystem.
+#
+# Install:
+#   sudo cp policies/v2/apparmor/usr.local.bin.babbleon-python \
+#           /etc/apparmor.d/usr.local.bin.babbleon-python
+#   sudo apparmor_parser -r /etc/apparmor.d/usr.local.bin.babbleon-python
+#
+# Toggle complain -> enforce after a few days of clean audit.log:
+#   sudo aa-complain /usr/local/bin/babbleon-python
+#   sudo aa-enforce  /usr/local/bin/babbleon-python
+#
+# If your scrambled .py files live outside $HOME (e.g. a shared
+# /opt/scripts tree), add the equivalent rule before enforcing —
+# this template deliberately does not guess at that path.
+
+#include <tunables/global>
+
+/usr/local/bin/babbleon-python {
+  #include <abstractions/base>
+  #include <abstractions/nameservice>
+
+  # Self.
+  /usr/local/bin/babbleon-python mr,
+
+  /etc/ld.so.cache r,
+
+  # Daemon socket — client only, for the unscramble request.
+  /run/babbleon/daemon.sock rw,
+
+  # Scrambled source files the operator names on argv.
+  owner @{HOME}/** r,
+  /tmp/** r,
+
+  # The real interpreter. `Cx` because we want a dedicated child
+  # profile — python3 gets the FULL rights a normal python3
+  # invocation needs (its own package imports, etc.), which this
+  # shim's own profile should not inherit.
+  /usr/bin/python3 Cx -> python3,
+  /usr/local/bin/python3 Cx -> python3,
+
+  # Process/signal-forwarding introspection (self only).
+  /proc/self/ r,
+  /proc/self/status r,
+
+  # Optional hardening: mlockall degrades gracefully without this
+  # capability (see process_hardening.rs's own doc comment on
+  # container hosts that grant neither the cap nor a sufficient
+  # RLIMIT_MEMLOCK) — grant it since it costs nothing when present.
+  capability ipc_lock,
+
+  deny capability sys_admin,
+  deny capability setuid,
+  deny capability setgid,
+  deny capability setpcap,
+  deny network inet,
+  deny network inet6,
+
+  profile python3 {
+    #include <abstractions/base>
+    #include <abstractions/python>
+    /usr/bin/python3* mr,
+    /usr/local/bin/python3* mr,
+    /usr/lib/python3*/** mr,
+    /usr/local/lib/python3*/** mr,
+    owner @{HOME}/** rw,
+    /tmp/** rw,
+    # The unscrambled source arrives over stdin (a pipe), not a
+    # file — no extra rule needed for that.
+  }
+}

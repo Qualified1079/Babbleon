@@ -280,9 +280,18 @@ fashion).
 
 ## Open audit items carried into v2
 
-- **AppArmor / SELinux profile templates.**  Belt-and-
-  suspenders against the capability set above.  v1 has these
-  filed in TODO; v2 ships them.
+- **AppArmor / SELinux profile templates.**  Closed 2026-07-03.
+  `policies/v2/apparmor/` (five profiles, one per shipped v2
+  binary) and `policies/v2/selinux/babbleon_v2.{te,fc,if}` (five
+  domains) — see `policies/v2/README.md`.  Belt-and-suspenders
+  against the capability set above; the load-bearing control
+  remains the capability drop + seccomp filter documented in this
+  file, not MAC.  Deliberately permissive on the untrusted child
+  (AppArmor's `untrusted-child` profile / SELinux's transition to
+  `unconfined_t`) because the open seccomp/exec finding below means
+  the child's real containment isn't seccomp-enforced yet either —
+  tightening MAC ahead of that would be layering theatre on a known
+  gap.
 - **`yama.ptrace_scope = 2` enforcement.**  v1 documents it as a
   recommended host setting; v2 either enforces it at install
   time or refuses to start.  The latter is friendlier to

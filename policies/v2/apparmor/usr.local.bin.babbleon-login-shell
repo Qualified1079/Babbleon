@@ -1,0 +1,43 @@
+# AppArmor profile for /usr/local/bin/babbleon-login-shell (the PAM
+# flavour-1 shell-of-record wrapper; see docs/v2/pam-flavour-1.md).
+#
+# This binary is a thin exec shim: it reads three environment
+# variables (BABBLEON_LAUNCH_UNTRUSTED_PATH, BABBLEON_DAEMON_SOCKET_PATH,
+# BABBLEON_REAL_SHELL), then execs the launcher. It holds no
+# capabilities and touches no files of its own.
+#
+# Install:
+#   sudo cp policies/v2/apparmor/usr.local.bin.babbleon-login-shell \
+#           /etc/apparmor.d/usr.local.bin.babbleon-login-shell
+#   sudo apparmor_parser -r /etc/apparmor.d/usr.local.bin.babbleon-login-shell
+#
+# Toggle complain -> enforce after a few days of clean audit.log:
+#   sudo aa-complain /usr/local/bin/babbleon-login-shell
+#   sudo aa-enforce  /usr/local/bin/babbleon-login-shell
+
+#include <tunables/global>
+
+/usr/local/bin/babbleon-login-shell {
+  #include <abstractions/base>
+
+  # Self.
+  /usr/local/bin/babbleon-login-shell mr,
+
+  /etc/ld.so.cache r,
+
+  # The one thing this binary does: exec the launcher. `px` (profile
+  # exec, no fallback) transitions into WHATEVER top-level profile is
+  # attached to that path — the separate
+  # usr.local.libexec.babbleon-launch-untrusted profile file, loaded
+  # independently — rather than a local child profile in this file.
+  # No fallback means the exec is DENIED outright if that profile
+  # isn't loaded, instead of silently running unconfined.
+  /usr/local/libexec/babbleon-launch-untrusted px,
+
+  # No capabilities; no writable state anywhere.
+  deny capability sys_admin,
+  deny capability setuid,
+  deny capability setgid,
+  deny capability setpcap,
+  deny capability ipc_lock,
+}

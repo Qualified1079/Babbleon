@@ -1,4 +1,9 @@
-# OS-level confinement profiles
+# OS-level confinement profiles (v1)
+
+**These templates are for v1 (`crates/babbleon*`), which is
+deprecated for public ship — see `crates/DEPRECATED-V1.md`.  If
+you're deploying v2 (`crates/v2-*`, the actual product), use
+`policies/v2/` instead; do not install both sets on the same host.**
 
 Conservative starting templates for the two major Linux MAC systems.
 Both are written to fail open at the application level (Babbleon will

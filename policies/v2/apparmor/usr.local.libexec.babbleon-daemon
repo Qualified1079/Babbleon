@@ -1,0 +1,88 @@
+# AppArmor profile for /usr/local/libexec/babbleon-daemon (the v2
+# trusted-tier daemon).
+#
+# Conservative starting point.  The daemon:
+#   - holds the per-host secret in memory after unlock (never touches
+#     disk itself; the CLI does the Argon2id unseal and hands the raw
+#     secret over the socket — see docs/v2/least-privilege.md)
+#   - runs as its own dedicated, unprivileged UID (NOT root; see
+#     `babbleon-daemon --help`'s long_about)
+#   - needs only CAP_IPC_LOCK, for `mlockall` on the in-memory secret
+#   - serves `babbleon-launch-untrusted` / `babbleon` over a single
+#     Unix socket at /run/babbleon/daemon.sock
+#   - materialises wrapper scripts into a wrapper directory (the only
+#     path it writes to besides the socket) via an atomic
+#     staging-dir-then-rename swap
+#   - never touches the network (no `inet`/`inet6` rules needed)
+#
+# This profile assumes the documented install layout in
+# docs/v2/pam-flavour-1.md and docs/v2/least-privilege.md.  No
+# systemd unit ships yet (TODO.md "Phase 6 — release engineering");
+# adjust the confined path if your unit invokes the binary elsewhere.
+#
+# Install:
+#   sudo cp policies/v2/apparmor/usr.local.libexec.babbleon-daemon \
+#           /etc/apparmor.d/usr.local.libexec.babbleon-daemon
+#   sudo apparmor_parser -r /etc/apparmor.d/usr.local.libexec.babbleon-daemon
+#
+# Toggle complain -> enforce after a few days of clean audit.log:
+#   sudo aa-complain /usr/local/libexec/babbleon-daemon
+#   sudo aa-enforce  /usr/local/libexec/babbleon-daemon
+#
+# Reference: man apparmor.d (Ubuntu / SUSE / Debian).
+
+#include <tunables/global>
+
+/usr/local/libexec/babbleon-daemon {
+  #include <abstractions/base>
+  #include <abstractions/nameservice>
+
+  # Self.
+  /usr/local/libexec/babbleon-daemon mr,
+
+  # Read-only system surfaces (dynamic linking, locale/nameservice).
+  /etc/ld.so.cache r,
+  /etc/nsswitch.conf r,
+  /etc/passwd r,
+
+  # The wordlist is compiled into the binary (a `&'static Wordlist`;
+  # see crates/v2-babbleon-daemon/src/state.rs) — no runtime wordlist
+  # file to read, unlike v1.
+
+  # Runtime socket + scrambled-view scaffold.  The daemon creates
+  # /run/babbleon/ if absent and binds daemon.sock there; it does not
+  # write anything else under /run/babbleon (the scrambled tmpfs view
+  # is mounted by babbleon-launch-untrusted, not the daemon).
+  /run/babbleon/ rw,
+  /run/babbleon/daemon.sock rwk,
+
+  # Wrapper materialisation: the one directory tree the daemon
+  # actually writes real content into.  `wrappers.next` is the atomic-
+  # swap staging sibling (see materialization.rs::staging_sibling) —
+  # matched by the trailing `*` on the same path component.
+  /usr/local/libexec/babbleon/wrappers{,.next}/ rw,
+  /usr/local/libexec/babbleon/wrappers{,.next}/** rwk,
+
+  # Process introspection the hardening triad needs (RLIMIT_CORE,
+  # PR_SET_DUMPABLE) — self only, no /proc/[pid] for other processes.
+  /proc/self/ r,
+  /proc/self/status r,
+
+  # Only capability this binary should ever hold.
+  capability ipc_lock,
+
+  # Explicit denials — the daemon must never do any of this.
+  deny capability sys_admin,
+  deny capability setuid,
+  deny capability setgid,
+  deny capability setpcap,
+  deny capability net_admin,
+  deny capability sys_ptrace,
+  deny network inet,
+  deny network inet6,
+  deny /usr/bin/** x,
+  deny /usr/local/bin/** x,
+  deny /bin/** x,
+
+  # The daemon never execs a child — no `Cx`/`ix` transitions here.
+}

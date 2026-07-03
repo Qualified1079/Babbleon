@@ -561,17 +561,59 @@ is worth a reader seeing.
 
 ### Phase 6 — release engineering
 
-- [ ] SLSA L3 reusable workflow
-- [ ] CycloneDX 1.6 SBOM
-- [ ] cosign signing (sigstore) + in-toto attestations
-- [ ] AppArmor + SELinux profile templates (v1 has these; carry
-      forward)
-- [ ] CIS + STIG deployment docs
-- [ ] CSAF 2.0 advisory pipeline
-- [ ] SARIF emission from CodeQL/Semgrep (v1 has CodeQL; verify
-      SARIF upload)
-- [ ] Adopt CycloneDX as the only SBOM format (v1 left this
-      undecided)
+Reconciled 2026-07-03 against what actually landed, same pattern as
+the "Missed-standards remediation" section above (verified by reading
+`.github/workflows/release.yml` and the cited docs, not just assuming
+a stale `[ ]` means nothing happened). Five of eight items were
+already done — this checklist just hadn't been updated to say so.
+
+- [x] **SLSA L3 reusable workflow.**  `release.yml`'s `provenance`
+      job calls `slsa-framework/slsa-github-generator`'s
+      `generator_generic_slsa3.yml@v2.0.0` reusable workflow —
+      genuinely L3 (pinned to a tag, not `@main`, per the file's own
+      comment). Mechanism is real and wired end-to-end; what it
+      currently attests is v1's binaries — see the A08 item above
+      ("v2 binaries missing from the signed release pipeline") for
+      why that's a separate, still-open decision, not a reason to
+      leave this checkbox unchecked.
+- [x] **CycloneDX 1.6 SBOM.**  `release.yml`'s `sbom` step runs
+      `cargo cyclonedx --format json`. Duplicate of the "CycloneDX
+      1.6 chosen as the SBOM format" item under "Missed-standards
+      remediation" above; decision + implementation both landed.
+- [x] **cosign signing (sigstore) + in-toto attestations.**
+      `release.yml`'s `sign` job does keyless `cosign sign-blob
+      --bundle` over both the release artifact and the SBOM; the
+      SLSA provenance job emits in-toto-format attestations (see the
+      in-toto+TUF re-scope entry above). Same A08 caveat as the SLSA
+      line above — the mechanism signs v1 binaries today.
+- [x] **AppArmor + SELinux profile templates (v1 has these; carry
+      forward).**  Closed 2026-07-03. `policies/v2/apparmor/` (five
+      profiles) + `policies/v2/selinux/babbleon_v2.{te,fc,if}` (five
+      domains), covering all five v2 release binaries
+      (`babbleon`, `babbleon-daemon`, `babbleon-launch-untrusted`,
+      `babbleon-login-shell`, `babbleon-python`). See
+      `policies/v2/README.md` for install steps and
+      `docs/v2/least-privilege.md`'s "Open audit items carried into
+      v2" for the design rationale, including why the untrusted-child
+      transition is deliberately permissive (MAC is not the load-
+      bearing control there; the open seccomp/exec finding above is).
+- [x] **CIS + STIG deployment docs.**  Closed 2026-07-03 (same
+      session as the CAP_SETPCAP fix). Duplicate of the "CIS
+      deployment doc" and "DISA STIG deployment doc" entries under
+      "Missed-standards remediation" above —
+      `docs/v2/cis-deployment.md` and `docs/v2/stig-deployment.md`.
+- [ ] **CSAF 2.0 advisory pipeline.**  Genuinely open — duplicate of
+      the "CSAF 2.0 JSON output for advisories" entry above. No
+      advisory has been published yet, so there's nothing to format.
+- [x] **SARIF emission from CodeQL/Semgrep (v1 has CodeQL; verify
+      SARIF upload).**  Duplicate of the "SARIF upload from SAST
+      jobs" entry above — `codeql.yml` and `scorecard.yml` both
+      upload SARIF via `github/codeql-action`.
+- [x] **Adopt CycloneDX as the only SBOM format (v1 left this
+      undecided).**  Duplicate of the "CycloneDX 1.6 chosen as the
+      SBOM format" entry above — `docs/v2/standards-alignment.md`
+      records the decision; no SPDX generation exists anywhere in
+      the repo to contradict it.
 
 ### Missed-standards remediation (v2-tagged)
 

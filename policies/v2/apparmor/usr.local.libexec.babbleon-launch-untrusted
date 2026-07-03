@@ -1,0 +1,105 @@
+# AppArmor profile for /usr/local/libexec/babbleon-launch-untrusted
+# (the v2 launcher — file capabilities, NOT setuid; contrast with
+# v1's setuid-root babbleon-ns-helper).
+#
+# Conservative starting point.  See docs/v2/least-privilege.md for
+# the full 11-step lifecycle and the five capabilities
+# (cap_sys_admin, cap_setuid, cap_setgid, cap_ipc_lock, cap_setpcap)
+# this binary is file-capped with. By the end of step 10 the process
+# holds NO capabilities and cannot reacquire any (PR_SET_NO_NEW_PRIVS);
+# the child it execs inherits nothing privileged from this profile
+# either. AppArmor is belt-and-suspenders here: the capability drop
+# and seccomp filter are the load-bearing controls, this profile is
+# the second independent layer.
+#
+# Install:
+#   sudo cp policies/v2/apparmor/usr.local.libexec.babbleon-launch-untrusted \
+#           /etc/apparmor.d/usr.local.libexec.babbleon-launch-untrusted
+#   sudo apparmor_parser -r /etc/apparmor.d/usr.local.libexec.babbleon-launch-untrusted
+#
+# Toggle complain -> enforce after a few days of clean audit.log:
+#   sudo aa-complain /usr/local/libexec/babbleon-launch-untrusted
+#   sudo aa-enforce  /usr/local/libexec/babbleon-launch-untrusted
+
+#include <tunables/global>
+
+/usr/local/libexec/babbleon-launch-untrusted {
+  #include <abstractions/base>
+  #include <abstractions/nameservice>
+
+  # Self.
+  /usr/local/libexec/babbleon-launch-untrusted mr,
+
+  # File capabilities (steps 2-10 of the lifecycle; see
+  # docs/v2/least-privilege.md's step table for exactly which step
+  # uses which one, and why the execution order transposes 8/9/10).
+  capability sys_admin,
+  capability setuid,
+  capability setgid,
+  capability ipc_lock,
+  capability setpcap,
+
+  # unshare(NEWNS|NEWPID) + making `/` MS_PRIVATE|MS_REC + the
+  # scrambled-view tmpfs and per-tool bind-mount loop (steps 4-6).
+  mount,
+  umount,
+
+  # Daemon socket — reads the activated table for the current epoch.
+  /run/babbleon/daemon.sock rw,
+
+  # The scrambled-view mount target this binary creates and
+  # populates inside the NEW mount namespace (post-unshare).
+  /run/babbleon/scrambled/ rw,
+  /run/babbleon/scrambled/** rwk,
+
+  # Reads the activated-table cache the daemon/CLI leave behind.
+  /run/babbleon/table.current r,
+
+  # Wrapper scripts materialised by the daemon — bind-mount sources.
+  /usr/local/libexec/babbleon/wrappers/ r,
+  /usr/local/libexec/babbleon/wrappers/** r,
+
+  # Tier-check + hardening introspection.
+  /proc/self/ rw,
+  /proc/self/** rw,
+  /proc/[0-9]*/stat r,
+
+  # Explicit denials — surfaced even though AppArmor's default-deny
+  # already excludes these; documents threat-model intent.
+  deny capability sys_module,
+  deny capability sys_ptrace,
+  deny capability net_admin,
+  deny capability dac_override,
+  deny network inet,
+  deny network inet6,
+
+  # execve of the untrusted user command (arbitrary — that is this
+  # binary's entire purpose). By the time this fires (step 11) the
+  # process holds zero capabilities and a 16-syscall seccomp
+  # allowlist is installed (see TODO.md "post-step-8 seccomp filter"
+  # for the currently-open gap in that allowlist's coverage of the
+  # CHILD's own post-exec needs — operator-gated, not fixed here).
+  # `Cx` starts the child in its own profile rather than inheriting
+  # this one, since the launcher's own rules (mount, the five
+  # capabilities) must never apply to an arbitrary user command.
+  /usr/bin/* Cx -> untrusted-child,
+  /usr/local/bin/* Cx -> untrusted-child,
+  /bin/* Cx -> untrusted-child,
+
+  profile untrusted-child {
+    #include <abstractions/base>
+    # Deliberately unconfined beyond AppArmor's own default-deny:
+    # the whole point of the launcher's OTHER controls (seccomp,
+    # capability drop to zero, mount-namespace + scrambled view) is
+    # that this child runs as an ordinary unprivileged process with
+    # no special capabilities and no path back to the host's real
+    # filesystem layout. Tighten with a tracked-tool allowlist once
+    # docs/v2/least-privilege.md's install path is packaged (see
+    # "Explicit root:root ownership on installed Babbleon artifacts"
+    # in TODO.md for the related packaging follow-up).
+    /** rmix,
+    deny capability sys_admin,
+    deny capability sys_module,
+    deny capability sys_ptrace,
+  }
+}

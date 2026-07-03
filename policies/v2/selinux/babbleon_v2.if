@@ -1,0 +1,48 @@
+## <summary>Babbleon v2 per-host obfuscation runtime.</summary>
+
+########################################
+## <summary>
+##  Execute the v2 babbleon CLI in its own domain.
+## </summary>
+## <param name="domain">
+##  <summary>Source domain calling babbleon.</summary>
+## </param>
+#
+interface(`babbleon_v2_run_cli',`
+    gen_require(`
+        type babbleon_v2_cli_t, babbleon_v2_cli_exec_t;
+    ')
+    domtrans_pattern($1, babbleon_v2_cli_exec_t, babbleon_v2_cli_t)
+')
+
+########################################
+## <summary>
+##  Connect to the v2 babbleon-daemon Unix socket as a client.
+## </summary>
+## <param name="domain">
+##  <summary>Source domain.</summary>
+## </param>
+#
+interface(`babbleon_v2_connect_daemon',`
+    gen_require(`
+        type babbleon_v2_daemon_t, babbleon_v2_runtime_t;
+    ')
+    allow $1 babbleon_v2_daemon_t:unix_stream_socket connectto;
+    allow $1 babbleon_v2_runtime_t:sock_file { read write open getattr };
+')
+
+########################################
+## <summary>
+##  Read v2 vault material from a caller's domain.
+##  Use sparingly — leaks the sealed-vault path to the source domain.
+## </summary>
+## <param name="domain">
+##  <summary>Source domain.</summary>
+## </param>
+#
+interface(`babbleon_v2_read_vault',`
+    gen_require(`
+        type babbleon_v2_vault_t;
+    ')
+    read_files_pattern($1, babbleon_v2_vault_t, babbleon_v2_vault_t)
+')
