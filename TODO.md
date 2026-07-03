@@ -599,16 +599,19 @@ genuinely open — see each item.
       row-by-row.  Duplicate of the Phase 0 `threat-model.md` item.
 - [x] **NIST SP 800-207 zero-trust tenet map.**  Same file, §8 —
       all seven NIST tenets mapped to Babbleon mechanisms.
-- [~] **in-toto + TUF substrate adopted.**  Half-true: the shipped
-      SLSA provenance job (`.github/workflows/release.yml`) emits
-      in-toto-format attestations via `slsa-github-generator`, so
-      in-toto is genuinely adopted.  TUF is NOT — `docs/v2/
-      standards-alignment.md` only asserts a stance ("Sigstore +
-      cosign already produces in-toto-compatible attestations; we
-      adopt the v1 toolchain"); there is no TUF metadata repo or
-      role structure anywhere in the tree.  Re-scope: either build
-      an actual TUF root, or correct the doc to say "in-toto: yes,
-      TUF: not adopted" and drop TUF from this line.
+- [x] **in-toto + TUF substrate — re-scoped and closed 2026-07-03.**
+      in-toto is genuinely adopted (the shipped SLSA provenance job,
+      `.github/workflows/release.yml`, emits in-toto-format
+      attestations via `slsa-github-generator`). TUF is deliberately
+      NOT adopted, and this is now a recorded decision rather than an
+      open gap: `docs/v2/standards-alignment.md`'s in-toto+TUF section
+      was corrected to say so explicitly, with the reasoning — TUF
+      protects consumers who pull updates through a TUF-verifying
+      client, and Babbleon v2 ships no such client, so a TUF metadata
+      repo today would be unread metadata. Chose "correct the doc"
+      over "build an actual TUF root" per this item's own framing of
+      the choice — building unused signing/role infrastructure isn't
+      good engineering. Revisit if v2 ever ships an auto-update path.
 - [x] **CycloneDX 1.6 chosen as the SBOM format.**  Decision in
       `docs/v2/standards-alignment.md` §"CycloneDX vs SPDX";
       implemented via `cargo cyclonedx` in `ci.yml`/`release.yml`.

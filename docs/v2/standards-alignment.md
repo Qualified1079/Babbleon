@@ -125,9 +125,29 @@ Babbleon is a tool that fits into a CSF-aligned program's
 these directly.  TUF is the canonical secure software-update
 framework; in-toto is the supply-chain attestation format.
 
-**Babbleon v2 stance:** ship attestations in in-toto format from
-phase 6 (release engineering).  Sigstore + cosign already produces
-in-toto-compatible attestations; we adopt the v1 toolchain.
+**Babbleon v2 stance:** in-toto — adopted. The shipped SLSA
+provenance job (`.github/workflows/release.yml`) emits in-toto-format
+attestations via `slsa-github-generator`; Sigstore + cosign produce
+in-toto-compatible attestations on top of that. TUF — NOT adopted,
+and not merely deferred: there is no TUF metadata repository, role
+structure (root/targets/snapshot/timestamp keys), or delegation
+anywhere in this tree, and phase 6 doesn't currently plan one. TUF's
+value is protecting CONSUMERS who pull updates through a client that
+verifies TUF metadata; Babbleon v2 doesn't ship such a client, so
+adopting TUF today would be metadata with no verifier reading it.
+Revisit if/when v2 ships an auto-update mechanism a TUF client would
+actually gate.
+
+> **Correction, 2026-07-03.** This section previously read "Sigstore
+> + cosign already produces in-toto-compatible attestations; we
+> adopt the v1 toolchain" as a single stance covering BOTH in-toto
+> and TUF — misleading, since cosign/Sigstore don't provide TUF's
+> actual mechanism (a client-side trust-root + role/threshold model
+> for verifying updates), only in-toto-shaped attestation format.
+> `TODO.md`'s "Missed-standards remediation" section flagged this
+> exact gap ("re-scope: either build an actual TUF root, or correct
+> the doc") — corrected here rather than building unused TUF
+> infrastructure with no consuming client.
 
 ### CycloneDX vs SPDX — pick one for SBOM
 
@@ -272,14 +292,15 @@ for completeness; no adoption planned.
 | **NIST SP 800-190** | **Missed** | Threat-model section-by-section map |
 | **NIST SP 800-207** | **Missed** | Zero-trust mapping in threat-model |
 | NIST CSF 2.0 | Missed | Documentation note (out of product scope) |
-| **in-toto + TUF** | Missed | Adopted via sigstore toolchain |
+| **in-toto** | Missed | Adopted via sigstore/slsa-github-generator toolchain |
+| **TUF** | Missed | Not adopted (no consuming client yet — see correction, 2026-07-03) |
 | **CycloneDX vs SPDX** | Punted | **CycloneDX 1.6** chosen |
 | GUAC | Missed | Publish CycloneDX in GUAC-ingestible form |
 | CSAF 2.0 | Missed | Advisories emit CSAF JSON |
 | SARIF | Missed | CodeQL + Semgrep emit, GitHub consumes |
 | FIPS 140-3 | Missed | Out of scope for v2.0 |
-| CIS Benchmarks | Missed | Deployment doc |
-| DISA STIGs | Missed | Deployment doc (lower priority) |
+| CIS Benchmarks | Missed | Deployment doc — filed 2026-07-03, `docs/v2/cis-deployment.md` |
+| DISA STIGs | Missed | Deployment doc (lower priority) — filed 2026-07-03, `docs/v2/stig-deployment.md` |
 | OWASP SAMM | Missed | Project-side, not product-side |
 | BSIMM | Missed | No action |
 | OWASP Top 10 (2021) | Missed | Documentary audit |
