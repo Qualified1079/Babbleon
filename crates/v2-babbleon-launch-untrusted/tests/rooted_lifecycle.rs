@@ -223,6 +223,34 @@ fn bind_mount_entries_succeeds_in_fresh_namespace() {
                 );
                 return 9;
             }
+
+            // CIS-style hardening check: each bind mount is its own
+            // vfsmount, so the base tmpfs's nosuid/nodev doesn't
+            // automatically cover it — confirm the post-bind remount
+            // in `bind_mount_entries` actually took effect.
+            let opts = match mount_options_for(&target) {
+                Some(o) => o,
+                None => {
+                    eprintln!("no mountinfo entry found for {}", target.display());
+                    return 10;
+                }
+            };
+            for want in ["nosuid", "nodev"] {
+                if !opts.split(',').any(|o| o == want) {
+                    eprintln!(
+                        "bind mount at {} missing '{want}' (opts: {opts})",
+                        target.display()
+                    );
+                    return 11;
+                }
+            }
+            if opts.split(',').any(|o| o == "noexec") {
+                eprintln!(
+                    "bind mount at {} must stay executable (opts: {opts})",
+                    target.display()
+                );
+                return 12;
+            }
         }
 
         0

@@ -661,10 +661,10 @@ genuinely open — see each item.
       covered by new rooted tests asserting the actual
       `/proc/self/mountinfo` options, not just that the mount call
       didn't error (`crates/v2-babbleon-launch-untrusted/tests/
-      rooted_lifecycle.rs`). Deliberately NOT touched: the per-tool
-      bind mounts in `bind_mount_entries`, which would need a
-      `MS_REMOUNT|MS_BIND` second call to add flags to an existing
-      bind mount — filed as a follow-up below rather than guessed at.
+      rooted_lifecycle.rs`). The per-tool bind mounts in
+      `bind_mount_entries` needed the same treatment via a second
+      `MS_REMOUNT|MS_BIND` call — filed and closed the same night,
+      see the dedicated entry below rather than guessing at it here.
 - [x] **DISA STIG deployment doc.**  Closed 2026-07-03.  `docs/v2/
       stig-deployment.md` filed — deliberately short (per the
       original note's "lower priority than CIS"): covers only where
@@ -677,21 +677,20 @@ genuinely open — see each item.
       not `V-`-numbers, for the same reason `cis-deployment.md`
       avoids per-edition CIS numbers — DISA STIG `V-` IDs renumber
       across release revisions too.
-- [ ] **`nosuid`/`nodev` on the per-tool bind mounts in
+- [x] **`nosuid`/`nodev` on the per-tool bind mounts in
       `mounts::bind_mount_entries`.**  Filed 2026-07-03 alongside the
-      CIS deployment doc above. The scrambled-view tmpfs itself now
-      carries `nosuid,nodev`, but each individual wrapper's bind mount
-      is its own vfsmount with its own flags (inherited from the
-      source file's mount, not the parent tmpfs) — `MS_BIND` alone
-      doesn't let you set new flags in the same `mount(2)` call; it
-      needs a second `mount(2)` with `MS_REMOUNT|MS_BIND` plus the
-      desired flags applied to each bind target after the initial
-      bind. Real, low-risk-in-principle hardening (wrapper scripts
-      never need setuid or device-node semantics) but touches the hot
-      loop over every tool in the corpus, so it wants its own
-      focused test (assert via `/proc/self/mountinfo` per bind
-      target, the same pattern `rooted_lifecycle.rs` already uses)
-      rather than being bundled into an unrelated pass.
+      CIS deployment doc above; closed the same night once the
+      `MS_REMOUNT|MS_BIND` two-step was worked out and tested rather
+      than guessed at. Each bind mount is its own vfsmount (inherited
+      from the source file's mount, not the parent tmpfs), so
+      `MS_BIND` alone in the mount(2) call that creates it can't also
+      set `nosuid`/`nodev` — the kernel requires a second `mount(2)`
+      with `MS_REMOUNT|MS_BIND` plus the desired flags, applied to
+      each bind target after the initial bind. `bind_mount_entries`
+      now does exactly that (deliberately NOT `noexec` — the child
+      execs the wrapper). Verified with a mountinfo assertion added
+      to the existing `bind_mount_entries_succeeds_in_fresh_namespace`
+      rooted test, checking every bound entry, not just one.
 - [x] **OWASP Top 10 (2021) documentary audit** (most items n/a;
       sweep anyway).  Closed 2026-07-03: `docs/v2/owasp-top10-audit.md`
       covers all 10 categories against `crates/v2-*` (Surface /

@@ -72,15 +72,12 @@ mounts) — not repeated here.
 
 ## What remains genuinely open
 
-Same two items `cis-deployment.md` flags, both apply here too:
-
 - PAM module wiring (`crates/v2-babbleon-pam/`) is still a skeleton —
-  see `TODO.md` Phase 2 and `docs/v2/pam-architecture.md`.
-- The per-tool bind mounts in `mounts::bind_mount_entries` don't yet
-  carry `nosuid`/`nodev` (the base scrambled-view tmpfs does; the
-  individual bind mounts are a separate vfsmount each and need their
-  own `MS_REMOUNT|MS_BIND` pass) — filed in `TODO.md` alongside the
-  CIS doc's equivalent note.
+  see `TODO.md` Phase 2 and `docs/v2/pam-architecture.md`. Not fixed
+  here; the same open item `cis-deployment.md` flags, not duplicated
+  as a new STIG-specific finding.
 
-Neither is fixed here; both are the same open items already tracked,
-not duplicated as new STIG-specific findings.
+The per-tool bind mounts' `nosuid`/`nodev` gap this doc originally
+noted here was closed the same night — see `cis-deployment.md`'s
+"Update, same night" note and `TODO.md`'s entry for
+`bind_mount_entries`.

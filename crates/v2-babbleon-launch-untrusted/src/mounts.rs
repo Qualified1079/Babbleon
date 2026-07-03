@@ -194,6 +194,32 @@ pub fn bind_mount_entries(
                 entry.scrambled,
             ))
         })?;
+
+        // Second call, deliberately: a bind mount's own flags (as
+        // opposed to the flags of the filesystem it exposes) can't
+        // be set in the same mount(2) call that creates the bind —
+        // the kernel requires MS_REMOUNT|MS_BIND together in a
+        // follow-up call to change them (mount(2), "Bind mounts").
+        // `nosuid`+`nodev` cost nothing here: these targets are
+        // Babbleon-rendered wrapper scripts, never device nodes or
+        // binaries that need setuid/setgid execution semantics. NOT
+        // `noexec` — the whole point of the bind is that the child
+        // execs the wrapper. See `docs/v2/cis-deployment.md`.
+        // CAPABILITY: CAP_SYS_ADMIN for mount(2).  Dropped at step 10.
+        mount(
+            None::<&str>,
+            target.as_path(),
+            None::<&str>,
+            MsFlags::MS_REMOUNT | MsFlags::MS_BIND | MsFlags::MS_NOSUID | MsFlags::MS_NODEV,
+            None::<&str>,
+        )
+        .map_err(|e| {
+            Error::Mount(format!(
+                "remount nosuid,nodev on bind {} for {:?}: {e}",
+                target.display(),
+                entry.scrambled,
+            ))
+        })?;
     }
     Ok(())
 }

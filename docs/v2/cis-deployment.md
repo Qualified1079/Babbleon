@@ -78,14 +78,16 @@ call didn't error:
 mountinfo assertion added to
 `credential_gate_overlays_empty_tmpfs_on_each_discovered_dir`.
 
-Deliberately NOT touched: the per-tool bind mounts inside
-`mounts::bind_mount_entries` (`MS_BIND` only). Applying `nosuid`/
-`nodev` to an existing bind mount requires a second `mount(2)` call
-with `MS_REMOUNT | MS_BIND` plus the new flags (a bind mount's flags
-can't be set in the same call that creates it) — a real kernel-ABI
-subtlety worth getting right with its own test, not bundled into an
-overnight pass touching every tool in the corpus. Filed in `TODO.md`
-Phase 2 as a follow-up rather than guessed at here.
+**Update, same night:** the per-tool bind mounts in
+`mounts::bind_mount_entries` now also carry `nosuid,nodev` (not
+`noexec` — the child execs the wrapper). Each bind mount is its own
+vfsmount, so `MS_BIND` alone in the call that creates it can't also
+set these flags — the fix is a second `mount(2)` call with
+`MS_REMOUNT | MS_BIND` plus the desired flags, applied per bind
+target after the initial bind. Verified via a mountinfo assertion
+added to the existing `bind_mount_entries_succeeds_in_fresh_namespace`
+rooted test (checks every bound entry, not just one), not merely
+that the mount call didn't error.
 
 ## Section 2 — Services
 
