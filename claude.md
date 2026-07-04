@@ -54,7 +54,14 @@ the first three:
    promotion, blocking write-before-exposed-read. This defends *what the
    agent is allowed to do after* an injection succeeds. Babbleon defends
    *whether the injection's embedded instructions parse at all* against
-   a given install. Different layer, both wanted.
+   a given install. Different layer, both wanted. Confirmed
+   (2026-07-04, read past the abstract) that RTW-A's four mechanisms all
+   key on file/message *carrier* taint and capability level, mediated by
+   a runtime policy engine — none of them assume or require stable tool
+   names or schemas. So diversifying the tool-calling surface doesn't
+   fight RTW-A's enforcement in any way found so far; they stack as
+   independent layers (Babbleon lowers the odds the initial trigger
+   fires at all; RTW-A contains it if it does).
 3. **Binary/compiler-level moving-target defense for traditional
    exploits** (Polyverse-style polymorphic recompilation, Shakedown,
    general compiler-MTD literature). This is defense against memory-

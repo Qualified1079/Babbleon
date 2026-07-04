@@ -119,8 +119,17 @@ def _alias_marker(seed: str, key: str) -> str:
     Hash-derived (not rng-sequence-derived) so it doesn't depend on how
     many other rng draws happened first --- keeps marker tokens stable
     even if tool/param aliasing logic changes.
+
+    16 hex chars (64 bits) of digest, not fewer: this token is the one
+    piece of the dialect that carries real unguessable entropy rather
+    than a small public synonym pool (see `known_vocabulary`'s
+    Kerckhoffs's-principle note and handoff.md's 2026-07-04 addendum), so
+    it shouldn't be truncated down to something an attacker could spray-
+    guess across repeated propagation attempts. An earlier draft used 6
+    hex chars (24 bits, ~16.7M possibilities) which is small enough to be
+    worth widening before this leaves prototype stage.
     """
-    digest = hashlib.sha256(f"{seed}:marker:{key}".encode()).hexdigest()[:6].upper()
+    digest = hashlib.sha256(f"{seed}:marker:{key}".encode()).hexdigest()[:16].upper()
     return f"X{digest}_{key.upper()[:4]}"
 
 

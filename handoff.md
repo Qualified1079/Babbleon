@@ -69,18 +69,62 @@ that file for the design implication).
 - Marker-token diversification (the hash-derived `X<hash>_FORW`-style
   tokens, `dialect._alias_marker`) doesn't reduce to the same "spray the
   finite public pool" attack the synonym substitution fell to — there's
-  no small enumerable pool, it's `sha256(seed:marker:key)` truncated to 6
-  hex chars. That's a by-construction argument (preimage resistance),
-  not something that needs a wormlab test the way the synonym case did.
-  But the truncation width is worth a second look: 6 hex chars is only
-  24 bits, i.e. ~16.7M possibilities — small enough that an attacker
-  willing to spray a large number of guesses (not fully brute-forceable
-  in one realistically-sized payload, but worth being honest that it's
-  not astronomically large either) has non-trivial odds over repeated
-  attempts. Flagged as a manual-review / hardening item rather than
-  something to fix reflexively: widen to 8+ hex chars (32+ bits) if this
-  ever moves past prototype, but not worth churning the code for it
-  mid-experiment tonight.
+  no small enumerable pool, it's `sha256(seed:marker:key)` truncated.
+  That's a by-construction argument (preimage resistance), not something
+  that needs a wormlab test the way the synonym case did. The initial
+  draft truncated to 6 hex chars (24 bits, ~16.7M possibilities) which
+  was small enough to be worth fixing rather than just flagging — widened
+  to 16 hex chars (64 bits) same session once noticed, since this is the
+  one part of the dialect meant to carry real security-relevant entropy
+  and a narrow truncation would have undercut the whole "salt is where
+  the margin lives" finding above. Not treated as a design fork (unlike
+  the mid-session rotation question below) since it's a strictly-better,
+  no-tradeoff change — widening it doesn't cost anything.
+
+---
+
+## 2026-07-04 — session 1, second addendum: RTW-A composability resolved
+
+Picked up next-session candidate #1 (read RTW-A/Virtual Donkey past the
+abstract, check composability) same session rather than deferring it.
+
+Got full mechanism detail on RTW-A (arXiv:2605.02812) via the HTML full-
+text rendering rather than the abstract page, which kept truncating
+earlier. Its four components — write-before-exposed-read blocking,
+static config sealing, typed memory promotion, capability attenuation —
+all operate on **carrier taint and capability level**, enforced by a
+runtime policy engine sitting outside the model. Direct finding: *none*
+of the four assume or require stable/known tool names or schemas —
+enforcement keys on which file/message a value came from and what
+capability level the LLM's decision state currently holds, not on what a
+tool is called. Quoted mechanism detail is now in claude.md's scope-
+boundary section (item 2) rather than repeated here.
+
+Practical upshot: Babbleon's tool/prompt diversification and RTW-A's
+information-flow control don't fight each other — nothing found suggests
+rotating tool names would break RTW-A's taint tracking or vice versa.
+They're genuinely independent layers: Babbleon lowers the odds a worm's
+embedded trigger fires against a given install at all (this session's
+`wormlab.py` experiments); RTW-A contains the blast radius if it does
+fire anyway. Worth remembering if a future session considers combining
+both in one reference implementation — no known blocker to doing so.
+
+Also got clearer (if partial) detail on SRPO while re-reading the same
+paper: it's a three-role adversarial search (generator / transformation-
+simulator / judge), optimized specifically for surviving *generic LLM-
+mediated summarization and paraphrasing* during multi-hop propagation,
+with "critical-token retention" as one of its judged objectives. The
+authors withhold the actual payload-construction technique ("disclosure
+ongoing"). Important nuance for calibrating tonight's earlier finding:
+SRPO is optimized against a *generic* paraphrasing transform, not
+specifically against a Babbleon-style private per-install renaming
+scheme it has no way to know about — so SRPO isn't direct counter-
+evidence against Babbleon specifically, it's evidence that attackers are
+already investing in robustness-to-rewording in general, which is exactly
+the capability that would make short work of a *public, small, guessable*
+synonym pool (consistent with, not contradicting, this session's
+`FuzzyOverlapAgent` result) and raises the bar for whatever Babbleon
+does structurally beyond that pool.
 
 ---
 
