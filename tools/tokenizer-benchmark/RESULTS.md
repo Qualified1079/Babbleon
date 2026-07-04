@@ -62,10 +62,13 @@ seed, tokenizer, and model-family the claim cites.
 
 ## Future work
 
-- Try SentencePiece (Llama 3, Mistral) and the smaller open-weights
-  tokenizers — the smaller-model superlinear-scaling hypothesis can
-  only be checked there.  Different algorithm (Unigram LM), possibly
-  meaningfully different result.
+- ~~Try SentencePiece (Llama 3, Mistral) and the smaller open-weights
+  tokenizers~~ — **done 2026-07-04**, see "SentencePiece open-weights
+  tokenizer comparison" below: null result, hypothesis does not hold.
+  (Llama-3's own tokenizer specifically was not tried — its
+  `tokenizer.json` is gated behind a license click-through on
+  HuggingFace; Mistral-7B-v0.1 and Phi-2 are both open and were used
+  instead as representative smaller/open-weights vocabularies.)
 - Try Claude's tokenizer via the count-tokens API; tiktoken is
   OpenAI-specific.
 - Re-measure after the wordlist gets the RESEARCH T6 v2 post-filter
@@ -121,3 +124,72 @@ adds `r50k_base` (GPT-3, 50 k vocab) and `p50k_base` (Codex,
    Babbleon build tuned for GPT-3-era targets does NOT need a
    different filter strategy from a GPT-4-era build — the ratio
    is what matters for the obfuscation gain, and it is invariant.
+
+## SentencePiece open-weights tokenizer comparison (2026-07-04)
+
+Closes the "Tokenizer benchmark — smaller-model tokenizers" item and
+the "smaller open-weights tokenizer pays a superlinear compound tax"
+hypothesis that the tiktoken-only measurements above (§"Honest
+interpretation" caveat 2) could not test, because `tiktoken-rs` only
+covers OpenAI's own BPE families. The bench grew an
+`--include-sentencepiece` flag using the `tokenizers` crate (pure
+Rust, HuggingFace) loading two vendored, openly-licensed
+`tokenizer.json` files under `tools/tokenizer-benchmark/tokenizers/`
+— see that directory's `README.md` for exact source URL, license, and
+sha256:
+
+- **`mistral-7b-v0.1`** — Mistral AI's SentencePiece BPE tokenizer
+  (32 000 vocab), Apache-2.0.
+- **`phi-2`** — Microsoft's tokenizer (50 295 vocab, GPT-NeoX-style
+  BPE — not Unigram SentencePiece specifically, but the smaller,
+  non-frontier open-weights vocabulary the hypothesis is actually
+  about), MIT.
+
+Two independent runs, same wordlist, `--compound-n 4`, 2 000 samples
+each, different seeds — checking the result isn't a seed artifact
+before citing it:
+
+| Tokenizer            | Vocab   | Seed         | Compound mean | Spaced mean | Ratio (compound / spaced) |
+|-----------------------|--------:|--------------|---------------:|------------:|--------------------------:|
+| `mistral-7b-v0.1`     |  32 000 | `0xbabb1e0011223344` |          12.97 |       12.52 |                    1.041× |
+| `mistral-7b-v0.1`     |  32 000 | `0xdeadbeef`         |          12.85 |       12.38 |                    1.044× |
+| `phi-2`               |  50 295 | `0xbabb1e0011223344` |          12.41 |       11.66 |                    1.072× |
+| `phi-2`               |  50 295 | `0xdeadbeef`         |          12.28 |       11.54 |                    1.072× |
+| `cl100k_base` (same run, for reference) | 100 000 | `0xbabb1e0011223344` | 12.01 | 11.31 | 1.069× |
+| `o200k_base` (same run, for reference)  | 200 000 | `0xbabb1e0011223344` | 11.61 | 10.87 | 1.076× |
+
+**Findings.**
+
+1. **The superlinear-scaling hypothesis does NOT hold, across two
+   different open-weights vocabularies.** Mistral's 32k-vocab
+   tokenizer actually shows a slightly *lower* compound/spaced ratio
+   (~1.04×) than any OpenAI tiktoken family measured so far — the
+   opposite direction from "smaller vocab pays more." Phi-2's
+   ratio (~1.072×) lands right in the middle of the tiktoken cluster
+   (1.062×-1.083× across all prior runs in this file), not above it.
+2. **Consistent with the r50k/p50k finding above.** Combined with the
+   2026-07-02 result (smaller OpenAI-family vocabularies also show a
+   flat, not superlinear, ratio), this is now two independent lines
+   of evidence — one within the OpenAI tiktoken family, one across
+   entirely different tokenizer training pipelines (SentencePiece,
+   GPT-NeoX-style) — against the hypothesis. `RESEARCH.md`'s
+   "smaller-model superlinear" open question (also tracked in
+   `TODO.md`) should be treated as answered (null result), not still
+   open, absent a specific reason to doubt these two runs.
+3. **Absolute compound cost still varies by vocab size** (Mistral
+   12.9-13.0 tokens vs Phi-2 12.3-12.4 vs cl100k 12.0 vs o200k 11.6),
+   same pattern as the r50k/p50k comparison — smaller vocabularies
+   cost more tokens in absolute terms, but the *ratio* (the actual
+   obfuscation-relevant number) stays in the same ~1.04×-1.08× band
+   regardless of tokenizer family or vocab size.
+4. **Design implication — unchanged from the r50k/p50k finding**,
+   now on firmer footing: Babbleon's wordlist-compound design does
+   not need a different strategy for open-weights-model-shaped
+   attackers than for OpenAI-shaped ones. The token-cost lever
+   remains not load-bearing for the threat model (per "Implications
+   for the design" above) regardless of which tokenizer family the
+   attacker's LLM uses.
+
+Still open (not this item): the Claude tokenizer via the count-tokens
+API — a different measurement path (network API call, not a vendored
+local table) that this session did not attempt; see `TODO.md`.

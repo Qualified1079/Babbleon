@@ -30,6 +30,15 @@
 //!
 //! The report is plain text on stdout; nothing is written to disk unless
 //! `--out <path>` is given.
+//!
+//! # `--include-sentencepiece`
+//!
+//! Adds two vendored open-weights SentencePiece-family tokenizers
+//! (Mistral-7B-v0.1, Phi-2 — see `tokenizers/README.md` for source +
+//! license) to the comparison, testing the "smaller open-weights
+//! tokenizer pays a superlinear compound tax" hypothesis
+//! (`TODO.md` phase 4) against real SentencePiece vocabularies rather
+//! than extrapolating from the OpenAI tiktoken family alone.
 
 use clap::Parser;
 use rand::seq::SliceRandom;
@@ -39,6 +48,7 @@ use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 use tiktoken_rs::{cl100k_base, o200k_base, p50k_base, r50k_base, CoreBPE};
+use tokenizers::Tokenizer;
 
 #[derive(Parser)]
 #[command(about = "BPE tokenizer cost benchmark for Babbleon compound names")]
@@ -70,6 +80,27 @@ struct Args {
     /// runs keep their two-tokenizer output shape.
     #[arg(long, default_value_t = false)]
     include_smaller: bool,
+
+    /// Include the open-weights SentencePiece-family tokenizers
+    /// vendored under `tokenizers/` (Mistral-7B-v0.1, Phi-2).  Tests
+    /// the "smaller open-weights tokenizer pays a superlinear
+    /// compound tax" hypothesis (TODO.md phase 4) against actual
+    /// SentencePiece vocabularies rather than OpenAI's near-frontier
+    /// ones.  Off by default so existing runs keep their output
+    /// shape; requires the vendored `tokenizer.json` files (see
+    /// `tokenizers/README.md`).
+    #[arg(long, default_value_t = false)]
+    include_sentencepiece: bool,
+
+    /// Path to the vendored Mistral-7B-v0.1 `tokenizer.json` (only
+    /// read when `--include-sentencepiece` is set).
+    #[arg(long, default_value = "tokenizers/mistral-7b-v0.1/tokenizer.json")]
+    mistral_tokenizer: PathBuf,
+
+    /// Path to the vendored Phi-2 `tokenizer.json` (only read when
+    /// `--include-sentencepiece` is set).
+    #[arg(long, default_value = "tokenizers/phi-2/tokenizer.json")]
+    phi2_tokenizer: PathBuf,
 }
 
 struct Stats {
@@ -119,6 +150,12 @@ fn count_tokens(bpe: &CoreBPE, s: &str) -> usize {
     bpe.encode_with_special_tokens(s).len()
 }
 
+fn count_tokens_hf(tok: &Tokenizer, s: &str) -> usize {
+    tok.encode(s, false)
+        .unwrap_or_else(|e| panic!("tokenizers encode failed for {s:?}: {e}"))
+        .len()
+}
+
 fn main() {
     let args = Args::parse();
 
@@ -135,6 +172,23 @@ fn main() {
             r50k_base().expect("r50k_base"),
             p50k_base().expect("p50k_base"),
         ))
+    } else {
+        None
+    };
+    let sentencepiece = if args.include_sentencepiece {
+        let mistral = Tokenizer::from_file(&args.mistral_tokenizer).unwrap_or_else(|e| {
+            panic!(
+                "load {}: {e} (see tokenizers/README.md)",
+                args.mistral_tokenizer.display()
+            )
+        });
+        let phi2 = Tokenizer::from_file(&args.phi2_tokenizer).unwrap_or_else(|e| {
+            panic!(
+                "load {}: {e} (see tokenizers/README.md)",
+                args.phi2_tokenizer.display()
+            )
+        });
+        Some((mistral, phi2))
     } else {
         None
     };
@@ -159,6 +213,14 @@ fn main() {
     let mut spaced_p50: Vec<usize> = Vec::with_capacity(args.samples);
     let mut ratios_r50: Vec<f64> = Vec::with_capacity(args.samples);
     let mut ratios_p50: Vec<f64> = Vec::with_capacity(args.samples);
+    // Vectors for the SentencePiece-family tokenizers, empty when
+    // --include-sentencepiece is off.
+    let mut compound_mistral: Vec<usize> = Vec::with_capacity(args.samples);
+    let mut compound_phi2: Vec<usize> = Vec::with_capacity(args.samples);
+    let mut spaced_mistral: Vec<usize> = Vec::with_capacity(args.samples);
+    let mut spaced_phi2: Vec<usize> = Vec::with_capacity(args.samples);
+    let mut ratios_mistral: Vec<f64> = Vec::with_capacity(args.samples);
+    let mut ratios_phi2: Vec<f64> = Vec::with_capacity(args.samples);
 
     let mut csv = args.out.as_ref().map(|p| {
         let mut f = fs::File::create(p).expect("create csv");
@@ -203,6 +265,19 @@ fn main() {
             ratios_p50.push(c_p50 as f64 / s_p50 as f64);
         }
 
+        if let Some((mistral, phi2)) = &sentencepiece {
+            let c_mistral = count_tokens_hf(mistral, &compound);
+            let s_mistral = count_tokens_hf(mistral, &spaced);
+            let c_phi2 = count_tokens_hf(phi2, &compound);
+            let s_phi2 = count_tokens_hf(phi2, &spaced);
+            compound_mistral.push(c_mistral);
+            spaced_mistral.push(s_mistral);
+            compound_phi2.push(c_phi2);
+            spaced_phi2.push(s_phi2);
+            ratios_mistral.push(c_mistral as f64 / s_mistral as f64);
+            ratios_phi2.push(c_phi2 as f64 / s_phi2 as f64);
+        }
+
         if let Some(f) = &mut csv {
             writeln!(
                 f,
@@ -226,6 +301,14 @@ fn main() {
         println!("  p50k_base (Codex era):");
         print_row("    compound (no separator)", &summarize(&compound_p50));
         print_row("    spaced (control)       ", &summarize(&spaced_p50));
+    }
+    if sentencepiece.is_some() {
+        println!("  mistral-7b-v0.1 (SentencePiece BPE):");
+        print_row("    compound (no separator)", &summarize(&compound_mistral));
+        print_row("    spaced (control)       ", &summarize(&spaced_mistral));
+        println!("  phi-2 (SentencePiece BPE):");
+        print_row("    compound (no separator)", &summarize(&compound_phi2));
+        print_row("    spaced (control)       ", &summarize(&spaced_phi2));
     }
 
     let mean_ratio_cl = ratios_cl.iter().sum::<f64>() / ratios_cl.len() as f64;
@@ -262,6 +345,25 @@ fn main() {
         println!(
             "  p50k_base:    mean={:.3}×  median={:.3}×",
             mean_ratio_p50, median_p50
+        );
+    }
+    if sentencepiece.is_some() {
+        let mean_ratio_mistral =
+            ratios_mistral.iter().sum::<f64>() / ratios_mistral.len() as f64;
+        let mean_ratio_phi2 = ratios_phi2.iter().sum::<f64>() / ratios_phi2.len() as f64;
+        let mut sorted_mistral = ratios_mistral.clone();
+        let mut sorted_phi2 = ratios_phi2.clone();
+        sorted_mistral.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        sorted_phi2.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let median_mistral = sorted_mistral[sorted_mistral.len() / 2];
+        let median_phi2 = sorted_phi2[sorted_phi2.len() / 2];
+        println!(
+            "  mistral-7b-v0.1: mean={:.3}×  median={:.3}×",
+            mean_ratio_mistral, median_mistral
+        );
+        println!(
+            "  phi-2:           mean={:.3}×  median={:.3}×",
+            mean_ratio_phi2, median_phi2
         );
     }
 

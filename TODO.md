@@ -1144,12 +1144,36 @@ genuinely open — see each item.
       o200k.  Not load-bearing; kept around as data.
 - [x] `tools/rotation-benchmark/` — measures userspace rotation cost
       (cold and warm paths) as a function of tracked-tool count.
-- [ ] **Tokenizer benchmark — smaller-model tokenizers.**
-      The 1.07× result is for OpenAI's near-frontier tokenizers; smaller
-      open-weights tokenizers (Llama-3 SentencePiece, Mistral, Phi)
-      plausibly show superlinear penalty.  Hypothesis, not measurement.
-      Run via the existing harness once SentencePiece bindings are
-      added.
+- [x] **Tokenizer benchmark — smaller-model tokenizers.**  Closed
+      2026-07-04. `tools/tokenizer-benchmark` grew an
+      `--include-sentencepiece` flag using the `tokenizers` crate
+      (pure Rust, HuggingFace — no native SentencePiece/protobuf
+      dependency) against two vendored, openly-licensed
+      `tokenizer.json` files: Mistral-7B-v0.1 (32k vocab,
+      Apache-2.0) and Phi-2 (50 295 vocab, MIT) — see
+      `tools/tokenizer-benchmark/tokenizers/README.md` for source
+      URLs and sha256. Llama-3's own tokenizer specifically was NOT
+      used: its `tokenizer.json` is gated behind an HF license
+      click-through, not fetchable without an authenticated,
+      license-accepting account; Mistral/Phi-2 serve the same
+      "smaller, non-frontier, open-weights vocabulary" purpose the
+      hypothesis is actually about.
+      **Result: the superlinear-scaling hypothesis does NOT hold —
+      null result, not still open.** Two independent 2000-sample runs
+      (different seeds) both show Mistral at ~1.04× (compound/spaced
+      ratio) and Phi-2 at ~1.072×, landing at or below the existing
+      OpenAI-tiktoken cluster (1.062×-1.083× across every prior run
+      in `RESULTS.md`) rather than above it. Combined with the
+      2026-07-02 r50k/p50k finding (smaller OpenAI-family
+      vocabularies also show a flat, not superlinear, ratio), this is
+      now two independent lines of evidence against the hypothesis —
+      one within the tiktoken family, one across genuinely different
+      tokenizer training pipelines. See `tools/tokenizer-benchmark/
+      RESULTS.md`'s "SentencePiece open-weights tokenizer comparison
+      (2026-07-04)" section for the full numbers, both seeds, and the
+      design-implication writeup. `RESEARCH.md`'s "smaller-model
+      superlinear" open question should be treated as answered absent
+      a specific reason to doubt these runs.
 - [ ] **Tokenizer benchmark — Claude tokenizer.**  Via the
       count-tokens API.  Single number; cheap.
 - [~] **Wordlist post-filter by tokenization density.**  v2 mapping

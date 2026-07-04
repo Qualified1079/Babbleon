@@ -7185,3 +7185,97 @@ permanently in the executed program cannot reuse it as-is.
   ever comes up.
 - Same standing operator-gated items, unchanged: seccomp/exec finding,
   PAM wiring, A08, secret-literal runtime-channel question.
+
+---
+
+## 2026-07-04 (overnight autonomous session, continued) — SentencePiece tokenizer benchmark closes the "smaller-model superlinear" hypothesis (null result)
+
+Author: Claude Sonnet 5 (same session as the three entries above).
+Picked this up after the previous entry's own conclusion that the
+Phase-4 obfuscation-layer backlog was genuinely dry of unblocked
+autonomous work (Layer 7/8/10 all confirmed blocked; multi-language
+wordlists and the allocation table already ruled out). Went back to
+`TODO.md`'s benchmarks section instead — a different, lower-risk
+category (pure measurement, no production code, no trust-boundary
+question) — and found "Tokenizer benchmark — smaller-model
+tokenizers... Run via the existing harness once SentencePiece
+bindings are added" sitting there as a fully-scoped, concrete,
+non-operator-gated next step, not a research question needing a
+write-up.
+
+**Feasibility checked before committing, not assumed:** confirmed
+`cmake`/`g++` present and `huggingface.co` reachable through this
+environment's proxy before starting (a raw `curl` to `crates.io`
+itself 403s — expected, the proxy note in this environment's own
+system config says raw non-cargo HTTPS to some hosts needs the
+documented workaround — but `cargo`'s own registry resolution, which
+goes through the sparse index, has worked fine all session, so this
+wasn't actually a blocker). Chose the `tokenizers` crate (pure Rust,
+HuggingFace's own, no native SentencePiece/protobuf FFI) over the
+`sentencepiece` crate specifically to avoid a native-build dependency
+for a standalone research tool.
+
+**What shipped:** `tools/tokenizer-benchmark` (already correctly
+kept out of the main workspace — own `[workspace]` table, per its
+existing doc comment — so this adds zero weight to
+`cargo build --workspace`) grew a `--include-sentencepiece` flag
+mirroring the existing `--include-smaller` pattern exactly (same
+parallel-vectors-per-tokenizer shape, same report block style — small
+diff, no refactor of the existing tiktoken code). Vendored two openly-
+licensed `tokenizer.json` files under `tools/tokenizer-benchmark/
+tokenizers/` (Mistral-7B-v0.1, Apache-2.0, 32k vocab; Phi-2, MIT,
+50 295 vocab) with a `README.md` recording source URL, license, and
+sha256 for each — same provenance-documentation discipline the
+existing `crates/babbleon/wordlist/README.md` already uses for the
+main wordlist. Llama-3's own tokenizer (the one actually named in
+`docs/v2/obfuscation-landscape.md` and `TODO.md`) is gated behind an
+HF license click-through and wasn't fetchable without an
+authenticated account; Mistral/Phi-2 serve the same "smaller,
+non-frontier, open-weights" purpose the hypothesis is about, and the
+gap is recorded plainly in the new `tokenizers/README.md` rather than
+glossed over.
+
+**Result — ran twice with different seeds before trusting it, per
+this tool's own "Reporting policy" discipline:** the superlinear-
+scaling hypothesis does NOT hold. Mistral (32k vocab) measured
+~1.041-1.044× compound/spaced ratio — actually *below* every OpenAI
+tiktoken family measured in this file (1.062×-1.083× across every
+prior run), the opposite direction from "smaller vocab pays more."
+Phi-2 (50k vocab) measured ~1.072× both runs, landing squarely inside
+the tiktoken cluster, not above it. Combined with the already-shipped
+2026-07-02 r50k/p50k finding (smaller OpenAI-family vocabularies are
+also flat, not superlinear), this is now two independent lines of
+evidence against the hypothesis — one within the tiktoken family, one
+across a genuinely different tokenizer training pipeline
+(SentencePiece BPE / GPT-NeoX-style BPE, not OpenAI's). Full numbers,
+both seeds, and the design-implication writeup are in
+`tools/tokenizer-benchmark/RESULTS.md`'s new "SentencePiece
+open-weights tokenizer comparison (2026-07-04)" section.
+`TODO.md`'s item is closed with the same account. Did not touch
+`RESEARCH.md`'s original T6 section — that's the historical research
+log or is corrected in place per its own established resolution-
+tracking convention (`✅` marks "the research task ran," not "the
+conclusion is pinned forever"); the living, authoritative numbers
+already live in `tools/tokenizer-benchmark/RESULTS.md`, cross-
+referenced from `TODO.md`, matching how the 2026-07-02 r50k/p50k
+result was handled the same way without touching `RESEARCH.md` either.
+
+Verified: `cargo build --release` and `cargo clippy --release -- -D
+warnings` both clean in this standalone crate (zero warnings, not
+just zero errors). Ran the actual benchmark binary twice (seeds
+`0xbabb1e0011223344` and `0xdeadbeef`, 2000 samples each) rather than
+trusting a single run, matching the tool's own reporting-policy
+discipline about not generalizing from one run.
+
+### For the next session
+
+- The Claude-tokenizer item (`TODO.md`, "via the count-tokens API")
+  is a different measurement path — a live network API call, not a
+  vendored local table — and was not attempted this session; still
+  open.
+- If a future session gets authenticated HF access and wants the
+  actual Llama-3 tokenizer specifically (closing the gap this session
+  left), the wiring is a direct copy of the Mistral/Phi-2 addition in
+  `src/main.rs` plus a third vendored file.
+- Same standing operator-gated items, unchanged: seccomp/exec finding,
+  PAM wiring, A08, secret-literal runtime-channel question.

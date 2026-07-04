@@ -31,6 +31,10 @@ Options:
     --wordlist PATH    wordlist file (default ../../crates/babbleon/wordlist/words.txt)
     --seed S           ChaCha20 seed for word picks (default fixed; runs reproducibly)
     --out PATH         optional per-sample CSV output
+    --include-smaller  also measure r50k_base / p50k_base (GPT-3 / Codex era)
+    --include-sentencepiece
+                       also measure the vendored open-weights tokenizers
+                       (Mistral-7B-v0.1, Phi-2) -- see tokenizers/README.md
 
 ## What it measures
 
