@@ -98,6 +98,28 @@ intent on its own. Two honest possibilities, not yet resolved:
 Do not oversell this internally or externally until that question has an
 experiment behind it. See `handoff.md` for the first attempt at one.
 
+**Update, same day, first experiment run:** the toy `babbleon/wormlab.py`
+harness (`FuzzyOverlapAgent` + `craft_informed_payload`) gives a first,
+narrow, concrete data point on the first bullet above. Threat-modeled per
+Kerckhoffs's principle — attacker knows the diversification algorithm and
+its public synonym pool, just not the per-install seed — a payload that
+sprays the entire known synonym vocabulary reliably defeats *synonym-pool
+word substitution* (renaming `send_email` → `dispatch_message`-style)
+regardless of seed, because the finite public pool is guessable in full
+even without the seed. It does **not** defeat matching against the
+*literal salted name* (`dispatch_message_f95c`), because the salt is
+per-seed entropy the attacker can't enumerate from outside. Conclusion so
+far: **the salt is where Babbleon's actual security margin lives, not the
+synonym substitution** — the synonym substitution is closer to cosmetic
+camouflage than a security boundary once the attacker is assumed to know
+the algorithm. This matters for design going forward: future work on the
+semantic-surface diversifier should treat "swap words from a small public
+pool" as decoration, and put deliberate effort into whatever ends up
+carrying real entropy (per-install unguessable identifiers, and
+eventually, structural rather than lexical variation) — see handoff.md's
+2026-07-04 addendum for the experiment detail and what's still untested
+(this only speaks to the `FuzzyOverlapAgent` floor case, not a real LLM).
+
 ## Working norms for this repo
 
 - No claude.md/handoff.md existed prior to 2026-07-04; this file and

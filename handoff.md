@@ -5,6 +5,85 @@ the next session reads first.
 
 ---
 
+## 2026-07-04 — session 1, addendum: first experiment on the honest limitation
+
+Same session, continued after the initial commit/push (see the base
+2026-07-04 entry below for full context) rather than stopping at "3 next
+steps noted." Picked candidate #2 from that list — get an empirical read
+on how much diversification degrades once the target agent generalizes
+past literal string matching — and actually ran a first, narrow version
+of it instead of leaving it as a bullet point.
+
+**What changed in `babbleon/`:**
+
+- `dialect.known_vocabulary()` — new public function exposing the full
+  synonym pool `Dialect.generate` draws from. Deliberately public: the
+  project's threat model should assume Kerckhoffs's principle (attacker
+  knows the algorithm, not the per-install seed), same assumption ASLR
+  makes about its own randomization algorithm being public knowledge.
+  Hiding the pool and calling that "the defense" would be security
+  through obscurity, which isn't a real property to build on.
+- `wormlab.FuzzyOverlapAgent` — one rung up from `NaiveTriggerAgent`.
+  Fires a tool if every known-vocabulary word in that tool's
+  (diversified) description shows up somewhere in the incoming text.
+  Deliberately scored *only* against `known_vocabulary()` words, not raw
+  text/description overlap — first attempt used raw overlap and produced
+  a false positive from two independently-seeded dialects sharing an
+  incidental filler word ("memo" showed up in both a tool name and an
+  unrelated description by chance); restricting the score to the pool
+  actually being tested removes that artifact. Worth remembering as a
+  general lesson for future toy-harness work in this repo: bag-of-words
+  overlap against arbitrary hand-written English is noisier than it
+  looks, small vocab pools collide by chance more than intuition
+  suggests.
+- `wormlab.craft_informed_payload()` — the Kerckhoffs-aware attacker:
+  sprays the entire public vocabulary in one payload instead of naming
+  one tool, so whichever synonym a given install happened to land on is
+  present regardless of seed.
+
+**Result** (see `tests/test_wormlab.py::TestFuzzyOverlapAgent`, all
+passing): the informed payload triggers `FuzzyOverlapAgent` on every
+seed tested — synonym-pool substitution alone does not survive an
+attacker who knows the pool. The same payload still fails against
+`NaiveTriggerAgent`'s literal-name matching on every seed, because it
+can't guess the per-name random salt. So the salt — unguessable per-
+install entropy — is carrying the actual security weight; the synonym
+substitution is decoration on top of it, not a defense by itself. Pushed
+this finding up into `claude.md` as a dated update to the honest-
+limitation section rather than leaving it buried here, since it changes
+what "diversification" should mean going forward for this project (see
+that file for the design implication).
+
+**Still open / not touched by this experiment:**
+
+- No real LLM in the loop anywhere — `FuzzyOverlapAgent` is still a
+  bag-of-words heuristic, not a semantically-generalizing agent. It's a
+  step between `NaiveTriggerAgent` and "a real model," not a stand-in for
+  the real model. SRPO-class summary-resilient payloads are still
+  untested.
+- Structural (not lexical) diversification — varying *how* a tool's
+  schema/calling-convention is exposed, not just what it's spelled — is
+  still unbuilt and is probably the more important next increment given
+  tonight's finding that lexical substitution alone is weak once the
+  algorithm is assumed public.
+- Marker-token diversification (the hash-derived `X<hash>_FORW`-style
+  tokens, `dialect._alias_marker`) doesn't reduce to the same "spray the
+  finite public pool" attack the synonym substitution fell to — there's
+  no small enumerable pool, it's `sha256(seed:marker:key)` truncated to 6
+  hex chars. That's a by-construction argument (preimage resistance),
+  not something that needs a wormlab test the way the synonym case did.
+  But the truncation width is worth a second look: 6 hex chars is only
+  24 bits, i.e. ~16.7M possibilities — small enough that an attacker
+  willing to spray a large number of guesses (not fully brute-forceable
+  in one realistically-sized payload, but worth being honest that it's
+  not astronomically large either) has non-trivial odds over repeated
+  attempts. Flagged as a manual-review / hardening item rather than
+  something to fix reflexively: widen to 8+ hex chars (32+ bits) if this
+  ever moves past prototype, but not worth churning the code for it
+  mid-experiment tonight.
+
+---
+
 ## 2026-07-04 — session 1: reconstructing the thesis, grounding it in current lit, first prototype
 
 **Starting state.** Repo had no `claude.md` and no `handoff.md` — this is

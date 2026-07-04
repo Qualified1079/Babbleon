@@ -96,6 +96,23 @@ def _alias_text(text: str, rng: random.Random) -> str:
     return _WORD_RE.sub(repl, text)
 
 
+def known_vocabulary() -> Tuple[str, ...]:
+    """The full public synonym vocabulary `Dialect.generate` draws from.
+
+    Deliberately public: per Kerckhoffs's principle, Babbleon's threat
+    model assumes an attacker knows this algorithm and this vocabulary
+    (it's open source) and only lacks the per-install seed --- same
+    assumption ASLR makes about its randomization algorithm being public.
+    Exposed so worm-lab experiments can construct a vocabulary-aware
+    ("informed attacker") payload without reaching into private module
+    internals.
+    """
+    words = []
+    for pool in (*_VERB_SYNONYMS.values(), *_NOUN_SYNONYMS.values()):
+        words.extend(pool)
+    return tuple(dict.fromkeys(words))  # de-duplicate, preserve order
+
+
 def _alias_marker(seed: str, key: str) -> str:
     """Derive a per-install control token for a logical marker key.
 
