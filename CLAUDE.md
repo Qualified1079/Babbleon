@@ -87,9 +87,22 @@ Never push to a `claude/*` branch other than the one
 
 ## 4.5 v2 preprocessor pipeline (current state)
 
-The v2 preprocessor composes six scramble layers in
+The v2 preprocessor composes seven scramble layers in
 `crates/v2-babbleon-preprocessor/src/`:
 
+- **L9** (`constant_unfolding.rs`) — every bare decimal-integer
+  `Word` token with whitespace on both sides (`port = 22`,
+  `return 22` — not `f(22)`, since the MVP tokenizer doesn't split
+  operators from adjacent text) is replaced with a self-describing
+  marker (`__bbnfolda7x15__` = `7+15`, `__bbnfolds30x8__` = `30-8`);
+  the unscrambler evaluates the marker back to the exact literal
+  before emission — no live arithmetic ships in the emitted program,
+  no new variable-defining statements, no scoping question. Values
+  `0`/`1` and values above 1 billion are skipped (noise/sanity bound,
+  not a security cutoff). Runs first on scramble (right after
+  tokenize, before L4) and last on unscramble (right before
+  `tokens_to_source`, after L4⁻¹); its inverse is content-based and
+  idempotent like L12's strip, so it needs no format-version gate.
 - **L2** (`identifier_scrambler.rs`) — dynamic, language-agnostic;
   scrambles every whitespace-delimited token.  Multi-alias per
   token defeats frequency analysis.  Alias count depends on the
@@ -118,8 +131,9 @@ The v2 preprocessor composes six scramble layers in
   unscrambler removes every zero-width and reverses every known
   homoglyph regardless of epoch.
 
-Scramble order: tokenize → L4 → L5 → L2 → L3 → **L6** → **L12**.
-Unscramble order: **L12⁻¹** → **L6⁻¹** → L3⁻¹ → L2⁻¹ → L5⁻¹ → L4⁻¹ → emit.
+Scramble order: tokenize → **L9** → L4 → L5 → L2 → L3 → **L6** → **L12**.
+Unscramble order: **L12⁻¹** → **L6⁻¹** → L3⁻¹ → L2⁻¹ → L5⁻¹ → L4⁻¹ →
+**L9⁻¹** → emit.
 
 L12 is idempotent on a clean body, so older pre-L12 files unscramble
 correctly under the new pipeline (back-compat via content-based
@@ -127,7 +141,9 @@ strip).  L6 is involutive and PRNG-deterministic from epoch; the
 **format-version field** (landed in `7ed409b`) gates the L6 inverse
 on `version >= 1`, so pre-L6 files (version 0, inferred from
 absent `version:` line) unscramble correctly without operator
-intervention.
+intervention.  L9's inverse is content-based and idempotent like
+L12's — no version gate — so pre-L9 files unscramble correctly too
+(a stream with no fold markers is a no-op).
 
 File format (version 2, current):
 `babbleon-v2\nversion:2\nepoch:N\ntokens:T1\tT2\t...\n---\n<L3+L6+L12 body>`.

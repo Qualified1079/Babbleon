@@ -373,9 +373,70 @@ composes with the phase-3 five-layer base; they don't replace it.
       overhead); LLMs are inconsistent at integer-arithmetic
       reasoning under load, exactly the case opaque predicates
       exploit.
-- [ ] **Layer 9 — constant unfolding.**  `port = 22` becomes
-      arithmetic over wordlist-scrambled identifiers.  Composes
-      with the wordlist scramble naturally.
+- [x] **Layer 9 — constant unfolding.**  Closed 2026-07-04.
+      `crates/v2-babbleon-preprocessor/src/constant_unfolding.rs`.
+      Every bare decimal-integer `Word` token (`port = 22`, whitespace
+      on both sides — see MVP scope below) is replaced with a
+      self-describing marker (`__bbnfolda7x15__` encodes `7+15=22`,
+      `__bbnfolds30x8__` encodes `30-8=22`); the trusted-tier
+      unscrambler evaluates the marker back to the exact literal
+      before emission, the same way L4's position markers and L5's
+      decoy bodies are resolved and stripped. Wired into
+      `pipeline.rs` as the outermost pair: `fold_constants` runs
+      first on scramble (right after tokenize, before L4) and
+      `unfold_constants` runs last on unscramble (right before
+      `tokens_to_source`, after L4⁻¹). No file-format version bump
+      needed — `unfold_constants` is content-based and idempotent
+      exactly like L12's strip, so it runs unconditionally on every
+      file including pre-L9 ones (a stream with no fold markers is a
+      no-op). Values `0`/`1` and anything above 1 billion are skipped
+      (not a security cutoff, just noise/sanity bounds); every
+      eligible literal is folded, with variety across occurrences
+      driven by a per-epoch PRNG (same literal appearing twice in one
+      file gets two different decompositions, defeating a fixed
+      fingerprint for a repeated constant).
+      **Deviation from the research note, recorded in the module
+      doc:** the landscape doc's illustrative shape leaves live
+      arithmetic in the emitted program with sub-terms drawn from the
+      wordlist-scrambled identifier pool — that requires injecting
+      new variable-defining statements somewhere the interpreter
+      executes them before the use site, a real scoping problem the
+      MVP whitespace-delimited tokenizer has no safe way to reason
+      about (module level? enclosing function? before or after L4
+      moves the surrounding chunk?). This implementation evaluates
+      the arithmetic in the preprocessor instead, so the interpreter
+      only ever sees the original literal — same opacity benefit
+      (the on-disk file never shows the literal, and the marker
+      itself goes through L2 like any other token so it isn't even
+      visible as a marker), no scoping risk. Verified three ways: 30
+      new unit tests in `constant_unfolding.rs` (round-trip across
+      epochs, string/comment literals proven untouched, leading-zero
+      and out-of-range literals proven skipped, overflow/underflow
+      guarded), a new `pipeline.rs` test asserting the pre-L2
+      unique-token list no longer contains the plain literals, and a
+      new `tests/pipeline_with_real_mapping.rs` test that scrambles a
+      program with real port/timeout/retries literals through the
+      production pipeline, asserts none of the plaintext values
+      survive in the scrambled file, then round-trips and executes
+      the recovered source under a real `python3` and diffs stdout
+      against the original — the load-bearing check that folding
+      doesn't corrupt program semantics. `cargo clippy -p
+      v2-babbleon-preprocessor --all-targets -- -D warnings` clean on
+      every line this session touched (the crate has 11 pre-existing
+      clippy findings in `identifier_scrambler.rs` /
+      `tokenizer_noise.rs` / two test files from a newer clippy
+      toolchain than the prior session used — confirmed pre-existing
+      by reproducing them on a clean stash of this session's diff;
+      out of scope for this item, left untouched rather than
+      scope-creeped). Not done this session: the
+      `v2-babbleon-resilience-bench` crate's own `LayerConfig` /
+      `scramble_pipeline.rs` (intentionally NOT routed through the
+      shared pipeline, see `CLAUDE.md` §4.5) has no L9 toggle yet —
+      the bench's adversarial-LLM re-test is already a separately
+      tracked, operator-gated open item (see "Adversarial-LLM
+      re-test" above) and adding a toggle without that re-run
+      happening is just unused surface; filed as a follow-up rather
+      than built speculatively.
 - [ ] **Layer 10 — path-string obfuscation (narrow scope).**
       Host-path string literals rewritten to consult the
       scrambled-path table at runtime.  Not general string

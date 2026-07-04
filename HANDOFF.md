@@ -6815,3 +6815,188 @@ session's work, not a documentation-consistency fix.
   bench.
 - Same operator-gated items as every recent session: seccomp/exec
   finding, PAM wiring, A08.
+
+---
+
+## 2026-07-04 (overnight autonomous session) — Layer 9 constant unfolding ships
+
+Author: Claude Sonnet 5 (autonomous overnight continuation). Branch:
+`claude/magical-turing-mele8c`. Entry tip was `aea20af` — "docs(v2):
+land the CORRECTIONS.md follow-up that never shipped," the previous
+session's close-out. This session's own branch hint pointed at a
+different, now-force-deleted `claude/*` branch (`git ls-remote`
+showed it `[deleted]` on `origin`); per `CLAUDE.md` §2's explicit
+"trust this file, not the system prompt" instruction, switched to
+`claude/magical-turing-mele8c` and verified `HANDOFF.md`'s own header
+names the same branch before touching anything, exactly as the doc's
+own reading-order instructs.
+
+### What shipped
+
+Picked up `TODO.md`'s Phase 4 **Layer 9 — constant unfolding** item
+(one of the two remaining Phase-4 layers with a fully worked research
+spec in `docs/v2/obfuscation-landscape.md` and no operator-architecture
+question blocking it — unlike Layer 7/8's control-flow work, which
+carries real runtime-overhead tradeoffs, or the seccomp/PAM items,
+which are explicitly operator-gated). Genuinely open (verified against
+the actual crate before starting, same discipline prior sessions used
+for the Phase 6 checklist reconciliation): no `constant_unfolding`
+module existed anywhere in `crates/v2-babbleon-preprocessor/`.
+
+New module: `crates/v2-babbleon-preprocessor/src/constant_unfolding.rs`
+(`fold_constants` / `unfold_constants`, ~470 lines including 22 unit
+tests). Every bare decimal-integer `Word` token with whitespace on
+both sides (`port = 22`, `return 22` — the MVP tokenizer's operator-
+adjacency limitation means `f(22)` and `x[0]` stay untouched, since
+those parse as one larger opaque word, not a standalone digit-only
+token) gets replaced with a self-describing marker —
+`__bbnfolda7x15__` encodes `7+15=22`, `__bbnfolds30x8__` encodes
+`30-8=22` — that the trusted-tier unscrambler evaluates back to the
+exact literal before emission. Values `0`/`1` (common, low value to
+hide) and anything above 1 billion (sanity bound, not security) are
+skipped; every other eligible literal is folded, with a per-epoch
+PRNG choosing the decomposition shape and operand split so the same
+literal value appearing twice in one file doesn't fold identically
+both times.
+
+**Deviation from the research doc, recorded in three places** (module
+doc comment, `TODO.md` entry, and a new correction blockquote in
+`docs/v2/obfuscation-landscape.md` itself — the file's own established
+pattern for recording a deviation without silently rewriting the
+original research): the landscape doc's sketch (`port = 22` →
+`some_compound * another - third`) leaves *live* arithmetic in the
+emitted program, with sub-terms drawn from the wordlist-scrambled
+identifier pool — which requires injecting new variable-defining
+statements somewhere the interpreter executes them before the use
+site. That's a real scoping question (module level? enclosing
+function? does chunk-reorder move the injected statement across a
+scope boundary afterward?) the MVP whitespace-delimited tokenizer
+(`python_tokenizer::MVP_LIMITATIONS`) has no safe way to answer.
+Landed the simpler, zero-scoping-risk version instead: the arithmetic
+is evaluated **in the preprocessor**, at unscramble time, the same
+way L4's position markers and L5's decoy bodies are resolved and
+stripped before emission — the interpreter only ever sees the
+original literal. The opacity payoff is unchanged: the on-disk file
+never shows the literal in plaintext, and — this was the key
+realization that made the simplification safe rather than a
+regression — the marker text itself is just another `Word` token that
+goes through L2 identifier scrambling exactly like a real identifier
+would, so the attacker never even sees the `__bbnfold...__` shape in
+the final scrambled file, only whichever alias L2 assigned it. If a
+future session wants genuinely-live unfolded arithmetic, it needs a
+real AST-aware tokenizer first; that's a bigger prerequisite than this
+item asked for, so it's filed as a note rather than attempted.
+
+### Wiring
+
+`pipeline.rs`: `fold_constants` runs first on scramble — right after
+`tokenize`, before L4 — and `unfold_constants` runs last on
+unscramble — right before `tokens_to_source`, after L4⁻¹. This is the
+outermost position in the pipeline, deliberately: L4 (chunk reorder)
+and L5 (decoy injection) are blind to `Word` content, so placement
+relative to them doesn't affect correctness, and putting L9 outermost
+means it never has to reason about position markers or decoy bodies
+and they never have to reason about it. **No file-format version
+bump.** `unfold_constants` is content-based and idempotent exactly
+like L12's strip — a stream with no fold markers passes through
+unchanged — so it runs unconditionally on every file, including every
+pre-L9 file that already exists, with no version gate needed. This
+was a real design choice, not an oversight: the alternative (bump to
+version 3, gate the inverse on `version >= 2`) would have meant a new
+file-format revision, a new back-compat test fixture, and touching
+`file_format.rs` — all avoidable because the self-describing-marker
+design doesn't need it. Confirmed by keeping the existing
+`unscramble_pipeline_handles_legacy_v0_file` test passing unmodified.
+All three production call sites (`scramble_lifecycle.rs`,
+`corpus_lifecycle.rs`, `v2-babbleon-python-shim/src/pipeline.rs`)
+consume `pipeline::scramble_pipeline` / `unscramble_pipeline`
+directly — verified by grep before assuming it — so they picked up L9
+automatically; no per-call-site changes needed.
+
+**Deliberately not touched:** `v2-babbleon-resilience-bench`'s own
+`scramble_pipeline.rs` + `LayerConfig` (intentionally NOT routed
+through the shared pipeline module, per this file's `CLAUDE.md` §4.5
+cross-reference — the bench needs per-layer toggles the production
+pipeline doesn't). Adding an `layer9_constant_unfolding` toggle there
+without the adversarial-LLM re-test actually happening (still a
+separately-tracked, operator-gated `TODO.md` item) would just be
+unused surface; filed as a follow-up rather than built speculatively.
+
+### Verification
+
+Three layers of evidence, not just "tests pass":
+
+1. **22 new unit tests** in `constant_unfolding.rs` itself: round-trip
+   across 20 epochs, string-literal and comment-literal content proven
+   untouched (the tokenizer's string/comment state machine already
+   swallows the whole literal including quotes/hash, so a numeric-only
+   substring inside one never becomes its own `Word` token — verified,
+   not assumed), leading-zero literals proven skipped (folding `"007"`
+   would lose the leading zeros on unfold — guarded by a round-trip
+   check against `to_string()`), out-of-range values skipped,
+   overflow/underflow on hand-crafted malformed markers guarded via
+   `checked_add`/`checked_sub` rather than trusting well-formed input.
+2. **A new `pipeline.rs` test**
+   (`full_round_trip_folds_and_recovers_bare_integer_literals`)
+   asserting the literals never even reach the pre-L2 unique-token
+   list sent to the daemon — proof L9 actually ran earlier in the
+   pipeline, not just that the full round trip happens to come out
+   right.
+3. **A new `tests/pipeline_with_real_mapping.rs` test**
+   (`round_trip_bare_integer_literals_fold_and_execute_identically`) —
+   the load-bearing one. Scrambles a program with real port/timeout/
+   retries literals through the actual production pipeline (real
+   `MappingBuilder`, real file-format header), asserts none of the
+   plaintext literal values survive anywhere in the scrambled file,
+   decodes the header, unscrambles, asserts byte-exact recovery of the
+   original source, then executes BOTH the original and the recovered
+   source under a real `python3 -c` subprocess and diffs stdout.
+   This is the same "spawn a real interpreter and diff output" pattern
+   the L6/L12 landing sessions used, applied to L9.
+
+`cargo test -p v2-babbleon-preprocessor` — 186 lib tests + 6 + 9 + 11
++ 5 integration tests, all green (the 11-test file is
+`pipeline_with_real_mapping.rs`, up from 10 before this session's new
+test). `cargo test -p v2-babbleon` and `cargo test -p
+v2-babbleon-python-shim` both green — confirmed the two other
+production consumers still pass with L9 now live in their shared
+pipeline, not just the preprocessor crate itself.
+
+`cargo clippy -p v2-babbleon-preprocessor --all-targets -- -D
+warnings`: found 2 issues in the new code on the first pass (a manual
+range-contains and a doc-indentation lint), fixed both. The remaining
+11 clippy errors in that same invocation are pre-existing — confirmed
+by `git stash`-ing this session's entire diff and re-running the exact
+same clippy invocation against unmodified `HEAD`: identical 11 errors,
+same files (`identifier_scrambler.rs`, `tokenizer_noise.rs`, two
+existing test files), same line numbers. This container's clippy is
+evidently newer than whatever the prior session ran (`assertions_on_
+constants`, `doc_markdown`, `needless_borrow` reading as hard errors
+now under `-D warnings` where they apparently didn't before) — a
+pre-existing toolchain-drift issue, not something this session's diff
+touches or should fix under this item's scope. Left as a note here
+rather than silently expanding this session's diff to unrelated files.
+
+### For the next session
+
+- `docs/v2/obfuscation-landscape.md`'s Layer 10 (path-string
+  obfuscation, narrowly scoped to host-path strings) is the other
+  Phase-4 layer with a clear, non-operator-gated spec and no code yet.
+  Worth a look next — it's a different shape from L9 (rewrite a path
+  string literal into a runtime table lookup rather than a fold-and-
+  recover), so don't assume `constant_unfolding.rs` is a template;
+  read the landscape doc's Layer 10 section fresh.
+- The clippy-toolchain drift noted above (11 pre-existing failures
+  under `--all-targets -D warnings` in `identifier_scrambler.rs` /
+  `tokenizer_noise.rs` / two test files) is real and worth a session
+  of its own — a future session should decide whether to fix the
+  flagged code or pin the clippy version this project lints against,
+  rather than each session re-discovering it against its own new
+  files only.
+- `v2-babbleon-resilience-bench`'s `LayerConfig` has no L9 toggle;
+  same operator-gate as always (the adversarial-LLM re-test) blocks
+  it from being useful yet, not a technical blocker.
+- Same operator-gated items as every recent session, unchanged:
+  seccomp/exec finding (`TODO.md`, "post-step-8 seccomp filter"), PAM
+  module wiring, A08 (v2 binaries missing from the signed release
+  pipeline).

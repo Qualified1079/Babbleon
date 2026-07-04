@@ -189,6 +189,31 @@ Cheap (sub-millisecond per file).
 
 **Verdict: file as v2 layer 9.**
 
+> **Shipped 2026-07-04, with one deviation from the sketch above.**
+> `crates/v2-babbleon-preprocessor/src/constant_unfolding.rs`
+> implements the fold as a self-describing marker
+> (`__bbnfolda7x15__` encodes `7+15=22`) that the trusted-tier
+> unscrambler evaluates back to the literal before emission — the
+> arithmetic never ships live in the emitted program, and the
+> operands are plain generated numbers rather than references to
+> wordlist-scrambled identifiers. The "compound terms are themselves
+> scrambled identifiers" idea above requires injecting new
+> variable-defining statements ahead of the use site, which is a
+> real scoping question (module scope? enclosing function? does a
+> later chunk-reorder move the injected statement across a scope
+> boundary?) the MVP whitespace-delimited tokenizer has no safe way
+> to answer. The opacity payoff is unchanged despite the
+> simplification: the on-disk file never shows the literal in
+> plaintext, and the marker text itself goes through L2 identifier
+> scrambling like every other token, so an attacker doesn't even see
+> the marker shape — only whatever alias L2 assigned it. See the
+> module's own doc comment for the full account. Every bare
+> whitespace-isolated decimal-integer literal is folded (values `0`,
+> `1`, and anything above 1 billion are skipped as noise/sanity
+> bounds, not for security reasons); verified end-to-end against a
+> real `python3` execution in
+> `tests/pipeline_with_real_mapping.rs::round_trip_bare_integer_literals_fold_and_execute_identically`.
+
 ### String obfuscation
 
 Split, XOR-encode, runtime-reconstruct.  Standard malware
@@ -492,7 +517,7 @@ new ones from this research:
 | 6 | Direction segment reversal | v2 phase 3+ | Lower priority |
 | 7 | Source-level control-flow flattening | v2 phase 4 | Composed with 2–5 |
 | 8 | Opaque predicates + bogus control flow | v2 phase 4 | |
-| 9 | Constant unfolding | v2 phase 4 | Composes with wordlist scramble |
+| 9 | Constant unfolding | v2 phase 4 | **Shipped 2026-07-04** — preprocessor-side evaluation, see correction above |
 | 10 | Path-string obfuscation | v2 phase 4 | Narrow scope |
 | 11 | Defensive prompt injection | v2 phase 4 | Opt-in (operator preference) |
 | 12 | Mixed-charset / ZWJ / NFKC tricks | v2 phase 4 | Confined to scrambled representation |
