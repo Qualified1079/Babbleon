@@ -368,11 +368,68 @@ composes with the phase-3 five-layer base; they don't replace it.
       CaDeCFF) pattern-match against switch-case shapes that
       whitespace-as-words destroys.  Cost: ~20-50% runtime
       overhead per literature.
-- [ ] **Layer 8 — opaque predicates + bogus control flow.**
-      Always-true / always-false branches; cheap (5-15%
+- [ ] **Layer 8 — opaque predicates + bogus control flow.  Investigated
+      2026-07-04, confirmed blocked on the MVP tokenizer, NOT an
+      autonomous pickup.  Empirically substantiated, not just a
+      guess.** Always-true / always-false branches; cheap (5-15%
       overhead); LLMs are inconsistent at integer-arithmetic
       reasoning under load, exactly the case opaque predicates
       exploit.
+      **The overhead number is the tell.** Every other shipped layer
+      (L2-L6, L9, L12) is a fully-invertible representation with
+      ZERO runtime cost — the trusted-tier preprocessor always
+      restores the exact original program before the interpreter
+      ever sees it, so nothing about them can touch the executed
+      program's behavior. Layer 8's own "5-15% overhead" framing only
+      makes sense if the bogus branches are left **permanently** in
+      the program the interpreter actually runs (an attacker who
+      fully defeats the scramble and recovers the real running
+      source still has to deal with fake branches in it) — a
+      fundamentally different, riskier design point than any layer
+      built so far.
+      **Concrete, reproduced risk:** the natural way to place a new
+      top-level branch — reuse L4/L5's existing "depth 0" insertion-
+      point heuristic (`chunk_reorder.rs` / `decoy_injection.rs`,
+      cumulative `IndentOpen`/`IndentClose` balance == 0) — cannot
+      distinguish "safe to insert a new statement here" from "this is
+      between a decorator and the function/class it decorates,"
+      because the tokenizer has zero concept of that Python-semantic
+      binding. Verified, not assumed: a throwaway probe test
+      (`inject_decoys` directly on `tokenize("@staticmethod\ndef
+      f():\n    return 1\n\nx = 5\n")` across 5000 epochs, not
+      committed — scratch diagnostic only) found a decoy lands
+      directly between the decorator's newline and `def` in 1271/5000
+      draws (~25%). That specific case is harmless for L5 itself
+      because decoys are always fully stripped by `strip_decoys`
+      before the interpreter ever runs the file — production
+      `unscramble_pipeline` guarantees this on every call path, so
+      there's no shipped bug here, and the same reasoning is why L4's
+      chunk reorder is safe despite treating a decorator and its
+      target as separable chunks: `unscramble_chunks` restores exact
+      original adjacency before emission. The SAME "depth 0" heuristic
+      used for a layer that must instead leave its insertion in the
+      **executed** program would turn that ~25%-per-decoy-per-file
+      collision rate into a real, frequent `SyntaxError` on any file
+      containing a decorator (`@staticmethod`, `@app.route(...)`,
+      `@dataclass`, `@property` — extremely common Python).
+      **The dead end this rules out:** a version that strips the
+      bogus branch before execution (avoiding the risk entirely, same
+      as L5) would have zero runtime overhead, contradicting the
+      layer's own design intent, and would be functionally redundant
+      with the already-shipped L5 decoy mechanism — noise in the
+      scrambled file with nothing forcing an attacker who has already
+      recovered the real source to do any extra work. There's no
+      version of "leave real dead branches in the executed program"
+      that's safe without either (a) a real AST-aware Python parser
+      that understands decorator-target binding, multi-line
+      constructs, and semicolon-joined statements (the same
+      prerequisite Layer 7 needs — see HANDOFF's Layer 9 entry, which
+      flagged Layer 7/8 as "very likely blocked on the same wall" and
+      this investigation confirms it with a reproduction), or (b) an
+      operator decision to accept a narrower, explicitly-scoped
+      insertion point (e.g., only ever the very last line of the
+      file, never mid-file) that trades most of the layer's value for
+      safety — worth an operator call, not an autonomous one.
 - [x] **Layer 9 — constant unfolding.**  Closed 2026-07-04.
       `crates/v2-babbleon-preprocessor/src/constant_unfolding.rs`.
       Every bare decimal-integer `Word` token (`port = 22`, whitespace

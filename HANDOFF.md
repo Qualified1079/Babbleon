@@ -7095,3 +7095,93 @@ the original research).
 - Same operator-gated items as always, unchanged: seccomp/exec
   finding, PAM wiring, A08, and now the secret-literal runtime-channel
   question above.
+
+---
+
+## 2026-07-04 (overnight autonomous session, continued) — Layer 8 investigated and empirically ruled out, not built
+
+Author: Claude Sonnet 5 (same session as the two entries above).
+Doc-only; no production code changed. `TODO.md`'s own prior note said
+Layer 8 "was NOT investigated this session but is very likely blocked
+on the same wall as Layer 7 ... worth a quick confirm-or-refute read."
+Did that read, then went further than a read: reasoned through a
+concrete implementation sketch and empirically tested the specific
+risk it surfaced, rather than leaving the confirm-or-refute at the
+theory stage.
+
+**The reasoning path, briefly:** started sketching the narrower
+"bogus control flow" half of Layer 8 (a dead `if <false>:` branch
+with a plausible body, inserted at the same "depth 0" candidate
+positions `chunk_reorder.rs`/`decoy_injection.rs` already use) as a
+lower-risk subset of the full opaque-predicates idea, since it looked
+structurally close to L5's already-proven decoy insertion. Caught the
+actual difference before writing the module: every shipped layer so
+far (L2-L6, L9, L12) is fully invertible with zero runtime cost — the
+trusted-tier preprocessor always hands the interpreter the exact
+original program, so nothing they do can affect execution. Layer 8's
+own literature-cited "5-15% overhead" only makes sense if the bogus
+branches are left **permanently** in the executed program (protecting
+against an attacker who has already recovered the real source, not
+just the on-disk scramble) — a different, riskier design point.
+
+Traced by hand what "depth 0" means for the tokenizer (no concept of
+Python-semantic adjacency requirements) and predicted the dangerous
+case: a decorator (`@staticmethod`) immediately followed by its
+target (`def f():`) looks, to the indent-depth counter alone, exactly
+like two independent top-level statements with a perfectly valid
+insertion point between them — but Python requires a decorator's next
+line to be the class/function it decorates; anything between them is
+a `SyntaxError`. Didn't stop at the hand trace: wrote a throwaway
+probe (`inject_decoys` directly against `tokenize("@staticmethod\n
+def f():\n    return 1\n\nx = 5\n")` across 5000 epochs — not
+committed, scratch diagnostic deleted after use) and confirmed a
+decoy lands directly between the decorator and `def` in 1271/5000
+draws, ~25%. Ran a broader, slower probe first too (the actual
+production `scramble_pipeline`/`unscramble_pipeline` against the same
+snippet across 40 epochs, each also `python3 -c compile(...)`-checked)
+and it found no failures — because decoys are always fully stripped
+by `strip_decoys` before the interpreter runs anything, so there is
+no live bug in shipped L5. The fast probe isolated the actual
+question (does the *insertion point* collide with the dangerous case,
+independent of the fact that L5 cleans it up afterward) and confirmed
+it does, frequently.
+
+**Conclusion, recorded in `TODO.md`'s Layer 8 entry:** a "leave the
+dead branch in the executed program" implementation (the only version
+that matches the layer's own stated design and overhead cost) is not
+safely buildable on the whitespace-delimited MVP tokenizer — it would
+turn a common Python pattern (any `@staticmethod`/`@property`/
+`@app.route(...)`/`@dataclass`-decorated code) into a frequent
+`SyntaxError`. A "strip before execution" version would dodge the
+risk the same way L5 does, but would then have zero runtime overhead
+(contradicting the design) and be functionally redundant with L5's
+already-shipped decoy noise — not worth building as a hollow
+imitation of the real layer. Same prerequisite as Layer 7: a real
+AST-aware parser, or an operator-approved much narrower insertion
+scope. Not attempted.
+
+This also sharpens something worth stating plainly for whoever next
+touches `chunk_reorder.rs` or `decoy_injection.rs`: their shared
+"depth 0" heuristic is safe *only* because both layers fully restore
+original adjacency/order before the interpreter runs anything. It is
+NOT a general-purpose "safe place to add a new top-level Python
+statement" primitive — a future layer that wants to leave something
+permanently in the executed program cannot reuse it as-is.
+
+### For the next session
+
+- Multi-language wordlists and the wordlist-pool-allocation item
+  (already ruled out in the previous entry) plus Layer 7/8/10 (all
+  three now confirmed blocked on either a real parser or an operator
+  decision) leaves the Phase-4 obfuscation-layer backlog genuinely dry
+  of unblocked autonomous work for now. The next session shouldn't
+  re-derive this — read this entry and the two above before spending
+  time re-investigating Layer 7/8/10.
+- If an operator session ever authorizes a real Python parser
+  (`rustpython-parser` or `tree-sitter-python`, per `python_tokenizer`'s
+  own module doc note that it's designed to be swappable), Layers 7,
+  8, and the "insert new top-level code safely" primitive all become
+  buildable at once — worth flagging as a multiplier if that decision
+  ever comes up.
+- Same standing operator-gated items, unchanged: seccomp/exec finding,
+  PAM wiring, A08, secret-literal runtime-channel question.
