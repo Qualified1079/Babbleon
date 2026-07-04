@@ -274,25 +274,39 @@ pip installs needed).
 
 **Next-session candidates, ranked:**
 
-1. Read RTW-A / Virtual Donkey full mechanism (not just abstracts — the
-   web fetch tool kept truncating to abstract-only) and check whether
-   Babbleon-style diversification composes cleanly with RTW-A's capability
-   attenuation, or whether they'd fight each other (e.g. does typed
-   memory promotion assume stable tool names across time in a way
-   diversification breaks if seeds ever rotate mid-session?).
-2. Extend `wormlab.py` with a second agent model that does *some*
-   semantic generalization (e.g. fuzzy/embedding-style match on tool
-   *description* rather than literal name) to get an empirical read on
-   how much diversification degrades once the target agent is smarter
-   than pure string-trigger matching — this is the actual test of the
-   open question above, the current harness only proves the floor case.
-3. Decide whether dialect rotation should ever happen *within* an
-   install's lifetime (mid-session reseed) as a second moving-target
-   axis on top of the install-time axis, and if so, how that interacts
-   with in-flight multi-turn conversations that reference earlier tool
-   names.
-4. Manual review flag: no real LLM was in the loop anywhere in tonight's
-   work (no API calls made) — everything is a structural/string-level
-   demonstration. Before citing this prototype as evidence of anything
-   to the user, it should be run against an actual agent framework with
-   a real model to see if the effect holds up outside the toy harness.
+1. ~~Read RTW-A / Virtual Donkey full mechanism and check composability~~
+   — **done, same session**, see the second addendum above: no conflict
+   found, RTW-A keys on carrier taint not tool naming.
+2. ~~Extend wormlab.py with a semantic-generalization agent model~~ —
+   **done, same session**, see the first addendum above
+   (`FuzzyOverlapAgent` + `craft_informed_payload`): synonym-pool
+   substitution alone doesn't survive a Kerckhoffs-aware attacker, the
+   per-name salt is what holds.
+3. **NEEDS MANUAL REVIEW / user decision — not something to just pick
+   unilaterally:** should dialect rotation ever happen *within* an
+   install's lifetime (mid-session reseed) as a second moving-target axis
+   on top of the install-time axis? This is a real architectural fork,
+   not a bug fix:
+   - Rotating mid-session adds a second, faster-moving defense layer
+     (closer to PPA's per-request granularity) on top of the install-time
+     one, which could matter against an attacker who's had time to map
+     one install's dialect.
+   - But it directly conflicts with any multi-turn conversation that
+     references earlier tool names/markers from before a reseed — the
+     translation shim would need to keep old dialects alive for
+     in-flight conversations (versioned dialects, not a single current
+     one), which is real added complexity for a benefit that hasn't been
+     measured yet.
+   - Recommend deferring until there's a next real-agent experiment
+     (item 4) that says whether it's actually load-bearing, rather than
+     building the versioning machinery speculatively.
+4. **NEEDS MANUAL REVIEW before any external claims:** no real LLM was in
+   the loop anywhere in tonight's work (no API calls made) — everything
+   is a structural/string-level demonstration against deliberately
+   narrow, explicitly-scoped toy agents (`NaiveTriggerAgent`,
+   `FuzzyOverlapAgent`). Before citing this prototype as evidence of
+   anything to the user or anyone else, it should be run against an
+   actual agent framework with a real model to see if the effect holds
+   up outside the toy harness. This is a "don't oversell" flag, not a
+   task to execute autonomously — it likely needs API keys / a user
+   decision on which framework and model to test against.
