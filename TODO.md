@@ -1405,9 +1405,31 @@ Triaged from a self-review against general secure-software practice.
 
 - [ ] **OpenSSF Best Practices badge** (Linux Foundation).  Checklist
       exercise; gives the project a visible "we follow basic practice"
-      signal.  Cheap to claim once the items above land.
-- [ ] **OpenSSF Scorecard** running in CI; expose the score in
-      README.
+      signal.  Cheap to claim once the items above land.  Genuinely
+      still open — verified 2026-07-04 while reconciling the sibling
+      Scorecard line below: this one requires registering the project
+      on `bestpractices.dev` under an account representing the
+      project/operator, a public-facing action on a third-party site
+      this session should not take unilaterally (same class as "do
+      not post to external services without asking" from the
+      operating instructions). Autonomous-safe once the operator (or
+      a session explicitly authorized to act on their behalf) creates
+      the account and starts the checklist; the technical
+      prerequisites this repo would need to answer the checklist
+      truthfully are already in place (CodeQL, Scorecard, signed
+      releases, STRIDE threat model, `CODEOWNERS` — see the items in
+      this section).
+- [x] **OpenSSF Scorecard running in CI; expose the score in
+      README.**  Stale checklist line, not a gap — reconciled
+      2026-07-04, same "verify against the actual file before
+      checking it off" discipline as the other reconciliation passes
+      in this file. Duplicate of the "Run Scorecard against the repo"
+      entry under "From the standards survey — SSDF / Scorecard"
+      below (both landed in `3fb4ca3`, "release: sigstore signing +
+      SLSA L3 provenance + scorecard CI" — the same commit the Phase
+      6 reconciliation already credited for the SLSA/cosign/SBOM half
+      of that work); see that entry for the full account, now
+      up to date rather than duplicated here.
 - [x] **CodeQL or Semgrep SAST** in CI.  `.github/workflows/codeql.yml`
       runs CodeQL with the `security-extended` query suite over GH
       Actions workflows (on push/PR to main + weekly Wed cron).
@@ -1468,9 +1490,17 @@ Triaged from a self-review against general secure-software practice.
 - [x] **Run Scorecard against the repo** as a scheduled CI workflow
       and publish the score in README.  `.github/workflows/scorecard.yml`
       runs weekly + on branch-protection-rule changes + on push to
-      `main`; uploads SARIF to the GitHub code-scanning dashboard.
-      README badge is filed for the first run (needs the public
-      Scorecard repo ID).
+      `main`; uploads SARIF to the GitHub code-scanning dashboard and
+      publishes to the public Scorecards dashboard
+      (`publish_results: true`). **Update 2026-07-04:** the README
+      badge this entry flagged as "filed for" is in fact already
+      present (`README.md` line 4, alongside the `ci` and `codeql`
+      badges) — found while reconciling the near-duplicate entry
+      under "Compliance / publication signals" above, which had
+      independently marked the whole line `[ ]` still-open. Both
+      described the same underlying fact with different, both-stale
+      framings; this is now the single up-to-date account, cross-
+      referenced from the other entry rather than left duplicated.
 
 ### From the standards survey — SLSA
 

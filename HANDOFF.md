@@ -7279,3 +7279,34 @@ discipline about not generalizing from one run.
   `src/main.rs` plus a third vendored file.
 - Same standing operator-gated items, unchanged: seccomp/exec finding,
   PAM wiring, A08, secret-literal runtime-channel question.
+
+---
+
+## 2026-07-04 (overnight autonomous session, continued) — small stale-checklist find: Scorecard CI + badge already shipped, twice
+
+Author: Claude Sonnet 5 (same session, brief follow-up). While
+scanning `TODO.md` for any other unblocked item after the SentencePiece
+benchmark entry above, "OpenSSF Scorecard running in CI; expose the
+score in README" looked like a plausible small pickup (add a
+`.github/workflows/scorecard.yml`, add a badge). Checked before
+building: `.github/workflows/scorecard.yml` already exists (weekly +
+branch-protection-rule + push-to-main triggers, SARIF to code-scanning,
+`publish_results: true` to the public Scorecards dashboard) and
+`README.md` already carries the badge — both landed in `3fb4ca3`
+("release: sigstore signing + SLSA L3 provenance + scorecard CI").
+Nothing to build; the checklist just never got updated. Also found a
+near-duplicate entry elsewhere in the same file ("Run Scorecard
+against the repo...") independently describing the same fact with a
+now-stale "badge is filed for" framing. Reconciled both into one
+up-to-date account rather than leaving two stale, disagreeing copies
+— same discipline as the Phase 6 / Phase 1-2 / Layer 10
+reconciliations this file already has a pattern of doing. Also
+confirmed the sibling "OpenSSF Best Practices badge" line is
+genuinely still open (not a duplicate mistake) and noted why it's not
+an autonomous pickup: it requires registering the project on
+`bestpractices.dev` under an account representing the project, a
+public-facing third-party action outside this session's scope to
+take unilaterally.
+
+No code changed; doc-only. Full test suite not re-run since nothing
+that affects tests changed.
