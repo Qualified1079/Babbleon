@@ -231,6 +231,20 @@ where the function consults the scrambled-path table.
 **Verdict: file as v2 layer 10, NARROWLY scoped to host-path
 strings only.**
 
+> **Superseded, see `docs/v2/string-literal-leak.md`.** The
+> 2026-06-21 bench finding showed the same L2/L3 blind spot (a
+> quoted string is one opaque token neither layer opens) applies to
+> any secret literal, not just paths, and that doc recommends
+> rolling both scopes into one broader "operator-marked literal
+> substitution" mechanism rather than keeping this narrow framing.
+> That mechanism (`secret_literal_scrambler.rs` +
+> `secret_literal_wordlist.rs`) is implemented but wired into nothing
+> that ships — see `TODO.md`'s Layer 10 entry (investigated
+> 2026-07-04) for why finishing the wiring needs an operator decision
+> on a new untrusted-tier-to-daemon runtime channel before it can
+> land, and for what (if anything) remains of this narrow host-path
+> framing specifically.
+
 ---
 
 ## 4. LLM-specific obfuscation

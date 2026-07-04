@@ -7000,3 +7000,98 @@ rather than silently expanding this session's diff to unrelated files.
   seccomp/exec finding (`TODO.md`, "post-step-8 seccomp filter"), PAM
   module wiring, A08 (v2 binaries missing from the signed release
   pipeline).
+
+---
+
+## 2026-07-04 (overnight autonomous session, continued) — Layer 10 investigated, found to be a stale-checklist + operator-decision item, not a pickup
+
+Author: Claude Sonnet 5 (same session as the Layer 9 entry above).
+No code changed this entry; doc-only.
+
+Went looking for the next non-operator-gated Phase-4 item per the
+previous entry's own note ("Layer 10 ... is the other Phase-4 layer
+with a clear, non-operator-gated spec and no code yet ... don't
+assume `constant_unfolding.rs` is a template; read the landscape
+doc's Layer 10 section fresh"). Read it fresh, and the "don't assume"
+caution turned out to matter: Layer 10 is NOT a same-shape follow-up
+to Layer 9.
+
+Two findings, both filed in `TODO.md`'s Layer 10 entry (not built):
+
+1. **The checklist line itself is stale.** `docs/v2/
+   string-literal-leak.md` — written after a 2026-06-21 bench finding
+   showed L2/L3's blind spot on quoted-string contents applies to any
+   secret literal, not just paths — explicitly recommends renaming
+   "Layer 10 (host-path strings)" into a broader "operator-marked
+   literal substitution" mechanism. That recommendation was written
+   but never actually landed as a `TODO.md` edit. Same class of drift
+   as the Phase 6 / Phase 1-2 checklist reconciliations earlier
+   sessions did; this is the one that slipped through.
+2. **The broader mechanism already has code
+   (`secret_literal_scrambler.rs` + `secret_literal_wordlist.rs`) but
+   zero production wiring** — confirmed by grep: no reference
+   anywhere in the operator CLI (`crates/v2-babbleon/src/`) or the
+   python-shim, and no daemon-protocol variant resembling
+   `GetSecretLiteralTable`. Only the resilience-bench's in-proc,
+   no-daemon synthetic path uses it (`layer7_secret_literal` config
+   flag, landed via a different session). The design doc's own
+   diagram is the reason finishing this is NOT a same-shape follow-up
+   to Layer 9: unlike every other layer (fully restored to plaintext
+   by the trusted preprocessor before the interpreter ever runs the
+   program), this design leaves a *live* `secret("<compound>")` call
+   in the unscrambled source — meaning the actually-executing,
+   untrusted-tier program needs a runtime socket path into the
+   trusted daemon to resolve it. That socket is deliberately
+   NOT reachable from arbitrary untrusted-tier code today — this
+   session's Layer-9 work didn't touch it, but an earlier session's
+   A01 fix (`SO_PEERCRED` peer-uid gate, see this file's 2026-07-03
+   section) hardened exactly this boundary. Opening a narrow new
+   channel through it is a security-architecture decision on the same
+   order as the daemon/launcher seccomp sign-offs already flagged
+   operator-gated in this file — not something to decide unilaterally
+   by writing code. Three concrete options recorded in `TODO.md` for
+   the operator to weigh (new narrow daemon request type with its own
+   peer-check; resolve at preprocessor time like L9 instead, giving up
+   the design's "secret never in initial process memory" goal; or
+   leave it bench-only until a decision lands).
+
+Also confirmed `string-literal-leak.md`'s own "What this does NOT
+close" section already filed auto-detecting *unmarked* host-path
+strings (the literal original "Layer 10" scope, if kept distinct) as
+"Not in MVP" — heuristic path/entropy detection is exactly the kind
+of false-positive-prone guessing this project has otherwise avoided
+by requiring explicit markers everywhere (L9 only folds an
+unambiguous bare digit-only token for the same reason). Not
+attempted.
+
+Updated: `TODO.md`'s Layer 10 entry (full account, kept as `[ ]` —
+genuinely still open, just not what its one-line summary used to
+say), `docs/v2/obfuscation-landscape.md` (correction blockquote
+matching the pattern the Layer 9 correction and the CORRECTIONS.md
+session both used — cross-reference forward, don't silently rewrite
+the original research).
+
+### For the next session
+
+- Layer 8 (opaque predicates + bogus control flow) was NOT
+  investigated this session but is very likely blocked on the same
+  wall as Layer 7 (control-flow flattening): both need real
+  control-flow understanding the MVP whitespace-delimited tokenizer
+  cannot provide (`python_tokenizer::MVP_LIMITATIONS`). Worth a
+  quick confirm-or-refute read before assuming it's a pickup, same
+  caution this entry just demonstrated paid off for Layer 10.
+  Multi-language wordlist vendoring (`TODO.md` Phase 4) and the
+  wordlist-pool allocation table are the other candidates checked
+  this session and ruled out for now: the former is a large,
+  scope-unsettled ("Settle final list per phase 4") data-vendoring
+  task better suited to a session that starts by settling the
+  language list and licensing, not a quick pickup; the latter is
+  explicitly gated on the adversarial-LLM re-test per the
+  CORRECTIONS.md-session cross-check already in this file.
+- The operator decision this entry surfaces (untrusted-tier daemon
+  reachability for runtime secret resolution) is now sitting next to
+  the seccomp/exec and PAM items as a fourth standing operator-gated
+  question. Worth bundling if/when the operator reviews those.
+- Same operator-gated items as always, unchanged: seccomp/exec
+  finding, PAM wiring, A08, and now the secret-literal runtime-channel
+  question above.

@@ -437,10 +437,83 @@ composes with the phase-3 five-layer base; they don't replace it.
       re-test" above) and adding a toggle without that re-run
       happening is just unused surface; filed as a follow-up rather
       than built speculatively.
-- [ ] **Layer 10 — path-string obfuscation (narrow scope).**
-      Host-path string literals rewritten to consult the
-      scrambled-path table at runtime.  Not general string
-      obfuscation (that changes program semantics).
+- [ ] **Layer 10 — path-string obfuscation — superseded framing,
+      genuinely open item is different from what this line says.**
+      Investigated 2026-07-04 while looking for the next
+      non-operator-gated Phase-4 item after Layer 9 shipped (see the
+      entry above). Found while reading `docs/v2/string-literal-leak.md`
+      (which this checklist should have cross-referenced already):
+      that doc's own "Naming and numbering" section recommends
+      **renaming** this line — "host-path strings only" was too
+      narrow once the 2026-06-21 bench finding showed the same L2/L3
+      blind-spot (a quoted string is one opaque `Word` token; neither
+      layer descends into it) applies to ANY secret literal
+      (passwords, API keys, hash prefixes), not just paths — and
+      rolling both scopes into one broader "operator-marked literal
+      substitution" mechanism. That rename/reconciliation was written
+      up but never actually landed as a `TODO.md` edit; this entry is
+      the stale half of that follow-up, same class of drift the
+      Phase 6 and Phase 1/2 reconciliation passes caught earlier.
+      **The broader mechanism is already implemented** —
+      `crates/v2-babbleon-preprocessor/src/secret_literal_scrambler.rs`
+      + `secret_literal_wordlist.rs` recognise an operator-marked
+      `secret("...")` call, lift the literal, and substitute a
+      per-epoch compound (steps 1-3 of `string-literal-leak.md`'s
+      "Implementation sequence"; ~390 + ~610 lines, tested, used
+      today by `v2-babbleon-resilience-bench`'s `layer7_secret_literal`
+      config flag). **But it is wired into NOTHING that ships** —
+      verified by grep: zero references to `secret_literal` anywhere
+      under `crates/v2-babbleon/src/` (the operator CLI) or
+      `crates/v2-babbleon-python-shim/src/` (the runtime shim), and no
+      `GetSecretLiteralTable`-shaped daemon-protocol variant exists
+      anywhere in `crates/v2-babbleon-daemon-protocol/` or
+      `crates/v2-babbleon-daemon/`. The design's own steps 4-5 (a
+      `babbleon.runtime.secret` Python helper + the daemon-protocol
+      extension it calls) were never built; only the bench's in-proc,
+      no-daemon synthetic-secret path exists.
+      **Why this is not an autonomous pickup, same class as the
+      seccomp/PAM items:** the design doc's own diagram
+      ("At runtime the `babbleon.runtime.secret` function consults
+      the table to recover the plaintext") means, unlike every other
+      layer (L2/L3/L4/L5/L6/L9/L12 — all fully restored to plaintext
+      by the TRUSTED-tier preprocessor before the interpreter ever
+      runs the program), the unscrambled source handed to the
+      interpreter would still contain a *live* `secret("<compound>")`
+      call — meaning the actually-running, untrusted-tier user
+      program needs to reach the trusted daemon over its socket AT
+      ORDINARY RUNTIME to resolve it. Today that socket is
+      deliberately not reachable from arbitrary untrusted-tier code
+      (see the A01 `SO_PEERCRED` peer-uid gate this file's
+      2026-07-03 section already hardened, specifically to keep
+      "any process" from opening a session). Deciding whether/how the
+      untrusted tier gets a narrow, secret-resolution-only channel
+      into the daemon is a security-architecture call on the same
+      order as the daemon/launcher seccomp envelope sign-offs above —
+      not something to decide unilaterally. Options for the operator
+      to weigh: (a) grant a narrow new request type reachable only
+      from the specific process the launcher spawns (needs its own
+      peer-identity check, its own seccomp allowance for the
+      `connect()`/`sendto()` calls, and a decision on whether that
+      reintroduces the exact "arbitrary process reaches the daemon"
+      shape A01 just closed); (b) resolve `secret(...)` back to
+      plaintext at PREPROCESSOR time instead (like L9 does for
+      integers) — simpler and needs no new runtime channel, but gives
+      up the design's stated goal of keeping the secret out of the
+      process's initial (pre-call) memory image, which was the whole
+      point of the runtime-resolution design over just doing what L9
+      does; (c) leave it bench-only and undocumented as a shipped
+      capability until a session picks up the operator's decision.
+      **What's still genuinely open and narrow-scoped (the literal
+      "Layer 10" framing, if kept distinct per string-literal-leak.md's
+      non-recommended option):** auto-detecting *unmarked* host-path
+      string literals (`/etc/passwd`-shaped strings the operator
+      didn't wrap in `secret(...)`) — string-literal-leak.md's own
+      "What this does NOT close" section already filed this as
+      "Not in MVP" (heuristic entropy/path detection is exactly the
+      kind of false-positive-prone guess this project has otherwise
+      avoided by requiring explicit markers everywhere else — L9 only
+      folds a bare, unambiguous digit-only token for the same reason).
+      Not picked up this session for that reason.
 - [x] **Layer 12 — tokenizer-hostile noise** —
       `tokenizer_noise.rs`.  Body-bytes-only perturbation: zero-width
       character injection (ZWSP/ZWNJ/ZWJ at U+200B/200C/200D) at
