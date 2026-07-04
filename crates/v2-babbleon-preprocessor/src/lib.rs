@@ -12,7 +12,7 @@
 //! `docs/v2/structure-scrambling.md` for the operator-confirmed
 //! attack story this crate addresses.
 //!
-//! The preprocessor implements **six composable layers** of the v2
+//! The preprocessor implements **seven composable layers** of the v2
 //! structural scramble.  Source code is reduced to a noisy wall of
 //! random words with no visible language, structure, or identifier
 //! fingerprint.  Any tool that reads the file by `read()` — `cat`,
@@ -24,6 +24,10 @@
 //!
 //! Layer modules, in the order they apply on scramble:
 //!
+//! - **L9** ([`constant_unfolding`]) — every bare decimal-integer
+//!   `Word` token is replaced with a self-describing arithmetic
+//!   marker the unscrambler evaluates back to the literal before
+//!   emission.
 //! - **L4** ([`chunk_reorder`]) — top-level chunks reordered by a
 //!   per-epoch shuffle; each chunk carries a `__bbnpos<N>__` marker
 //!   the unscrambler reads to restore original order.
@@ -58,7 +62,7 @@
 //!   the identifier + honey permutations.
 //! - [`file_format`] — `babbleon-v2` header encode + decode; format
 //!   version 0 (legacy, pre-L6 + pre-L12) and version 1 (current).
-//! - [`pipeline`] — full composition of the six layers + the file
+//! - [`pipeline`] — full composition of the seven layers + the file
 //!   format.  `scramble_pipeline` and `unscramble_pipeline` are the
 //!   canonical entry points; the user CLI, the corpus CLI, and the
 //!   python-shim all consume them.
@@ -107,7 +111,7 @@
 //! - Whitespace wordlist derivation ([`whitespace_wordlist`]).
 //! - Token IR ([`tokens`]) + minimal Python tokenizer
 //!   ([`python_tokenizer`]).
-//! - All six production layers (L2 / L3 / L4 / L5 / L6 / L12).
+//! - All seven production layers (L2 / L3 / L4 / L5 / L6 / L9 / L12).
 //! - File-format encode + decode ([`file_format`]) including the
 //!   legacy v0 layout for back-compat.
 //! - Full pipeline composition ([`pipeline`]) consumed by the
@@ -124,10 +128,10 @@
 //!   walrus-operator boundary, etc.) — the MVP tokenizer documents
 //!   its limitations and the next revision can swap in a richer
 //!   backend without changing the layer modules.
-//! - Layers 7-11 (control-flow flattening, opaque predicates,
-//!   constant unfolding, path-string obfuscation, defensive prompt
-//!   injection) per `docs/v2/obfuscation-landscape.md`.  Each
-//!   composes on top of the six existing layers.
+//! - Layers 7, 8, 10, 11 (control-flow flattening, opaque predicates,
+//!   path-string obfuscation, defensive prompt injection) per
+//!   `docs/v2/obfuscation-landscape.md`.  Each composes on top of the
+//!   seven existing layers.
 //! - Collision detection for the rare case where a non-whitespace
 //!   byte run contains a whitespace compound as a substring.  See
 //!   `unscrambler::COLLISION_NOTE` for the threat model and the
@@ -138,6 +142,7 @@
 #![warn(clippy::pedantic)]
 
 pub mod chunk_reorder;
+pub mod constant_unfolding;
 pub mod decoy_injection;
 pub mod direction_reversal;
 pub mod errors;
@@ -155,6 +160,9 @@ pub mod whitespace_wordlist;
 
 pub use chunk_reorder::{
     has_any_marker as has_any_chunk_marker, scramble_chunks, unscramble_chunks,
+};
+pub use constant_unfolding::{
+    fold_constants, has_any_folded, is_folded_body, unfold_constants,
 };
 pub use decoy_injection::{has_any_decoy, inject_decoys, strip_decoys};
 pub use direction_reversal::{reverse_chunks, unreverse_chunks};

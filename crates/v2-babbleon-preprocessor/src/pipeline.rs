@@ -30,10 +30,10 @@
 //!
 //! # Pipeline order (must match between scramble and unscramble)
 //!
-//! Scramble: `tokenize → L4 → L5 → L2 → L3 → L6 → L12 → encode`
+//! Scramble: `tokenize → L9 → L4 → L5 → L2 → L3 → L6 → L12 → encode`
 //!
 //! Unscramble: `decode → L12⁻¹ → L6⁻¹ → L3⁻¹ → L2⁻¹ → L5⁻¹ → L4⁻¹ →
-//! tokens_to_source`
+//! L9⁻¹ → tokens_to_source`
 //!
 //! L6 is involutive (same call inverts), so the unscramble side
 //! literally re-invokes `reverse_chunks` via the alias
@@ -41,9 +41,14 @@
 //! so it can run unconditionally — version-0 files contain no L12
 //! noise and the strip is a no-op.  L6's inverse is GATED on
 //! `version >= 1` because version-0 files were scrambled before L6
-//! landed and applying the inverse would corrupt their bodies.
+//! landed and applying the inverse would corrupt their bodies. L9's
+//! inverse ([`unfold_constants`]) is likewise content-based and
+//! idempotent — a stream with no folded-constant markers passes
+//! through unchanged — so it runs unconditionally with no version
+//! gate, the same way L12's strip does.
 
 use crate::chunk_reorder::{scramble_chunks, unscramble_chunks};
+use crate::constant_unfolding::{fold_constants, unfold_constants};
 use crate::decoy_injection::{inject_decoys, strip_decoys};
 use crate::direction_reversal::{reverse_chunks, unreverse_chunks};
 use crate::errors::{Error, Result};
@@ -98,21 +103,23 @@ pub struct UniqueTokenList<'a> {
 /// # Pipeline
 ///
 /// 1. `tokenize(source)` — minimal Python tokenizer to `Vec<Token>`.
-/// 2. `scramble_chunks(tokens, epoch)` — L4 position-marker insertion
+/// 2. `fold_constants(tokens, epoch)` — L9 bare-integer-literal
+///    folding into self-describing arithmetic markers.
+/// 3. `scramble_chunks(tokens, epoch)` — L4 position-marker insertion
 ///    + per-epoch chunk shuffle.
-/// 3. `inject_decoys(tokens, epoch)` — L5 depth-0 decoy injection.
-/// 4. `collect_unique_tokens(tokens)` — sorted unique-token list for
-///    the L2 mapping fetch.  *Includes* L4 markers and L5 decoys so
-///    the daemon assigns aliases for them too.
-/// 5. `scramble_identifiers(tokens, mapping)` — L2 in-place token
+/// 4. `inject_decoys(tokens, epoch)` — L5 depth-0 decoy injection.
+/// 5. `collect_unique_tokens(tokens)` — sorted unique-token list for
+///    the L2 mapping fetch.  *Includes* L4 markers, L5 decoys, and
+///    L9 fold markers so the daemon assigns aliases for them too.
+/// 6. `scramble_identifiers(tokens, mapping)` — L2 in-place token
 ///    body replacement.
-/// 6. `scramble(tokens, wl)` — L3 token-stream → bytes.
-/// 7. `reverse_chunks(body, epoch)` — L6 per-epoch direction reversal
+/// 7. `scramble(tokens, wl)` — L3 token-stream → bytes.
+/// 8. `reverse_chunks(body, epoch)` — L6 per-epoch direction reversal
 ///    of variable-length char chunks.
-/// 8. `inject_noise(body, epoch)` — L12 zero-width + Cyrillic-
+/// 9. `inject_noise(body, epoch)` — L12 zero-width + Cyrillic-
 ///    homoglyph noise on body bytes.
-/// 9. `encode_file(version, epoch, sorted_tokens, body)` — header +
-///    body.
+/// 10. `encode_file(version, epoch, sorted_tokens, body)` — header +
+///     body.
 ///
 /// The caller is expected to:
 ///
@@ -182,7 +189,8 @@ where
     F: FnOnce(&[String], u64) -> Result<IdentifierMapping>,
 {
     let raw = tokenize(source);
-    let l4 = scramble_chunks(raw, epoch);
+    let l9 = fold_constants(raw, epoch);
+    let l4 = scramble_chunks(l9, epoch);
     let mut l5 = inject_decoys(l4, epoch);
     let sorted_tokens = collect_unique_tokens(&l5);
     let mapping = fetch_mapping(&sorted_tokens, epoch)?;
@@ -210,7 +218,10 @@ where
 ///    chunk boundary computation is not disturbed by decoy positions.
 /// 6. `unscramble_chunks(tokens)` — L4 inverse, sorts chunks back to
 ///    original order and strips position markers.
-/// 7. `tokens_to_source(tokens)` — emit source with canonical
+/// 7. `unfold_constants(tokens)` — L9 inverse, content-based and
+///    idempotent like L12's strip; evaluates every folded-constant
+///    marker back to its literal value.
+/// 8. `tokens_to_source(tokens)` — emit source with canonical
 ///    whitespace.
 ///
 /// The `version` is the integer from the header; the `body` is the
@@ -234,7 +245,8 @@ pub fn unscramble_pipeline(
     unscramble_identifiers(&mut tokens, id_mapping);
     let dedecoyed = strip_decoys(tokens);
     let reordered = unscramble_chunks(dedecoyed);
-    tokens_to_source(&reordered)
+    let unfolded = unfold_constants(reordered);
+    tokens_to_source(&unfolded)
 }
 
 /// Convenience wrapper: parse a scrambled-file string + run the full
@@ -349,6 +361,28 @@ print(f(g(3)))
 
         let scrambled =
             scramble_pipeline(original, epoch, &wl, synthetic_mapping).unwrap();
+
+        let recovered =
+            unscramble_full_file(&scrambled.file, &wl, synthetic_mapping).unwrap();
+        assert_eq!(recovered, original);
+    }
+
+    #[test]
+    fn full_round_trip_folds_and_recovers_bare_integer_literals() {
+        let epoch = 3;
+        let wl = fixed_wl(epoch);
+        let original = "port = 22\ntimeout = 30\nx = 0\n";
+
+        let scrambled =
+            scramble_pipeline(original, epoch, &wl, synthetic_mapping).unwrap();
+        // The plain literals must not appear as their own token in the
+        // pre-L2 unique-token list — proof L9 actually ran, not just
+        // that the round trip happens to work.
+        assert!(
+            !scrambled.sorted_tokens.iter().any(|t| t == "22" || t == "30"),
+            "22/30 should have been folded before the L2 token list was built: {:?}",
+            scrambled.sorted_tokens,
+        );
 
         let recovered =
             unscramble_full_file(&scrambled.file, &wl, synthetic_mapping).unwrap();

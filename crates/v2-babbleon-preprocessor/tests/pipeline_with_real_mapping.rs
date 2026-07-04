@@ -353,3 +353,58 @@ fn different_epochs_produce_different_scrambled_outputs() {
             .unwrap();
     assert_ne!(a.file, b.file, "different epochs must produce different output");
 }
+
+#[test]
+fn round_trip_bare_integer_literals_fold_and_execute_identically() {
+    // L9 load-bearing check: bare-integer-literal constants (the
+    // `port = 22` shape from docs/v2/obfuscation-landscape.md) must
+    // not survive in plaintext in the scrambled file, and the
+    // unscrambled program must still execute with the exact original
+    // values.
+    let original = "\
+port = 8080
+timeout = 30
+retries = 5
+total = port + timeout + retries
+print(total)
+print(port)
+";
+    let epoch = 2;
+    let wl = build_whitespace_wordlist(epoch);
+    let scrambled = scramble_pipeline(
+        original,
+        epoch,
+        &wl,
+        build_real_identifier_mapping,
+    )
+    .expect("scramble_pipeline must succeed");
+
+    for needle in ["8080", "30", "retries = 5"] {
+        assert!(
+            !scrambled.file.contains(needle),
+            "folded literal {needle:?} must not survive in the scrambled file",
+        );
+    }
+
+    let decoded = decode_file(&scrambled.file).expect("decode header");
+    let mapping =
+        build_real_identifier_mapping(&decoded.sorted_tokens, epoch)
+            .expect("rebuild identifier mapping");
+    let unscrambled = unscramble_pipeline(
+        decoded.version,
+        decoded.epoch,
+        &decoded.body,
+        &wl,
+        &mapping,
+    );
+    assert_eq!(unscrambled, original, "L9 must recover the exact source");
+
+    let original_out = python_exec(original).expect("baseline executes");
+    let unscrambled_out = python_exec(&unscrambled).unwrap_or_else(|| {
+        panic!("unscrambled failed to execute:\n---\n{unscrambled}\n---")
+    });
+    assert_eq!(
+        original_out, unscrambled_out,
+        "folded-then-recovered integer literals must compute identically",
+    );
+}
