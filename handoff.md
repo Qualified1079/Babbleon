@@ -83,6 +83,66 @@ that file for the design implication).
 
 ---
 
+## 2026-07-04 — session 1, third addendum: calling-convention as a second, independent diversification axis
+
+After documenting the first two addenda, picked the item flagged as "the
+more important next increment" — structural, not just lexical,
+diversification — since it's genuinely buildable tonight (not blocked by
+a user decision, unlike the mid-session-rotation question, and not
+blocked by needing a real LLM/API key, unlike item 4 below). Not a
+manual-review item: this is additive, backward compatible, and doesn't
+foreclose any option a future session might want.
+
+**What changed:**
+
+- `dialect._calling_convention(seed)` — new, hash-derived (not drawn from
+  the shared rng sequence, so it's stable regardless of how many tools/
+  params a surface has): picks `"flat"` (params as top-level kwargs, the
+  shape almost every popular tool-calling framework uses by default
+  today) or `"wrapped"` (params nested under a per-seed-random wrapper
+  key) for a given seed, plus the wrapper key itself.
+- `Dialect` gained `calling_convention` and `wrapper_key` fields, both
+  set by `Dialect.generate`.
+- `DialectRuntime.dispatch_raw` — convention-aware entry point. Unwraps
+  a raw incoming call per the dialect's convention before delegating to
+  the existing `dispatch` (kept as the convention-agnostic flat-kwargs
+  translator, unchanged, so no prior test broke). Wrong shape raises the
+  new `MalformedCallError` rather than silently doing something wrong or
+  crashing on an unrelated exception — shape mismatches fail closed.
+- `wormlab.ShapeAssumingWorm` — models a worm that has *already fully
+  compromised the naming layer* (it has this install's exact renamed
+  tool and parameter identifiers, via recon, a leak, or brute force —
+  doesn't matter how) but still assumes the flat calling shape because
+  that's what it was written against. Tests + `examples/worm_demo.py`
+  scenario 4 show it succeeds against a flat-convention install and gets
+  rejected against a wrapped one, with the exact same "stolen" identifiers
+  in both cases.
+
+**Why this matters more than the renaming work alone:** the whole point
+of isolating this as a separate axis is that it doesn't rely on the
+attacker *not knowing something guessable* (a small public synonym pool,
+which this session already showed doesn't hold up — see the first
+addendum). It relies on the attacker not knowing the *shape*, which
+isn't a pool to enumerate or spray — there's no "spray the whole
+vocabulary of possible calling conventions" move available the way there
+was for synonym substitution, because the space isn't a small semantic
+pool, it's an arbitrary structural choice the runtime enforces. This is
+closer to the "structural, not lexical" bar claude.md's limitation
+section asked for.
+
+**Still narrow, on purpose:** only two conventions (flat/wrapped), one
+wrapper shape. Real structural diversification could go much further —
+splitting one canonical param into two, merging multiple tools behind a
+mode-dispatch parameter, varying array-vs-object encoding — this is a
+first data point that the axis works at all, not a claim that two shapes
+is enough. Next session: extend the convention space, or (better,
+per item 4's standing flag) get this in front of a real tool-calling
+LLM to see if models tolerate the "wrapped" convention gracefully or if
+it needs prompt-side documentation work to not just confuse the model
+itself.
+
+---
+
 ## 2026-07-04 — session 1, second addendum: RTW-A composability resolved
 
 Picked up next-session candidate #1 (read RTW-A/Virtual Donkey past the

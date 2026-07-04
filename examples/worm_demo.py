@@ -15,6 +15,10 @@ limitation" section for what each one does and doesn't prove:
    (Kerckhoffs's principle) but not the per-install seed can still
    defeat a fuzzy, description-overlap matcher by spraying the whole
    pool --- but still can't guess the per-install-salted literal name.
+4. A worm that has somehow already obtained this install's exact renamed
+   tool/param identifiers (full naming-layer win) still can't invoke the
+   tool if it assumes the wrong calling *shape* --- a second, independent
+   diversification axis from renaming.
 """
 import sys
 from pathlib import Path
@@ -22,9 +26,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from babbleon.dialect import AgentSurface, Dialect, ToolSpec
+from babbleon.runtime import DialectRuntime
 from babbleon.wormlab import (
     FuzzyOverlapAgent,
     NaiveTriggerAgent,
+    ShapeAssumingWorm,
     craft_informed_payload,
     craft_payload,
 )
@@ -72,10 +78,28 @@ def main() -> None:
         report(f"informed payload vs. literal-match agent ({seed})", naive.ingest(informed_payload))
         report(f"informed payload vs. fuzzy-match agent   ({seed})", fuzzy.ingest(informed_payload))
 
+    print("\nScenario 4: worm already has your exact renamed identifiers -- now what?")
+    for seed in ("install-a", "install-b"):
+        dialect = Dialect.generate(seed, surface)
+        impl_calls = []
+        runtime = DialectRuntime(
+            dialect,
+            {"send_email": lambda to_address, body: impl_calls.append((to_address, body))},
+        )
+        tool = dialect.surface.tools[0]
+        worm = ShapeAssumingWorm(
+            tool.name, {tool.params[0]: "victim@example.com", tool.params[1]: "spam"}
+        )
+        succeeded = worm.attempt(runtime)
+        outcome = "INVOKED" if succeeded else "rejected (wrong shape)"
+        print(f"  [{outcome:>22}] full naming win vs. {dialect.calling_convention}-convention install ({seed})")
+
     print(
         "\nConclusion: renaming alone (a small public synonym pool) doesn't "
         "survive an attacker who knows the pool; the per-install random salt "
-        "is what actually carries the security margin. See claude.md."
+        "is what actually carries the security margin. Calling-convention "
+        "diversification is a second, independent axis that holds even when "
+        "naming is fully compromised. See claude.md."
     )
 
 

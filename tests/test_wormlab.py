@@ -1,9 +1,11 @@
 import unittest
 
 from babbleon.dialect import AgentSurface, Dialect, ToolSpec
+from babbleon.runtime import DialectRuntime
 from babbleon.wormlab import (
     FuzzyOverlapAgent,
     NaiveTriggerAgent,
+    ShapeAssumingWorm,
     craft_informed_payload,
     craft_payload,
 )
@@ -114,6 +116,68 @@ class TestFuzzyOverlapAgent(unittest.TestCase):
         install = NaiveTriggerAgent("install-a", dialect.surface)
         event = install.ingest(payload)
         self.assertFalse(event.propagated)
+
+
+class TestShapeAssumingWorm(unittest.TestCase):
+    """Tests the second, independent diversification axis: even a worm that
+    already has this install's exact renamed identifiers (naming attack
+    fully succeeded) still needs to guess the calling *shape*.
+
+    Fixed seeds below are chosen because, for `make_surface()`, "install-a"
+    happens to land on the "flat" calling convention and "install-b" on
+    "wrapped" -- verified by inspection, not asserted as a general property
+    of these seed strings (a different AgentSurface could land differently,
+    since the convention hash includes only the seed, not the surface, but
+    parameter/description aliasing consumes rng state that indirectly
+    affects nothing here since convention is hash-derived, not rng-drawn --
+    see `dialect._calling_convention`).
+    """
+
+    def _make_runtime(self, seed: str) -> DialectRuntime:
+        surface = make_surface()
+        dialect = Dialect.generate(seed, surface)
+        impl_calls = []
+        runtime = DialectRuntime(
+            dialect,
+            {"send_email": lambda to_address, body: impl_calls.append((to_address, body))},
+        )
+        return runtime, dialect, impl_calls
+
+    def test_flat_convention_accepts_flat_shaped_call(self):
+        runtime, dialect, impl_calls = self._make_runtime("install-a")
+        self.assertEqual(dialect.calling_convention, "flat")
+
+        tool = dialect.surface.tools[0]
+        worm = ShapeAssumingWorm(
+            tool.name, {tool.params[0]: "alice@example.com", tool.params[1]: "hi"}
+        )
+        self.assertTrue(worm.attempt(runtime))
+        self.assertEqual(impl_calls, [("alice@example.com", "hi")])
+
+    def test_wrapped_convention_rejects_flat_shaped_call(self):
+        runtime, dialect, impl_calls = self._make_runtime("install-b")
+        self.assertEqual(dialect.calling_convention, "wrapped")
+
+        tool = dialect.surface.tools[0]
+        # The worm has the exact right renamed tool/param identifiers --
+        # a full naming-layer win -- but assumes the flat shape, which is
+        # wrong for this install.
+        worm = ShapeAssumingWorm(
+            tool.name, {tool.params[0]: "alice@example.com", tool.params[1]: "hi"}
+        )
+        self.assertFalse(worm.attempt(runtime))
+        self.assertEqual(impl_calls, [])
+
+    def test_wrapped_convention_accepts_correctly_shaped_call(self):
+        # Sanity check: a call that *does* know the shape still works --
+        # this isn't a broken runtime, it's convention-enforcement.
+        runtime, dialect, impl_calls = self._make_runtime("install-b")
+        tool = dialect.surface.tools[0]
+        wrapped_call = {
+            dialect.wrapper_key: {tool.params[0]: "bob@example.com", tool.params[1]: "yo"}
+        }
+        runtime.dispatch_raw(tool.name, wrapped_call)
+        self.assertEqual(impl_calls, [("bob@example.com", "yo")])
 
 
 if __name__ == "__main__":

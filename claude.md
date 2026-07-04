@@ -77,7 +77,10 @@ the first three:
 
 Babbleon is: **install-time diversification of the semantic surface an
 LLM agent presents to the world** — tool names, parameter names, system
-prompt phrasing, output/reply markers — with a translation shim so
+prompt phrasing, output/reply markers, *and calling convention/shape*
+(see the 2026-07-04 third addendum in handoff.md — naming and shape are
+independent diversification axes; a worm that fully compromises one
+still needs the other) — with a translation shim so
 application logic is unaffected, sized to make one worm payload fail to
 generalize across a population of differently-dialected installs.
 

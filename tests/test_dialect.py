@@ -26,6 +26,15 @@ class TestDialectDeterminism(unittest.TestCase):
         self.assertEqual(d1.tool_name_map, d2.tool_name_map)
         self.assertEqual(d1.param_name_map, d2.param_name_map)
         self.assertEqual(d1.marker_map, d2.marker_map)
+        self.assertEqual(d1.calling_convention, d2.calling_convention)
+        self.assertEqual(d1.wrapper_key, d2.wrapper_key)
+
+    def test_calling_convention_is_one_of_the_two_known_shapes(self):
+        surface = make_surface()
+        for seed in ("install-a", "install-b", "install-c", "install-d"):
+            dialect = Dialect.generate(seed, surface)
+            self.assertIn(dialect.calling_convention, ("flat", "wrapped"))
+            self.assertTrue(dialect.wrapper_key)
 
     def test_different_seeds_diverge(self):
         surface = make_surface()

@@ -113,6 +113,34 @@ def known_vocabulary() -> Tuple[str, ...]:
     return tuple(dict.fromkeys(words))  # de-duplicate, preserve order
 
 
+def _calling_convention(seed: str) -> Tuple[str, str]:
+    """Derive this install's calling *shape*, independent of naming.
+
+    Hash-derived (like `_alias_marker`) rather than drawn from the shared
+    rng sequence, so adding/removing tools or params later doesn't shift
+    which convention a given seed lands on. Two conventions:
+
+    - "flat": params passed as top-level kwargs, same shape as almost
+      every popular tool-calling framework's default today (the
+      monoculture shape a worm author writes against without a second
+      thought).
+    - "wrapped": all params nested inside a single object under a
+      per-seed-random wrapper key.
+
+    This is a second, independent diversification axis from renaming
+    (see `_alias_name` / `_alias_marker`): even an attacker who has
+    somehow already obtained this install's exact renamed tool/param
+    identifiers (leaked recon, a prior successful probe) still can't
+    construct a working call without also knowing the shape. See
+    `babbleon.runtime.DialectRuntime.dispatch_raw` and
+    `babbleon.wormlab.ShapeAssumingWorm` for where this gets used.
+    """
+    digest = hashlib.sha256(f"{seed}:calling_convention".encode()).digest()
+    convention = "wrapped" if digest[0] % 2 == 0 else "flat"
+    wrapper_key = "args_" + hashlib.sha256(f"{seed}:wrapper_key".encode()).hexdigest()[:8]
+    return convention, wrapper_key
+
+
 def _alias_marker(seed: str, key: str) -> str:
     """Derive a per-install control token for a logical marker key.
 
@@ -164,6 +192,8 @@ class Dialect:
     tool_name_map: Dict[str, str]  # diversified tool name -> canonical tool name
     param_name_map: Dict[Tuple[str, str], str]  # (canonical tool, diversified param) -> canonical param
     marker_map: Dict[str, str]  # diversified token -> logical marker key
+    calling_convention: str = "flat"  # "flat" or "wrapped" -- see _calling_convention
+    wrapper_key: str = ""  # only meaningful when calling_convention == "wrapped"
 
     @staticmethod
     def generate(seed: str, surface: AgentSurface) -> "Dialect":
@@ -210,10 +240,14 @@ class Dialect:
             markers=new_markers,
         )
 
+        calling_convention, wrapper_key = _calling_convention(seed)
+
         return Dialect(
             seed=seed,
             surface=new_surface,
             tool_name_map=tool_name_map,
             param_name_map=param_name_map,
             marker_map=marker_map,
+            calling_convention=calling_convention,
+            wrapper_key=wrapper_key,
         )
