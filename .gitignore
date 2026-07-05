@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+
+# Planted-decoy ledgers: plaintext honeytoken values + the file list of
+# every decoy. Never commit this into a repo it's protecting -- see
+# babbleon/registry.py and the README for why.
+.babbleon/

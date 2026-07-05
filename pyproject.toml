@@ -1,0 +1,15 @@
+[project]
+name = "babbleon"
+version = "0.1.0"
+description = "Decoys and honeytokens that confuse and help detect LLM-driven code recon/exploit agents"
+requires-python = ">=3.9"
+
+[project.scripts]
+babbleon = "babbleon.cli:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["babbleon*"]
