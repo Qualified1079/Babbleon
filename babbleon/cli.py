@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 
 from . import decoys, safety
+from .errors import BabbleonError
 from .registry import Registry
 
 PRE_COMMIT_MARKER = "# babbleon-registry-guard"
@@ -42,7 +43,6 @@ def cmd_seed(args):
         return 1
 
     root = Path(args.path).resolve()
-    registry = Registry(root)
     packs = decoys.ALL_PACKS
     if args.pack:
         known = {p.name for p in decoys.ALL_PACKS}
@@ -51,7 +51,15 @@ def cmd_seed(args):
             print(f"no such pack(s): {unknown!r}", file=sys.stderr)
             return 1
         packs = [p for p in decoys.ALL_PACKS if p.name in args.pack]
-    try:
+
+    # The `with` block holds an exclusive lock for the whole load-mutate-
+    # save cycle (see Registry.__enter__/__exit__) so a concurrent `seed`
+    # elsewhere can't clobber these entries with a stale copy of the
+    # registry, and always saves on exit -- even if a pack partway
+    # through the loop raises -- so a decoy already written to disk never
+    # ends up without a registry entry (which would make is-decoy wrongly
+    # report it as *not* a known decoy).
+    with Registry(root) as registry:
         for pack_cls in packs:
             pack = pack_cls()
             rel_path, tokens = decoys.write_pack(
@@ -60,12 +68,6 @@ def cmd_seed(args):
             registry.add(rel_path, pack.name, tokens)
             live_note = " [live]" if any(t.live for t in tokens) else ""
             print(f"planted {pack.name} -> {rel_path} ({len(tokens)} token(s)){live_note}")
-    finally:
-        # Save whatever was actually written to disk even if a later
-        # pack in the loop fails partway through -- an orphaned decoy
-        # with no registry entry can never be found by list/verify/clean,
-        # and is-decoy would wrongly report it as *not* a known decoy.
-        registry.save()
     print(f"registry: {registry.file} (gitignored -- do not commit)")
     return 0
 
@@ -145,15 +147,14 @@ def cmd_install_hook(args):
 
 def cmd_clean(args):
     root = Path(args.path).resolve()
-    registry = Registry(root)
     removed = 0
-    for entry in registry.entries:
-        p = root / entry["path"]
-        if p.exists():
-            p.unlink()
-            removed += 1
-    registry.entries = []
-    registry.save()
+    with Registry(root) as registry:
+        for entry in registry.entries:
+            p = root / entry["path"]
+            if p.exists():
+                p.unlink()
+                removed += 1
+        registry.entries = []
     print(f"removed {removed} decoy file(s); registry cleared")
     return 0
 
@@ -220,11 +221,15 @@ def main(argv=None):
         return 1
     try:
         return args.func(args)
-    except RuntimeError as e:
+    except BabbleonError as e:
         # Raised deliberately (a corrupted registry.json, or write_pack
         # exhausting its collision-avoidance budget) for conditions that
         # are real but expected-and-actionable -- surface them as a clean
-        # message, not a Python traceback.
+        # message, not a Python traceback. Deliberately NOT a bare
+        # `except RuntimeError` -- RecursionError and other unrelated
+        # stdlib/programming-bug exceptions are RuntimeError subclasses
+        # too, and would otherwise get silently disguised as a clean
+        # "error: ..." message instead of a debuggable traceback.
         print(f"error: {e}", file=sys.stderr)
         return 1
 

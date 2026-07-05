@@ -701,3 +701,89 @@ This closes out this pass of self-review-after-review. Nothing else
 found on this sweep; the "Still open" items four entries up remain the
 only things genuinely blocked on a human decision rather than more
 unattended work.
+
+---
+
+## 2026-07-05 (continued 10) — a third review pass, targeted at the fixes themselves
+
+The last four commits were themselves bug fixes for an earlier
+independent review. Fixes-for-fixes are exactly where a new round of
+review earns its keep, so ran one more, scoped specifically at that
+diff rather than the whole codebase. It read `cli.py`, `registry.py`,
+`decoys.py`, `safety.py` in full and tried to break the specific things
+that changed. Two real bugs, one already-covered edge case:
+
+1. **`cli.main()`'s `except RuntimeError` was too broad.**
+   `RecursionError` (and other stdlib exceptions) are `RuntimeError`
+   subclasses in Python, so a genuine, unrelated programming bug
+   anywhere in the call stack would get silently disguised as a clean
+   `"error: ..."` message with its traceback thrown away, instead of
+   surfacing as something debuggable. Reproduced by forcing a
+   `RecursionError` through a dispatched command and watching it come
+   out as `error: maximum recursion depth exceeded` instead of a
+   traceback. Fixed properly this time: added `babbleon/errors.py`
+   defining `BabbleonError(RuntimeError)` — a narrow type for babbleon's
+   own two deliberate, expected failures (corrupted registry, collision
+   budget exhausted) — and both `registry.py` and `decoys.py` now raise
+   that specific type instead of bare `RuntimeError`. `cli.main()`
+   catches only `BabbleonError`. `RecursionError` and anything else
+   RuntimeError-shaped but *not* babbleon's own now correctly propagates
+   as a real traceback. (Subclassing `RuntimeError` rather than plain
+   `Exception` was deliberate — any external code that reasonably
+   assumed "errors from this library are RuntimeErrors" still works;
+   it's the CLI's catch that got narrowed, not the type hierarchy.)
+2. **Concurrent `seed`/`clean` invocations could clobber each other's
+   registry entries.** `Registry` loads once at construction and
+   `cmd_seed`/`cmd_clean` save once at the end — no lock across that
+   window. Reproduced with two genuinely concurrent OS processes (`&` /
+   `wait` in a real shell, not a mock): `babbleon seed leaked_env` and
+   `babbleon seed legacy_admin` launched against the same repo at the
+   same instant. Before fixing, this predictably lost one process's
+   registry entry, even though both decoy files land safely on disk —
+   the exact same class of problem the earlier `try/finally` fix solved
+   for a single-process partial *failure*, just triggered by
+   concurrency instead. Fixed with `fcntl.flock` (guarded by a
+   try/except ImportError fallback for platforms without it, e.g.
+   Windows, where the race is unchanged from before): `Registry` is now
+   a context manager (`with Registry(root) as registry:`) that acquires
+   an exclusive lock on a `.babbleon/.lock` file, *reloads* from disk
+   under that lock (in case another process wrote while this one was
+   waiting), and always saves on `__exit__` — success or exception —
+   before releasing. `cmd_seed` and `cmd_clean` (same class of hazard,
+   read-then-possibly-clear-then-save) both converted to use it.
+   Verified with two real concurrent shell processes racing on the same
+   repo, run more than once: both entries always present, `is-decoy`
+   correct for both files, every time.
+3. **Non-dict-but-valid JSON in `registry.json`** (a bare `[]`, or an
+   object whose `"entries"` field isn't a list) was flagged as a gap in
+   the corruption-hardening fix from two entries up — that fix only
+   caught `JSONDecodeError`, not "parsed fine but isn't shaped like a
+   registry." Confirmed and fixed: `_load()` now checks `isinstance(data,
+   dict)` and `isinstance(entries, list)` and raises the same
+   `BabbleonError` with a clear message for either. Read-only pure-list
+   readers (`list`/`verify`/`is-decoy`) were checked separately and
+   don't need locking — `save()`'s write-then-rename means a reader
+   always sees either the fully-old or fully-new file, never torn, so
+   there's no read-side race to fix.
+
+Six new tests: `RecursionError` not swallowed (mocks a command to raise
+one, asserts it propagates through `cli.main()`); the concurrent-reload
+behavior isolated deterministically (writes a second `Registry` to disk
+between the first's `__init__` and its `with` block, asserts `__enter__`
+picks up the change rather than clobbering it); save-on-exception for
+the context manager; non-dict JSON; non-list `entries` field. Plus the
+two-real-process shell repro run by hand outside the test suite, twice,
+for the concurrency fix specifically — that one is inherently harder to
+pin down in a single-process unit test, so the manual OS-level repro is
+the actual evidence, not just the deterministic reload test. 59 tests
+total.
+
+At this point there have been three independent look-for-bugs passes
+(mine during initial manual testing, an adversarial reviewer, and a
+second adversarial reviewer scoped at the first reviewer's own fixes)
+and real, reproducible bugs turned up on all three. That's the
+intended shape of how this kind of unattended work should go: build,
+then genuinely try to break what you built, then fix what breaks, then
+do it again on the fix. Diminishing but not yet zero — worth another
+pass if there's time, but nothing left un-investigated from this
+round's specific target (the four prior bugfix commits).

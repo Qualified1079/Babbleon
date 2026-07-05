@@ -5,6 +5,7 @@ from unittest import mock
 
 from babbleon import decoys
 from babbleon import wordbank as wb
+from babbleon.errors import BabbleonError
 
 
 class DecoyPackTests(unittest.TestCase):
@@ -132,7 +133,7 @@ class DecoyPackTests(unittest.TestCase):
             with mock.patch(
                 "babbleon.decoys.secrets.token_hex", return_value="zzzz"
             ):
-                with self.assertRaises(RuntimeError):
+                with self.assertRaises(BabbleonError):
                     decoys.write_pack(root, self._FixedPathPack())
 
     def test_write_pack_twice_scatters_instead_of_overwriting(self):

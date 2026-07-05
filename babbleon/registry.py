@@ -16,8 +16,16 @@ import json
 import time
 from pathlib import Path
 
+from .errors import BabbleonError
+
+try:
+    import fcntl
+except ImportError:  # e.g. Windows -- no cross-process locking there;
+    fcntl = None     # same race that existed everywhere before this fix.
+
 DEFAULT_REGISTRY_DIR = ".babbleon"
 DEFAULT_REGISTRY_FILE = "registry.json"
+LOCK_FILE = ".lock"
 
 
 class Registry:
@@ -26,6 +34,7 @@ class Registry:
         self.dir = self.root / DEFAULT_REGISTRY_DIR
         self.file = self.dir / DEFAULT_REGISTRY_FILE
         self.entries = []
+        self._lock_fh = None
         self._load()
 
     def _load(self):
@@ -39,13 +48,28 @@ class Registry:
             # make `list`/`verify`/`is-decoy` quietly forget about decoys
             # that are still sitting on disk. Fail loud with something
             # actionable instead of a bare JSONDecodeError traceback.
-            raise RuntimeError(
+            raise BabbleonError(
                 f"babbleon registry at {self.file} is not valid JSON ({e}). "
                 f"It may have been partially written or hand-edited. Do not "
                 f"delete it without first checking whether decoy files are "
                 f"still on disk -- see handoff.md for what the registry is for."
             ) from e
-        self.entries = data.get("entries", [])
+        if not isinstance(data, dict):
+            raise BabbleonError(
+                f"babbleon registry at {self.file} is valid JSON but not a "
+                f"babbleon registry (expected a JSON object, found a "
+                f"{type(data).__name__}). Do not delete it without first "
+                f"checking whether decoy files are still on disk."
+            )
+        entries = data.get("entries", [])
+        if not isinstance(entries, list):
+            raise BabbleonError(
+                f"babbleon registry at {self.file} has a non-list 'entries' "
+                f"field ({type(entries).__name__}) -- it doesn't look like a "
+                f"babbleon registry. Do not delete it without first checking "
+                f"whether decoy files are still on disk."
+            )
+        self.entries = entries
 
     def save(self):
         self.dir.mkdir(parents=True, exist_ok=True)
@@ -55,6 +79,33 @@ class Registry:
         tmp_file = self.file.with_name(self.file.name + ".tmp")
         tmp_file.write_text(json.dumps(payload, indent=2, sort_keys=True))
         tmp_file.replace(self.file)
+
+    def __enter__(self):
+        """Hold an exclusive lock across a load-mutate-save cycle so two
+        concurrent `seed`/`clean` invocations can't silently clobber each
+        other's registry entries (last save wins otherwise, even though
+        each process's decoy files are all still safely on disk)."""
+        self.dir.mkdir(parents=True, exist_ok=True)
+        if fcntl is not None:
+            self._lock_fh = open(self.dir / LOCK_FILE, "w")
+            fcntl.flock(self._lock_fh, fcntl.LOCK_EX)
+        # Re-read now that we hold the lock -- another process may have
+        # written since our unlocked __init__ load.
+        self._load()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            # Always save, even on exception -- a decoy pack that already
+            # wrote its file to disk before a later pack failed still
+            # needs to be registered (see cmd_seed's history).
+            self.save()
+        finally:
+            if self._lock_fh is not None:
+                fcntl.flock(self._lock_fh, fcntl.LOCK_UN)
+                self._lock_fh.close()
+                self._lock_fh = None
+        return False
 
     def add(self, path: str, pack: str, tokens: list) -> dict:
         entry = {

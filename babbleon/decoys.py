@@ -17,6 +17,7 @@ from pathlib import Path
 
 from . import honeytoken as ht
 from . import wordbank as wb
+from .errors import BabbleonError
 
 
 def _join(dirname: str, filename: str) -> str:
@@ -175,6 +176,6 @@ def write_pack(root: Path, pack: DecoyPack, callback_base_url=None):
         with os.fdopen(fd, "wb") as f:
             f.write(encoded)
         return candidate, tokens
-    raise RuntimeError(
+    raise BabbleonError(
         f"could not find a free path for decoy after {_MAX_COLLISION_ATTEMPTS} attempts: {rel_path}"
     )

@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 
 from babbleon import honeytoken as ht
+from babbleon.errors import BabbleonError
 from babbleon.registry import Registry
 
 
@@ -85,10 +86,60 @@ class RegistryTests(unittest.TestCase):
             root = Path(tmp)
             (root / ".babbleon").mkdir()
             (root / ".babbleon" / "registry.json").write_text("{not valid json")
-            with self.assertRaises(RuntimeError) as ctx:
+            with self.assertRaises(BabbleonError) as ctx:
                 Registry(root)
             self.assertIn("not valid JSON", str(ctx.exception))
             self.assertNotIn("Traceback", str(ctx.exception))
+
+    def test_non_dict_json_raises_clear_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".babbleon").mkdir()
+            (root / ".babbleon" / "registry.json").write_text("[]")
+            with self.assertRaises(BabbleonError) as ctx:
+                Registry(root)
+            self.assertIn("not a babbleon registry", str(ctx.exception))
+
+    def test_non_list_entries_field_raises_clear_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".babbleon").mkdir()
+            (root / ".babbleon" / "registry.json").write_text(
+                '{"version": 1, "entries": "oops"}'
+            )
+            with self.assertRaises(BabbleonError):
+                Registry(root)
+
+    def test_context_manager_reloads_under_lock_before_mutating(self):
+        # Simulates a second process writing to the registry between this
+        # Registry's unlocked __init__ load and the point where it's used
+        # inside a `with` block -- __enter__ must reload under the lock
+        # rather than silently working from the stale __init__ snapshot
+        # and clobbering the other write on save.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reg = Registry(root)  # sees an empty registry
+
+            other = Registry(root)
+            other.add("other/file.py", "legacy_admin", [ht.make_admin_override()])
+            other.save()  # registry.json now has 1 entry reg doesn't know about
+
+            with reg as locked:
+                self.assertEqual(len(locked.entries), 1)
+                locked.add("mine/file.py", "legacy_admin", [ht.make_admin_override()])
+
+            final = Registry(root)
+            self.assertEqual(len(final.entries), 2)
+
+    def test_context_manager_saves_even_on_exception(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with self.assertRaises(ValueError):
+                with Registry(root) as reg:
+                    reg.add("mine/file.py", "legacy_admin", [ht.make_admin_override()])
+                    raise ValueError("something else went wrong mid-loop")
+            reloaded = Registry(root)
+            self.assertEqual(len(reloaded.entries), 1)
 
 
 if __name__ == "__main__":

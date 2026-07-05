@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr
 from pathlib import Path
+from unittest import mock
 
 from babbleon import cli, decoys
 from babbleon.registry import Registry
@@ -111,6 +112,17 @@ class CliTests(unittest.TestCase):
             self.assertEqual(rc, 1)
             self.assertIn("error:", stderr.getvalue())
             self.assertNotIn("Traceback", stderr.getvalue())
+
+    def test_main_does_not_swallow_unrelated_runtime_errors(self):
+        # RecursionError (and other stdlib exceptions) are RuntimeError
+        # subclasses, but they are NOT babbleon's own deliberate,
+        # actionable BabbleonError -- main() must let them propagate as
+        # a real traceback rather than disguising them as a clean
+        # "error: ..." message and hiding what actually broke.
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch("babbleon.cli.cmd_list", side_effect=RecursionError("boom")):
+                with self.assertRaises(RecursionError):
+                    cli.main(["--path", tmp, "list"])
 
 
 if __name__ == "__main__":
