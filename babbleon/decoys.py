@@ -10,10 +10,15 @@ honeytokens so a later sighting of the value can be traced back here.
 from __future__ import annotations
 
 import random
+import secrets
 from pathlib import Path
 
 from . import honeytoken as ht
 from . import wordbank as wb
+
+
+def _join(dirname: str, filename: str) -> str:
+    return filename if dirname == "." else f"{dirname}/{filename}"
 
 
 class DecoyPack:
@@ -48,7 +53,7 @@ class LeakedEnvPack(DecoyPack):
             f"DATABASE_URL=postgres://{db_user}:{db_pass.value}@{host}:5432/{db_name}\n"
             f"DEBUG=false\n"
         )
-        path = f"config/.env.{env}.bak"
+        path = _join(wb.pick(wb.CONFIG_DIRS), f".env.{env}.bak")
         return path, content, [api_key, db_pass]
 
 
@@ -69,7 +74,7 @@ class LegacyAdminPack(DecoyPack):
             f'        return {{"user": username, "role": "superadmin"}}\n'
             f"    return None\n"
         )
-        path = "internal/legacy_admin.py"
+        path = _join(wb.pick(wb.ADMIN_DIRS), wb.pick(wb.ADMIN_FILENAMES))
         return path, content, [override]
 
 
@@ -89,7 +94,7 @@ class InternalNotesPack(DecoyPack):
             f"(ticket OPS-{ticket}, close before launch)\n"
             f"- Do not point external monitoring at {host} yet\n"
         )
-        path = "docs/INTERNAL_NOTES.md"
+        path = _join(wb.pick(wb.NOTES_DIRS), wb.pick(wb.NOTES_FILENAMES))
         return path, content, [url]
 
 
@@ -103,7 +108,7 @@ class NpmRegistryTokenPack(DecoyPack):
             f"//registry.npmjs.org/:_authToken={token.value}\n"
             "always-auth=true\n"
         )
-        path = ".npmrc.bak"
+        path = _join(wb.pick(wb.NPM_DIRS), ".npmrc.bak")
         return path, content, [token]
 
 
@@ -119,7 +124,7 @@ class CiDeploySecretsPack(DecoyPack):
             f"DEPLOY_TOKEN={deploy_token.value}\n"
             f"DOCKER_REGISTRY_PASSWORD={registry_token.value}\n"
         )
-        path = "ci/secrets.env.bak"
+        path = _join(wb.pick(wb.CI_DIRS), wb.pick(wb.CI_FILENAMES))
         return path, content, [deploy_token, registry_token]
 
 
@@ -132,8 +137,20 @@ ALL_PACKS = [
 ]
 
 
+def _avoid_collision(root: Path, rel_path: str) -> str:
+    """If rel_path is already taken (e.g. a repeat `seed` run landed on
+    the same randomized location, or another decoy happens to collide),
+    rename rather than silently overwrite -- re-seeding should scatter
+    more decoys, not erase the previous ones."""
+    if not (Path(root) / rel_path).exists():
+        return rel_path
+    p = Path(rel_path)
+    return str(p.with_name(f"{p.stem}-{secrets.token_hex(2)}{p.suffix}"))
+
+
 def write_pack(root: Path, pack: DecoyPack, callback_base_url=None):
     rel_path, content, tokens = pack.build(callback_base_url=callback_base_url)
+    rel_path = _avoid_collision(root, rel_path)
     full_path = Path(root) / rel_path
     full_path.parent.mkdir(parents=True, exist_ok=True)
     full_path.write_text(content)

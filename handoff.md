@@ -337,3 +337,56 @@ assertions alone — same practice as the last two entries.
 - The deleted install-time semantic-diversification track — still
   un-started, still a reasonable multi-month follow-up if the human
   wants it, still orthogonal to everything built in this session.
+
+---
+
+## 2026-07-05 (continued 4) — path/filename randomization, scatter-on-reseed
+
+Closed a gap flagged as a limitation in the very first entry above
+("OSS fingerprintability is a real arms race") and, separately, an
+awkward property of the original design: every pack always wrote to
+one fixed path (`config/.env.<env>.bak`, `internal/legacy_admin.py`,
+`docs/INTERNAL_NOTES.md`, `.npmrc.bak`, `ci/secrets.env.bak`). Two
+problems with that: (1) an attacker who knows babbleon exists can just
+check those five exact paths and skip every decoy without even reading
+them, which defeats content-level randomization entirely; (2) running
+`seed` a second time silently overwrote the first decoy instead of
+adding a second one, so there was no way to scatter more decoys through
+a large repo short of inventing new pack types.
+
+Fixed both by giving each pack 3-5 directory and/or filename variants
+(new lists in `wordbank.py`: `CONFIG_DIRS`, `NOTES_DIRS`/`NOTES_FILENAMES`,
+`ADMIN_DIRS`/`ADMIN_FILENAMES`, `CI_DIRS`/`CI_FILENAMES`, `NPM_DIRS`) and
+picking one per build. `write_pack()` now also calls a new
+`_avoid_collision()` helper that renames (via a short random suffix)
+rather than overwrites if the randomly-chosen path happens to already
+have a file there — so `seed leaked_env` run three times in a row now
+produces three distinct decoys in three distinct locations (verified by
+hand: `deploy/config/.env.prod.bak`, `infra/config/.env.preprod.bak`,
+`settings/.env.internal.bak` on one real run), and `clean` still removes
+all of them correctly since it already worked off the registry's path
+list rather than assuming fixed locations.
+
+Chose plausible-but-boring filenames for the admin-panel decoy
+(`legacy_admin.py`, `old_admin_panel.py`, `admin_console_v1.py`,
+`deprecated_admin.py`) rather than anything that announces itself (e.g.
+avoided naming a file literally `admin_backdoor.py` — a real backdoor is
+never self-labeled that obviously, and a name like that would make an
+attacker *more* suspicious it's a trap, not less).
+
+Updated tests that had asserted exact literal paths (`test_decoys.py`'s
+npm/CI shape tests) to check suffix/membership instead, since paths are
+no longer deterministic. Added `test_paths_vary_across_repeated_builds`
+(all 5 packs), `test_avoid_collision_renames_on_forced_clash` (forces
+the collision deterministically rather than relying on random luck),
+and `test_write_pack_twice_scatters_instead_of_overwriting`. 43 tests
+total, all passing. Manually verified both the scatter behavior and
+that `clean` still fully cleans up afterward.
+
+This is now a reasonably complete v1 for one unattended session: 5
+decoy packs, path+content randomization, opt-in live callbacks, and a
+registry-leak safety guard, all with tests that were checked against
+real generated output by hand, not just structural assertions. The two
+items under "still open" above (live-callback hosting, the semantic-
+diversification track) are the only things left that genuinely need a
+human decision rather than more unattended engineering.

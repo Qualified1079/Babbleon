@@ -31,6 +31,21 @@ USERNAMES = [
 
 TLDS = ["internal", "corp", "local-net", "svc-mesh"]
 
+# Directory/filename variants per pack, so repeated `seed` runs land in
+# different places instead of always writing the same 5 fixed paths --
+# a fixed path list is itself a fingerprint an attacker who knows
+# babbleon could just check directly.
+CONFIG_DIRS = ["config", "conf", "deploy/config", "infra/config", "settings"]
+NOTES_DIRS = ["docs", "notes", "wiki", "ops/notes"]
+NOTES_FILENAMES = ["INTERNAL_NOTES.md", "OPS_NOTES.md", "runbook_notes.md", "TODO_INTERNAL.md"]
+ADMIN_DIRS = ["internal", "legacy", "tools/internal", "scripts/legacy"]
+ADMIN_FILENAMES = [
+    "legacy_admin.py", "old_admin_panel.py", "admin_console_v1.py", "deprecated_admin.py",
+]
+CI_DIRS = ["ci", ".github", "deploy/ci", "build/ci"]
+CI_FILENAMES = ["secrets.env.bak", "ci_secrets.env.bak", "deploy_secrets.env.bak"]
+NPM_DIRS = [".", "frontend", "packages/web", "clients/js"]
+
 
 def pick(seq):
     return random.choice(seq)

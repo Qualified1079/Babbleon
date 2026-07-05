@@ -17,8 +17,11 @@ token, fake CI/CD deploy secrets -- so that:
   bounty report, a pastebin dump), you can prove it came from here and
   which file leaked it.
 
-Each `seed` run randomizes hostnames, codenames, and usernames so
-repeated deployments don't share identical decoy text.
+Each `seed` run randomizes hostnames, codenames, usernames, *and* the
+directory/filename each pack lands in -- so repeated deployments don't
+share identical decoy text or a fixed, greppable set of paths, and
+running `seed` again scatters more decoys instead of overwriting the
+ones already planted.
 
 ### Usage
 
