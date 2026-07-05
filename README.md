@@ -40,6 +40,21 @@ read it gets the full list of decoys, which defeats the trap. Keep it
 local, or copy it somewhere separate from the seeded repo if you need it
 later.
 
+Two commands guard against that mistake:
+
+```sh
+python3 -m babbleon.cli --path /path/to/repo check         # fail if the registry is un-ignored, tracked, or staged
+python3 -m babbleon.cli --path /path/to/repo install-hook  # install a pre-commit hook that runs `check` automatically
+```
+
+The installed hook fails *open* (warns, allows the commit) if `babbleon`
+isn't importable by whatever `python3` runs in the hook's environment --
+e.g. it isn't installed in that repo's virtualenv -- and only fails
+*closed* (blocks the commit) once it can actually run the check and finds
+a real problem. That split matters: a hook that blocks every commit just
+because it couldn't find the module is a worse failure mode than the one
+it's trying to prevent.
+
 ### Tests
 
 ```sh

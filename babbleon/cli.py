@@ -13,8 +13,23 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import decoys
+from . import decoys, safety
 from .registry import Registry
+
+PRE_COMMIT_MARKER = "# babbleon-registry-guard"
+
+HOOK_SNIPPET = f"""{PRE_COMMIT_MARKER}
+if command -v python3 >/dev/null 2>&1 && python3 -c "import babbleon" >/dev/null 2>&1; then
+    python3 -m babbleon.cli --path "$(git rev-parse --show-toplevel)" check
+    status=$?
+    if [ "$status" -ne 0 ]; then
+        echo "babbleon: aborting commit, see above" >&2
+        exit "$status"
+    fi
+else
+    echo "babbleon: pre-commit guard skipped (babbleon not importable by python3)" >&2
+fi
+"""
 
 
 def cmd_seed(args):
@@ -62,6 +77,39 @@ def cmd_verify(args):
     return 0
 
 
+def cmd_check(args):
+    root = Path(args.path).resolve()
+    problems = safety.check(root)
+    if not problems:
+        print("ok: no babbleon registry files are tracked, staged, or un-ignored")
+        return 0
+    print("babbleon check found problem(s):", file=sys.stderr)
+    for p in problems:
+        print(f"  - {p}", file=sys.stderr)
+    return 1
+
+
+def cmd_install_hook(args):
+    root = Path(args.path).resolve()
+    hooks_dir = safety.git_dir(root)
+    if hooks_dir is None:
+        print("not a git repository", file=sys.stderr)
+        return 1
+    hook_path = hooks_dir / "hooks" / "pre-commit"
+    hook_path.parent.mkdir(parents=True, exist_ok=True)
+    existing = hook_path.read_text() if hook_path.exists() else "#!/bin/sh\n"
+    if PRE_COMMIT_MARKER in existing:
+        print(f"guard already installed at {hook_path}")
+        return 0
+    with hook_path.open("a") as f:
+        if not existing.endswith("\n"):
+            f.write("\n")
+        f.write("\n" + HOOK_SNIPPET)
+    hook_path.chmod(hook_path.stat().st_mode | 0o111)
+    print(f"installed pre-commit guard at {hook_path}")
+    return 0
+
+
 def cmd_clean(args):
     root = Path(args.path).resolve()
     registry = Registry(root)
@@ -96,6 +144,16 @@ def build_parser():
 
     p_clean = sub.add_parser("clean", help="remove all planted decoys and clear the registry")
     p_clean.set_defaults(func=cmd_clean)
+
+    p_check = sub.add_parser(
+        "check", help="fail if the registry is un-ignored, tracked, or staged"
+    )
+    p_check.set_defaults(func=cmd_check)
+
+    p_hook = sub.add_parser(
+        "install-hook", help="install a git pre-commit hook that runs 'check'"
+    )
+    p_hook.set_defaults(func=cmd_install_hook)
 
     return parser
 

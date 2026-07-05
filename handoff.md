@@ -184,14 +184,54 @@ with the thing it's meant to trap.
 
 ### Suggested next steps, priority order
 
-1. Add a live-callback pack variant (token embeds a URL to a
+1. ~~Add a `check`/pre-commit-hook guard against committing
+   `.babbleon/`~~ — **done later in this same session**, see the
+   2026-07-05 (continued) entry below.
+2. Add a live-callback pack variant (token embeds a URL to a
    user-supplied webhook instead of a fully local placeholder), gated
    behind an explicit `--callback-base-url` flag so nothing calls home
    unless the operator opts in.
-2. Add a `babbleon check-committed` command / pre-commit hook that fails
-   if `.babbleon/` is about to be committed — cheap insurance against the
-   plaintext-registry mistake described above.
 3. Expand decoy packs (fake CI/CD secrets, fake package-registry tokens)
-   once the above two land, since those are what an autonomous
-   exploit agent chasing supply-chain-style objectives would specifically
-   go looking for.
+   once the above lands, since those are what an autonomous exploit
+   agent chasing supply-chain-style objectives would specifically go
+   looking for.
+
+---
+
+## 2026-07-05 (continued) — registry safety guard
+
+Picked up next-step #1 from above in the same session rather than
+stopping. Added `babbleon/safety.py` plus two new CLI subcommands:
+
+- `babbleon check` — inspects the target repo with `git check-ignore` /
+  `git ls-files` / `git diff --cached` and reports (non-zero exit) if
+  `.babbleon/` exists but isn't gitignored, or if any registry file is
+  tracked or staged.
+- `babbleon install-hook` — writes (idempotently, appending rather than
+  clobbering an existing hook) a `pre-commit` hook that runs `check` and
+  aborts the commit on a real finding.
+
+**Bug found and fixed during manual smoke testing, not just unit tests:**
+the first version of the installed hook shelled out to
+`python3 -m babbleon.cli ... check` unconditionally. In a target repo
+where `babbleon` isn't pip-installed (the common case — most repos this
+would protect aren't the babbleon repo itself), that import fails and
+the hook printed a `ModuleNotFoundError` and blocked *every* commit, not
+just ones touching the registry. That's a strictly worse failure mode
+than the mistake the hook exists to prevent. Fixed by probing
+`python3 -c "import babbleon"` first: if it fails, the hook now prints a
+warning and lets the commit through (fails open); it only fails closed
+once the check actually ran and found a problem. Added two integration
+tests (`tests/test_safety.py::HookExecutionTests`) that invoke a real
+`git commit` subprocess against the installed hook script — one with
+`PYTHONPATH` pointing at this repo (import succeeds → commit blocked),
+one without (import fails → commit allowed with a warning) — plus
+confirmed both paths by hand outside the test suite. This is exactly the
+kind of bug that unit tests calling `cli.main()` in-process would never
+catch, since they never actually exec the shell script; worth keeping
+that pattern (real subprocess + real git repo) for anything that
+generates a script meant to run outside this process.
+
+30 unit/integration tests total, all passing. Nothing else changed in
+this pass — the limitations, safety note, and remaining "needs manual
+review" items from the first entry above still stand unchanged.
