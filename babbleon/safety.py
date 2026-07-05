@@ -59,12 +59,6 @@ def check(root: Path) -> list:
     problems = []
     registry_exists = (root / REGISTRY_DIRNAME).exists()
 
-    if registry_exists and not is_ignored(root, REGISTRY_DIRNAME):
-        problems.append(
-            f"{REGISTRY_DIRNAME}/ exists but is not gitignored -- "
-            f"add it to .gitignore before committing"
-        )
-
     tracked = tracked_registry_paths(root)
     if tracked:
         shown = ", ".join(tracked[:5]) + (", ..." if len(tracked) > 5 else "")
@@ -79,6 +73,16 @@ def check(root: Path) -> list:
         problems.append(
             f"{len(staged)} file(s) under {REGISTRY_DIRNAME}/ are staged "
             f"for commit: {shown}"
+        )
+
+    # `git check-ignore` reports a path as *not* ignored once it's
+    # already in the index, regardless of .gitignore content -- so this
+    # check is only meaningful (and its advice only correct) when the
+    # tracked/staged checks above didn't already explain what's wrong.
+    if registry_exists and not tracked and not staged and not is_ignored(root, REGISTRY_DIRNAME):
+        problems.append(
+            f"{REGISTRY_DIRNAME}/ exists but is not gitignored -- "
+            f"add it to .gitignore before committing"
         )
 
     return problems

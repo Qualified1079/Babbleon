@@ -71,6 +71,15 @@ class RegistryTests(unittest.TestCase):
             outside = Path(tmp_b) / "internal" / "legacy_admin.py"
             self.assertFalse(reg.is_decoy(outside))
 
+    def test_is_decoy_normalizes_non_canonical_relative_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reg = Registry(root)
+            reg.add("internal/legacy_admin.py", "legacy_admin", [ht.make_admin_override()])
+            self.assertTrue(reg.is_decoy("internal/../internal/legacy_admin.py"))
+            self.assertTrue(reg.is_decoy("./internal/legacy_admin.py"))
+            self.assertFalse(reg.is_decoy("../outside.py"))
+
 
 if __name__ == "__main__":
     unittest.main()

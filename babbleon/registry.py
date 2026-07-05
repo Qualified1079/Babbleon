@@ -38,7 +38,11 @@ class Registry:
     def save(self):
         self.dir.mkdir(parents=True, exist_ok=True)
         payload = {"version": 1, "entries": self.entries}
-        self.file.write_text(json.dumps(payload, indent=2, sort_keys=True))
+        # write-then-rename so a crash mid-write can't leave a truncated
+        # registry.json that _load() would choke on with a raw JSONDecodeError
+        tmp_file = self.file.with_name(self.file.name + ".tmp")
+        tmp_file.write_text(json.dumps(payload, indent=2, sort_keys=True))
+        tmp_file.replace(self.file)
 
     def add(self, path: str, pack: str, tokens: list) -> dict:
         entry = {
@@ -79,11 +83,9 @@ class Registry:
         legitimate tooling").
         """
         p = Path(path)
-        if p.is_absolute():
-            try:
-                rel = str(p.resolve().relative_to(self.root.resolve()))
-            except ValueError:
-                return False
-        else:
-            rel = str(p)
+        absolute = p if p.is_absolute() else (self.root / p)
+        try:
+            rel = str(absolute.resolve().relative_to(self.root.resolve()))
+        except ValueError:
+            return False
         return rel in self.paths()

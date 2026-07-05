@@ -501,3 +501,133 @@ seeded scratch repo.
   open design question, not obviously resolvable without the human's
   judgment call on how much of the trap they're willing to trade away
   for convenience.
+
+---
+
+## 2026-07-05 (continued 7) — independent adversarial review, 4 real bugs found and fixed
+
+Rather than write another entry declaring the toolkit "stable" and stop,
+spawned an independent reviewer with no context beyond the code itself
+and instructions to actually reproduce anything it flagged, not just
+theorize. It read all six modules, all five test files, the CI
+workflow, and `pyproject.toml` line-by-line, checked subprocess calls
+for injection risk (list-form throughout, no `shell=True`, no
+user-controlled string reaches a shell — clean), and found four real
+bugs plus several nitpicks, each with a live repro. All fixed here, in
+severity order:
+
+1. **`cmd_seed`'s registry was only saved once, after the whole pack
+   loop.** If any pack's write throws partway through (repro: pre-create
+   plain files blocking every path variant `ci_deploy_secrets` could
+   land on — collision reliably hits `FileExistsError` inside
+   `full_path.parent.mkdir`), every previously-planted decoy in that run
+   was already on disk with a live honeytoken but never reached
+   `registry.json`. That's not just an inconvenience — it meant
+   `is-decoy` would wrongly report those exact files as *not* known
+   decoys, silently defeating the one feature built specifically to
+   protect legitimate tooling from false-positiving on them (see the
+   previous entry). Fixed with `try/finally: registry.save()` around the
+   loop, so partial failure still leaves the registry consistent with
+   whatever actually landed on disk. Reproduced the exact failure
+   scenario by hand (blocking all four `CI_DIRS` options with plain
+   files) both before and after the fix — before: 4 real decoys on disk,
+   0 registry entries, `is-decoy` said "no" for all 4; after: same crash
+   still propagates (expected — a genuinely broken repo tree should
+   fail loud), but all 4 decoys are now correctly registered and
+   `is-decoy` says "yes" for each.
+2. **`Registry.is_decoy`'s relative-path branch didn't normalize the
+   same way the absolute-path branch did.** The absolute branch already
+   called `.resolve()`; the relative branch just did `str(p)`. Repro:
+   `is_decoy("internal/../internal/legacy_admin.py")` returned `False`
+   for a file `is_decoy("internal/legacy_admin.py")` correctly found —
+   silently wrong for exactly the kind of non-canonical path a caller's
+   own `os.path.relpath()` might hand it. Fixed by resolving both
+   branches through the same `(self.root / p).resolve()` path before
+   comparing, with the existing `ValueError` catch still handling
+   "outside root" for both forms.
+3. **`decoys._avoid_collision` only checked once and had a
+   check-then-write race.** If the *renamed* candidate also happened to
+   exist, it returned that path anyway and the caller silently
+   overwrote a second real decoy — the opposite of the function's
+   stated purpose. Separately, existence-check-then-write is not atomic,
+   so two concurrent `seed` runs could still race onto the same path.
+   Replaced with `_candidate_paths()` (an unbounded generator: original
+   path, then randomized fallbacks) consumed by `write_pack()` using
+   `os.open(..., os.O_CREAT | os.O_EXCL | os.O_WRONLY)`, which makes the
+   existence check and the write a single atomic syscall and loops
+   (bounded at 1000 attempts, then raises `RuntimeError` rather than
+   looping forever or silently overwriting) until it lands on a
+   genuinely free path.
+4. **`cmd_install_hook` never actually wrote the shebang line for a
+   brand-new hook file.** `existing = ... else "#!/bin/sh\n"` only held
+   that string in memory to decide whether a leading newline was needed
+   before appending — it was never written to disk. Confirmed by
+   inspecting the raw bytes of a freshly-installed hook: it started
+   directly with `\n# babbleon-registry-guard`, no `#!` line. It still
+   worked in this sandbox only because Git's own hook runner falls back
+   to `/bin/sh` on `ENOEXEC` for a script missing a shebang — an
+   implementation detail of Git internals, not something to depend on.
+   Fixed by writing `"#!/bin/sh\n"` to disk first when the hook file
+   doesn't exist yet, *then* reading it back before the append/marker
+   check. Reproduced before/after with `od -c` on the actual installed
+   file.
+
+Also fixed two nitpicks flagged alongside the bugs, since both were
+cheap and directly improved correctness of things right next to the
+bug fixes above:
+
+5. `safety.check()` could print "exists but is not gitignored -- add it
+   to .gitignore" even when the `.gitignore` entry was completely
+   correct, because `git check-ignore` reports a path as not-ignored
+   once it's already in the git index regardless of `.gitignore`
+   content — so the message was actively wrong remediation advice once
+   the file was already staged/tracked. Reordered so the
+   not-gitignored check only runs when neither the tracked nor the
+   staged check already fired.
+6. `cmd_seed` with a mix of valid and invalid pack names (e.g.
+   `seed legacy_admin totally_bogus_pack`) silently planted the valid
+   one and said nothing about the typo. Now validates that every
+   requested name is known before planting anything, erroring out with
+   the full list of unknown names if not.
+7. `Registry.save()` now writes to a `.tmp` file and renames over the
+   real one (`Path.replace`, which is atomic on POSIX) instead of
+   writing `registry.json` in place, so a crash mid-write can't leave a
+   truncated file that the next `_load()` would choke on with a raw,
+   uncaught `JSONDecodeError`.
+
+Test changes: replaced the now-nonexistent `_avoid_collision` unit test
+with tests on the new `_candidate_paths` generator plus two
+`write_pack` tests that force real, deterministic collisions via
+`unittest.mock.patch` on `secrets.token_hex` (one that must loop past
+two occupied paths to the third, one that must exhaust the retry budget
+and raise) rather than relying on random luck. Rewrote
+`test_randomization_varies_across_builds`, which the reviewer correctly
+flagged as trivially true for the wrong reason (it compared whole
+`LeakedEnvPack` build strings, which always differ because every build
+also embeds a fresh random honeytoken — the assertion would have passed
+even if the wordbank picks never varied at all); it now isolates and
+compares only the wordbank-driven DB host substring. Added regression
+tests for the `is_decoy` normalization fix (`../` traversal, a `./`
+prefix) and for the corrected `safety.check()` messaging (staged +
+correctly-gitignored must produce the "staged" message only, not also
+the misleading "not gitignored" one).
+
+51 tests total (up from 47), all passing. Every fix above was manually
+verified against the real, reproduced failure condition, not just
+against the new unit test — the review's whole value was that it
+worked from live repros instead of code-reading alone, so the fixes
+were held to the same bar.
+
+### Confidence note for whoever reads this next
+
+This is now a second independent pass over the same code (mine, then a
+fresh reviewer's) with real bugs found both times — the pre-commit-hook
+fail-open/fail-closed bug during my own manual testing, then these four
+during the adversarial review. That's not a reason to trust the current
+state less; it's the reason to trust it *more* than a single pass would
+warrant, precisely because both passes actually exercised the code
+against real inputs and real failure conditions instead of stopping at
+"the unit tests pass." Anyone extending this should keep doing that —
+manually reproduce the failure mode a change is meant to fix, and
+manually reproduce that the fix actually closes it, before considering
+it done.

@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from babbleon import decoys
 from babbleon import wordbank as wb
@@ -29,8 +30,18 @@ class DecoyPackTests(unittest.TestCase):
                 self.assertIn(t.value, text)
 
     def test_randomization_varies_across_builds(self):
-        samples = {decoys.LeakedEnvPack().build()[1] for _ in range(20)}
-        self.assertGreater(len(samples), 1)
+        # Isolate the wordbank-driven part of the content (the DB host)
+        # rather than comparing whole strings -- every build also embeds
+        # a fresh random honeytoken, which would make this assertion
+        # trivially true even if wordbank.pick() always returned the
+        # same word.
+        hosts = set()
+        for _ in range(20):
+            _, content, _ = decoys.LeakedEnvPack().build()
+            for line in content.splitlines():
+                if line.startswith("DATABASE_URL="):
+                    hosts.add(line.split("@", 1)[1].split(":", 1)[0])
+        self.assertGreater(len(hosts), 1)
 
     def test_legacy_admin_pack_is_syntactically_valid_python(self):
         _, content, _ = decoys.LegacyAdminPack().build()
@@ -78,15 +89,51 @@ class DecoyPackTests(unittest.TestCase):
                 len(paths), 1, f"{pack_cls.name} always writes the same path"
             )
 
-    def test_avoid_collision_renames_on_forced_clash(self):
+    def test_candidate_paths_first_is_original_then_random_suffixes(self):
+        gen = decoys._candidate_paths("config/.env.qa.bak")
+        first = next(gen)
+        second = next(gen)
+        third = next(gen)
+        self.assertEqual(first, "config/.env.qa.bak")
+        self.assertTrue(second.startswith("config/.env.qa-") and second.endswith(".bak"))
+        self.assertNotEqual(second, third)
+
+    class _FixedPathPack(decoys.DecoyPack):
+        name = "fixed"
+
+        def build(self, callback_base_url=None):
+            return "config/.env.qa.bak", "fresh content\n", []
+
+    def test_write_pack_loops_past_multiple_collisions(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "config").mkdir()
-            (root / "config" / ".env.qa.bak").write_text("already here\n")
-            renamed = decoys._avoid_collision(root, "config/.env.qa.bak")
-            self.assertNotEqual(renamed, "config/.env.qa.bak")
-            self.assertTrue(renamed.startswith("config/.env.qa-"))
-            self.assertTrue(renamed.endswith(".bak"))
+            (root / "config" / ".env.qa.bak").write_text("existing 1\n")
+            (root / "config" / ".env.qa-aaaa.bak").write_text("existing 2\n")
+
+            with mock.patch(
+                "babbleon.decoys.secrets.token_hex", side_effect=["aaaa", "bbbb"]
+            ):
+                rel_path, _ = decoys.write_pack(root, self._FixedPathPack())
+
+            self.assertEqual(rel_path, "config/.env.qa-bbbb.bak")
+            self.assertEqual((root / rel_path).read_text(), "fresh content\n")
+            # neither pre-existing file was touched
+            self.assertEqual((root / "config/.env.qa.bak").read_text(), "existing 1\n")
+            self.assertEqual((root / "config/.env.qa-aaaa.bak").read_text(), "existing 2\n")
+
+    def test_write_pack_raises_after_collision_budget_exhausted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "config").mkdir()
+            (root / "config" / ".env.qa.bak").write_text("existing\n")
+            (root / "config" / ".env.qa-zzzz.bak").write_text("existing too\n")
+
+            with mock.patch(
+                "babbleon.decoys.secrets.token_hex", return_value="zzzz"
+            ):
+                with self.assertRaises(RuntimeError):
+                    decoys.write_pack(root, self._FixedPathPack())
 
     def test_write_pack_twice_scatters_instead_of_overwriting(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -9,6 +9,8 @@ honeytokens so a later sighting of the value can be traced back here.
 
 from __future__ import annotations
 
+import itertools
+import os
 import random
 import secrets
 from pathlib import Path
@@ -137,21 +139,42 @@ ALL_PACKS = [
 ]
 
 
-def _avoid_collision(root: Path, rel_path: str) -> str:
-    """If rel_path is already taken (e.g. a repeat `seed` run landed on
-    the same randomized location, or another decoy happens to collide),
-    rename rather than silently overwrite -- re-seeding should scatter
-    more decoys, not erase the previous ones."""
-    if not (Path(root) / rel_path).exists():
-        return rel_path
+_MAX_COLLISION_ATTEMPTS = 1000
+
+
+def _candidate_paths(rel_path: str):
+    """The original path first, then an unbounded stream of randomized
+    fallbacks -- tried in order until one doesn't already exist."""
+    yield rel_path
     p = Path(rel_path)
-    return str(p.with_name(f"{p.stem}-{secrets.token_hex(2)}{p.suffix}"))
+    while True:
+        yield str(p.with_name(f"{p.stem}-{secrets.token_hex(2)}{p.suffix}"))
 
 
 def write_pack(root: Path, pack: DecoyPack, callback_base_url=None):
+    """Write a pack's rendered content to disk under `root`.
+
+    If the chosen path is already taken (e.g. a repeat `seed` run landed
+    on the same randomized location), try renamed fallbacks instead of
+    overwriting -- re-seeding should scatter more decoys, not erase the
+    previous ones. Uses O_CREAT|O_EXCL so the "does it exist" check and
+    the write are atomic -- no window for a second concurrent `seed` to
+    land on the same path in between.
+    """
     rel_path, content, tokens = pack.build(callback_base_url=callback_base_url)
-    rel_path = _avoid_collision(root, rel_path)
-    full_path = Path(root) / rel_path
-    full_path.parent.mkdir(parents=True, exist_ok=True)
-    full_path.write_text(content)
-    return rel_path, tokens
+    root = Path(root)
+    encoded = content.encode()
+    attempts = itertools.islice(_candidate_paths(rel_path), _MAX_COLLISION_ATTEMPTS)
+    for candidate in attempts:
+        full_path = root / candidate
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            fd = os.open(full_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            continue
+        with os.fdopen(fd, "wb") as f:
+            f.write(encoded)
+        return candidate, tokens
+    raise RuntimeError(
+        f"could not find a free path for decoy after {_MAX_COLLISION_ATTEMPTS} attempts: {rel_path}"
+    )

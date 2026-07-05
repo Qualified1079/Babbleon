@@ -63,6 +63,23 @@ class SafetyCheckTests(unittest.TestCase):
             problems = safety.check(root)
             self.assertTrue(any("staged" in p for p in problems))
 
+    def test_staged_with_correct_gitignore_does_not_also_claim_not_ignored(self):
+        # git check-ignore reports a path as *not* ignored once it's
+        # already in the index, regardless of .gitignore content -- so
+        # once "staged" already explains the problem, "not gitignored"
+        # would be misleading (and wrong) remediation advice.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _init_repo(root)
+            (root / ".gitignore").write_text(".babbleon/\n")
+            reg = Registry(root)
+            reg.add("config/.env.bak", "leaked_env", [ht.make_api_key()])
+            reg.save()
+            _git(root, "add", "-f", ".babbleon/registry.json")
+            problems = safety.check(root)
+            self.assertTrue(any("staged" in p for p in problems))
+            self.assertFalse(any("not gitignored" in p for p in problems))
+
     def test_tracked_registry_file_is_flagged(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

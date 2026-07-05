@@ -45,17 +45,27 @@ def cmd_seed(args):
     registry = Registry(root)
     packs = decoys.ALL_PACKS
     if args.pack:
-        packs = [p for p in decoys.ALL_PACKS if p.name in args.pack]
-        if not packs:
-            print(f"no matching packs for {args.pack!r}", file=sys.stderr)
+        known = {p.name for p in decoys.ALL_PACKS}
+        unknown = [name for name in args.pack if name not in known]
+        if unknown:
+            print(f"no such pack(s): {unknown!r}", file=sys.stderr)
             return 1
-    for pack_cls in packs:
-        pack = pack_cls()
-        rel_path, tokens = decoys.write_pack(root, pack, callback_base_url=callback_base_url)
-        registry.add(rel_path, pack.name, tokens)
-        live_note = " [live]" if any(t.live for t in tokens) else ""
-        print(f"planted {pack.name} -> {rel_path} ({len(tokens)} token(s)){live_note}")
-    registry.save()
+        packs = [p for p in decoys.ALL_PACKS if p.name in args.pack]
+    try:
+        for pack_cls in packs:
+            pack = pack_cls()
+            rel_path, tokens = decoys.write_pack(
+                root, pack, callback_base_url=callback_base_url
+            )
+            registry.add(rel_path, pack.name, tokens)
+            live_note = " [live]" if any(t.live for t in tokens) else ""
+            print(f"planted {pack.name} -> {rel_path} ({len(tokens)} token(s)){live_note}")
+    finally:
+        # Save whatever was actually written to disk even if a later
+        # pack in the loop fails partway through -- an orphaned decoy
+        # with no registry entry can never be found by list/verify/clean,
+        # and is-decoy would wrongly report it as *not* a known decoy.
+        registry.save()
     print(f"registry: {registry.file} (gitignored -- do not commit)")
     return 0
 
@@ -118,7 +128,9 @@ def cmd_install_hook(args):
         return 1
     hook_path = hooks_dir / "hooks" / "pre-commit"
     hook_path.parent.mkdir(parents=True, exist_ok=True)
-    existing = hook_path.read_text() if hook_path.exists() else "#!/bin/sh\n"
+    if not hook_path.exists():
+        hook_path.write_text("#!/bin/sh\n")
+    existing = hook_path.read_text()
     if PRE_COMMIT_MARKER in existing:
         print(f"guard already installed at {hook_path}")
         return 0
