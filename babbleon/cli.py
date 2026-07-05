@@ -1,9 +1,12 @@
 """babbleon CLI: plant, list, verify, and clean up decoy/honeytoken files.
 
 Usage:
-    babbleon --path <repo> seed [pack ...]
+    babbleon --path <repo> seed [pack ...] [--callback-base-url <url>]
     babbleon --path <repo> list [-v]
     babbleon --path <repo> verify <string>
+    babbleon --path <repo> is-decoy <path>
+    babbleon --path <repo> check
+    babbleon --path <repo> install-hook
     babbleon --path <repo> clean
 """
 
@@ -85,6 +88,16 @@ def cmd_verify(args):
     return 0
 
 
+def cmd_is_decoy(args):
+    root = Path(args.path).resolve()
+    registry = Registry(root)
+    if registry.is_decoy(args.target):
+        print(f"yes: {args.target} is a known babbleon decoy")
+        return 0
+    print(f"no: {args.target} is not a known babbleon decoy")
+    return 1
+
+
 def cmd_check(args):
     root = Path(args.path).resolve()
     problems = safety.check(root)
@@ -162,6 +175,13 @@ def build_parser():
 
     p_clean = sub.add_parser("clean", help="remove all planted decoys and clear the registry")
     p_clean.set_defaults(func=cmd_clean)
+
+    p_is_decoy = sub.add_parser(
+        "is-decoy",
+        help="check whether a path is a known planted decoy (for scanner/assistant integrations)",
+    )
+    p_is_decoy.add_argument("target", help="path to check, absolute or repo-relative")
+    p_is_decoy.set_defaults(func=cmd_is_decoy)
 
     p_check = sub.add_parser(
         "check", help="fail if the registry is un-ignored, tracked, or staged"

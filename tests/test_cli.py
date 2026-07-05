@@ -73,6 +73,19 @@ class CliTests(unittest.TestCase):
             )
             self.assertEqual(rc, 1)
 
+    def test_is_decoy_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cli.main(["--path", str(root), "seed", "legacy_admin"])
+            reg = Registry(root)
+            decoy_path = reg.entries[0]["path"]
+
+            rc = cli.main(["--path", str(root), "is-decoy", decoy_path])
+            self.assertEqual(rc, 0)
+
+            rc = cli.main(["--path", str(root), "is-decoy", "src/real_module.py"])
+            self.assertEqual(rc, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

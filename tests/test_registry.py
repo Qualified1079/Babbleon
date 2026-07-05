@@ -48,6 +48,29 @@ class RegistryTests(unittest.TestCase):
             reg.save()
             self.assertTrue((root / ".babbleon" / "registry.json").exists())
 
+    def test_is_decoy_matches_relative_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reg = Registry(root)
+            reg.add("internal/legacy_admin.py", "legacy_admin", [ht.make_admin_override()])
+            self.assertTrue(reg.is_decoy("internal/legacy_admin.py"))
+            self.assertFalse(reg.is_decoy("internal/real_admin.py"))
+
+    def test_is_decoy_matches_absolute_path_under_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reg = Registry(root)
+            reg.add("internal/legacy_admin.py", "legacy_admin", [ht.make_admin_override()])
+            absolute = root / "internal" / "legacy_admin.py"
+            self.assertTrue(reg.is_decoy(absolute))
+
+    def test_is_decoy_false_for_path_outside_root(self):
+        with tempfile.TemporaryDirectory() as tmp_a, tempfile.TemporaryDirectory() as tmp_b:
+            reg = Registry(Path(tmp_a))
+            reg.add("internal/legacy_admin.py", "legacy_admin", [ht.make_admin_override()])
+            outside = Path(tmp_b) / "internal" / "legacy_admin.py"
+            self.assertFalse(reg.is_decoy(outside))
+
 
 if __name__ == "__main__":
     unittest.main()

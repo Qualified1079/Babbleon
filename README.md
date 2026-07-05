@@ -75,6 +75,25 @@ a real problem. That split matters: a hook that blocks every commit just
 because it couldn't find the module is a worse failure mode than the one
 it's trying to prevent.
 
+### Decoys vs. your own legitimate tooling
+
+Decoys are built to look like real attack surface to *any* agent reading
+the tree -- including a benign coding assistant you're using for actual
+work in the same repo. A security review or a "fix this bug" pass over a
+seeded repo will otherwise hit the fake hardcoded-backdoor password or
+the fake leaked secrets exactly as designed, as a false positive. Check
+before treating a finding as real:
+
+```sh
+python3 -m babbleon.cli --path /path/to/repo is-decoy path/to/file.py   # exit 0 = known decoy, 1 = not
+```
+
+If you point an AI coding assistant at a seeded repo, consider adding a
+line to its project instructions (e.g. `CLAUDE.md`) telling it to run
+`is-decoy` (or check `.babbleon/registry.json` if present) before
+flagging or "fixing" anything that looks like a hardcoded secret or a
+backdoor.
+
 ### Tests
 
 ```sh

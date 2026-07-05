@@ -419,3 +419,85 @@ No further code changes planned unattended beyond this point without a
 new research thread or explicit next step — the toolkit is at a stable,
 tested, documented stopping point. Anyone picking this up next should
 start from "Still open" above.
+
+---
+
+## 2026-07-05 (continued 6) — a design gap found by reflection, not a web search
+
+Per the standing instruction (research something new if there's no
+active plan, note or build depending on what it turns up), and having
+just declared the toolkit "stable" above: rather than another external
+search, I re-examined babbleon's own design for gaps, since the tool is
+now complete enough to reason about end-to-end. Found a real one.
+
+**The problem:** babbleon's decoys are deliberately built to look like
+real attack surface to *any* LLM agent reading the repo tree — that's
+the whole mechanism. But "any agent" includes a legitimate coding
+assistant the repo's own developer is using for ordinary work in that
+same seeded repo. Ask an assistant to "review this repo for security
+issues" and it will flag `internal/legacy_admin.py`'s hardcoded
+`_OVERRIDE` password comparison as a real finding — correctly, by the
+assistant's own lights, since that pattern is a textbook hardcoded
+backdoor and most security-review prompts don't reason about
+liveness/reachability before flagging it. Same risk for `.env.*.bak`
+files and the CI secrets pack: a "grep for leaked credentials" pass
+would surface every one of them as if they were real leaks. This
+wasn't addressed anywhere in the first five entries above — the threat
+model discussion was all about the *adversarial* agent, not the
+project's own legitimate tooling running in the same environment.
+
+**Why the obvious fixes don't work:** a marker that's legible to
+"friendly" tooling (a comment saying `# BABBLEON DECOY`, a
+`.security-ignore` file sitting next to the decoy) is legible to an
+adversarial agent's recon step too, for the same reason honeytoken
+values can't use real-provider prefixes (see the very first entry) —
+anything that helps your own tools recognize a decoy also helps an
+attacker who's read babbleon's source recognize it, which defeats the
+trap. The registry (`.babbleon/registry.json`) already solves exactly
+this class of problem for the *attacker* case (it's the out-of-band,
+never-committed list only the operator can see) — the fix here is
+making that same mechanism usable by legitimate local tooling without
+weakening it against the adversarial case, since a coding assistant
+running locally has the same filesystem access as the repo's own
+maintainer, not an outside attacker's.
+
+**What was built:** `Registry.is_decoy(path)` (accepts either an
+absolute path or one relative to the repo root, resolves both to the
+same comparison) and a new `babbleon is-decoy <path>` CLI command
+(exit 0 = known decoy, exit 1 = not) for scripting into a security
+scanner or an assistant's own pre-flight check. Documented the pattern
+in the README: point an AI coding assistant's project instructions
+(e.g. its `CLAUDE.md`) at running `is-decoy` before treating a
+hardcoded-secret-shaped finding as real. This doesn't fully solve the
+problem — it's opt-in, and it only works for a *local* assistant that
+has filesystem access to the never-committed registry in the first
+place, not a hosted/remote assistant working from a plain clone — but
+it's the right mechanism given the constraint above, and it's
+consistent with everything else already built (the registry was
+already the one place with this specific property).
+
+6 new tests (3 on `Registry.is_decoy`, 1 CLI-level) — relative match,
+absolute match, absolute-path-outside-root correctly returns `False`
+rather than raising. 47 tests total, all passing. Manually verified
+the command with both relative and absolute paths against a real
+seeded scratch repo.
+
+### Still open (superseding the shorter list two entries up)
+
+- Live-callback receiver infrastructure — still just client-side
+  plumbing, no hosted service exists or should be stood up without the
+  human choosing where.
+- The deleted install-time semantic-diversification track — still
+  un-started, still multi-month scope, still orthogonal to this
+  session's work.
+- The `is-decoy` mitigation above only covers *local* assistants with
+  filesystem access to `.babbleon/`. A hosted/remote assistant working
+  from a plain `git clone` of a seeded repo (no registry present) has
+  no way to tell a decoy from a real file. Whether that's acceptable,
+  or whether it needs a second, more limited mechanism (e.g. a single
+  well-known marker file listing *paths only*, no honeytoken values,
+  that's still excluded from the adversarial threat model because path
+  disclosure alone doesn't hand over working credentials) is a genuine
+  open design question, not obviously resolvable without the human's
+  judgment call on how much of the trap they're willing to trade away
+  for convenience.

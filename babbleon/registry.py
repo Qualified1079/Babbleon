@@ -66,3 +66,24 @@ class Registry:
 
     def paths(self):
         return [e["path"] for e in self.entries]
+
+    def is_decoy(self, path) -> bool:
+        """Is `path` (absolute or repo-relative) a planted decoy?
+
+        Meant for a legitimate tool -- a security scanner, a coding
+        assistant -- running *inside* the same repo to check before
+        treating something it found as a real issue. Decoys are built to
+        look like real attack surface to any agent reading the tree,
+        which includes a benign one doing routine work; this is the
+        escape hatch for that case (see handoff.md, "decoys vs.
+        legitimate tooling").
+        """
+        p = Path(path)
+        if p.is_absolute():
+            try:
+                rel = str(p.resolve().relative_to(self.root.resolve()))
+            except ValueError:
+                return False
+        else:
+            rel = str(p)
+        return rel in self.paths()
