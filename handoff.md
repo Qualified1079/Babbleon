@@ -618,6 +618,14 @@ against the new unit test — the review's whole value was that it
 worked from live repros instead of code-reading alone, so the fixes
 were held to the same bar.
 
+### One more thing flagged for manual review, not decided here
+
+There is no `LICENSE` file anywhere in this repo. License choice is a
+legal/business decision for the repo owner, not something to pick
+unilaterally in an unattended session — flagging it here rather than
+guessing. Worth resolving before anyone outside this session is
+expected to depend on or contribute to `babbleon/`.
+
 ### Confidence note for whoever reads this next
 
 This is now a second independent pass over the same code (mine, then a
