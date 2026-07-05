@@ -81,5 +81,10 @@ it's trying to prevent.
 python3 -m unittest discover -s tests -v
 ```
 
+CI (`.github/workflows/tests.yml`) runs the suite on Python 3.9, 3.11,
+and 3.12 on every push/PR, and also does a smoke install (`pip install
+-e .` + running the `babbleon` console script) to catch packaging
+regressions the unit tests wouldn't.
+
 See `handoff.md` for the research this was built from, its limitations,
 and what still needs a human decision before wider use.

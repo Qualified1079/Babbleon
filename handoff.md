@@ -390,3 +390,32 @@ real generated output by hand, not just structural assertions. The two
 items under "still open" above (live-callback hosting, the semantic-
 diversification track) are the only things left that genuinely need a
 human decision rather than more unattended engineering.
+
+---
+
+## 2026-07-05 (continued 5) — verified packaging, added CI
+
+Two things hadn't actually been exercised despite `pyproject.toml`
+existing since the first commit: the editable install and the
+`babbleon` console-script entry point. Tested both directly (fresh
+venv, `pip install -e .`, then ran `babbleon --path <tmp> seed` via the
+installed script rather than `python3 -m babbleon.cli`) — both work.
+Also ran the full test suite under Python 3.10 and 3.12 (both present
+on this machine) in addition to the 3.11 it had been running under all
+session; `pyproject.toml` claims `>=3.9` support and nothing in the
+codebase should care (the one place a 3.10+ union-type hint appears,
+`honeytoken.make_internal_url`'s `str | None` parameter, is inert on
+3.9 because `from __future__ import annotations` defers evaluation —
+confirmed by parsing the module's AST, since no 3.9 interpreter was
+available locally to run it directly).
+
+Added `.github/workflows/tests.yml`: runs the unittest suite on Python
+3.9/3.11/3.12 on every push and PR, plus the same install+console-script
+smoke check done by hand above, so packaging regressions get caught
+automatically instead of depending on someone remembering to test it
+manually like this session just did.
+
+No further code changes planned unattended beyond this point without a
+new research thread or explicit next step — the toolkit is at a stable,
+tested, documented stopping point. Anyone picking this up next should
+start from "Still open" above.
