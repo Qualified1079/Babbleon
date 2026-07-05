@@ -7310,3 +7310,110 @@ take unilaterally.
 
 No code changed; doc-only. Full test suite not re-run since nothing
 that affects tests changed.
+
+---
+
+## 2026-07-05 (overnight autonomous session) — GUAC SBOM item closed; multi-language wordlist license/scope corrected; new daemon architecture blocker found
+
+Author: Claude Sonnet 5 (sleeping-operator session; user asleep,
+autonomous). Read `CLAUDE.md` → `HANDOFF.md` (this file) →
+`V2_PLAN.md` → `TODO.md` per the routing document's own reading
+order before touching anything. Confirmed no frontier-LLM API
+credentials exist in this session's environment (checked `env`),
+so the adversarial-LLM measurement gate (Phase 4 supporting
+research) stays genuinely blocked, same as every prior session's
+finding. Confirmed the Phase-4 obfuscation-layer backlog (Layer
+7/8/10) is still dry per the three 2026-07-04 entries above — did
+not re-derive that conclusion, read it and moved on as those
+entries themselves asked the next session to do.
+
+**1. GUAC-ingestible SBOM publication — closed.** `TODO.md`'s
+`[~]` item asked whether the existing public release-asset SBOM
+needs a separate publication step for GUAC to reach it. Checked
+`release.yml` directly: the CycloneDX SBOM is already copied into
+`dist/` and `gh release create ... dist/*` already publishes it as
+a public GitHub Release asset. GUAC's own `guaccollect` CLI ships a
+`github --github-mode release <release_url>` collector built for
+exactly this shape (confirmed via GUAC's own docs/CLI reference,
+not assumed). No new publishing step needed. Updated
+`docs/v2/standards-alignment.md`'s GUAC section and summary table,
+and closed the `TODO.md` checkbox. Doc-only.
+
+**2. Multi-language wordlist vendoring — license corrected, scope
+sharpened, new architectural blocker found; still not vendored.**
+The 2026-07-04 session flagged this as "a large, scope-unsettled
+task better suited to a session that starts by settling the
+language list and licensing" rather than a quick pickup. Did that
+settling work against the live sources rather than repeating the
+prior sessions' "MIT license" claim from memory:
+
+- HermitDave/FrequencyWords' own README says **"MIT License for
+  code. CC-BY-SA-4.0 for content"** — the repo's top-level
+  `LICENSE` file (MIT) covers the generator code, not the `.txt`
+  frequency-list files phase 4 wants to vendor. CC-BY-SA-4.0's
+  attribution + share-alike terms are a real, undecided question
+  for `TODO.md`'s M5 Enterprise track (a CC-BY-SA-4.0-derived data
+  file can't be stripped of that license by a later commercial
+  relicense of the rest of the repo). **This is now the blocking
+  question** — flagged for operator review, not decided
+  unilaterally, matching this file's existing discipline for
+  license/legal calls (TUF, CycloneDX-vs-SPDX).
+- Checked real file availability for all 16 shortlisted languages:
+  14 have a `_50k.txt` tier; Japanese and Hindi only publish
+  `_full.txt` at 34 504 / 21 309 raw lines — well under the
+  "100k per language" figure `TODO.md` had assumed rather than
+  checked.
+- Sampled raw file content directly (not just the pre-filtered
+  subsets the 2026-07-02 density-notes session scored): every
+  language, including English, carries non-word tokens
+  (contraction fragments, abbreviations-with-periods, standalone
+  punctuation like Arabic's top-frequency `،`) that need a
+  letter-category content filter before any list feeds a role.
+- **New finding, not surfaced by either the 2026-07-02 density
+  notes or `tools/wordlist-role-partitioning`'s design**: read
+  `crates/v2-babbleon-daemon/src/state.rs` directly and confirmed
+  `DaemonConfig` holds exactly one `&'static Wordlist` field, fed
+  to BOTH `build_epoch_mapping` (produces the scrambled compound
+  used as an actual filesystem path component for wrapper
+  binaries — the CWE-22-sensitive consumer
+  `crates/babbleon/wordlist/README.md`'s Invariant 1 protects) AND
+  `token_mapping`/`WhitespaceWordlist::build` (content-only,
+  embedded in scrambled source text, never a path). Both role-
+  partitioning docs to date model wordlist slicing purely within
+  the preprocessor's content-only roles; neither considered that
+  the daemon's *materialization* path-name generator draws from
+  the exact same field with no ASCII check of its own. Wiring any
+  non-ASCII pool into that shared field — even one already
+  correctly role-partitioned for the preprocessor's six content
+  roles — would silently break path safety for wrapper names. Filed
+  a concrete, scoped fix (split into `identifier_wordlist` /
+  `content_wordlist` fields) as a prerequisite that must land
+  BEFORE any multi-language data, not alongside it — didn't build
+  it this session because it touches a widely-depended-on daemon
+  config struct with a large existing test surface and deserves
+  its own reviewed diff, and because there's no multi-language data
+  yet pending the licensing call above to wire it in for.
+
+Full writeup: `docs/v2/multi-language-density-notes.md`'s new
+"2026-07-05 update" section. `TODO.md`'s Phase 4 multi-language
+section rewritten to carry all four findings and the new
+prerequisite item. Doc-only; no production code changed this
+session (deliberately — see reasoning above for why the
+`DaemonConfig` split is scoped-but-not-built).
+
+### For the next session
+
+- **Multi-language wordlists remain blocked on an operator
+  licensing decision** (CC-BY-SA-4.0 share-alike vs. the M5
+  Enterprise track), not on scope-uncertainty anymore — the scope
+  is now settled and written down. Once that decision lands, the
+  `DaemonConfig` wordlist-split prerequisite is the next concrete
+  step, before any data vendoring.
+- Same standing operator-gated items, unchanged: seccomp/exec
+  finding, PAM wiring, A08 (v2 binaries in the release pipeline),
+  the secret-literal runtime-channel question, and now the
+  CC-BY-SA-4.0 licensing call above.
+- Phase-4 obfuscation-layer backlog (Layer 7/8/10) and the
+  adversarial-LLM measurement remain genuinely dry of unblocked
+  autonomous work, confirmed again this session rather than
+  re-investigated from scratch.

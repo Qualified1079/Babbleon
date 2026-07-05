@@ -726,12 +726,63 @@ is worth a reader seeing.
 ### Phase 4 — multi-language wordlists
 
 - [ ] **Vendor [HermitDave/FrequencyWords](https://github.com/hermitdave/FrequencyWords)
-      multilingual lists** (MIT license, 61 languages from
-      OpenSubtitles 2018).  Source identified 2026-06-15.
-      Provisional N=100k entries per language; 16 languages →
-      ~1.6M total.  Top 16 by language: EN (already shipped),
-      ES, FR, DE, JA, ZH-Hans, ZH-Hant, AR, RU, PT-BR, IT, NL,
-      PL, TR, HI, KO.  Settle final list per phase 4.
+      multilingual lists.**  Source identified 2026-06-15;
+      license + scope corrected and sharpened 2026-07-05
+      (overnight autonomous session) — see
+      `docs/v2/multi-language-density-notes.md`'s "2026-07-05
+      update" section for the full account. Corrections to the
+      original framing:
+      - **License is CC-BY-SA-4.0 for the list *content*, NOT
+        MIT** (MIT covers the repo's generator code only, per the
+        repo's own README). CC-BY-SA-4.0's attribution +
+        share-alike terms need an explicit operator sign-off
+        before vendoring, specifically re: interaction with the
+        M5 Enterprise (separate private repo) track. **Blocking —
+        do not fetch-and-ship without that sign-off.**
+      - **Not every language has a 100k (or even 50k) tier.**
+        Japanese and Hindi only publish `_full.txt`
+        (34 504 / 21 309 raw lines respectively) — well under the
+        100k provisional figure, which was an assumption, not a
+        checked file. Re-verify real sizes per language before
+        finalizing the list.
+      - **Raw files contain non-word tokens** (punctuation,
+        contractions, abbreviations-with-periods) in every
+        language including English — needs a letter-category
+        content filter, not just the ASCII/diacritics handling
+        already covered by `docs/v2/multi-language-density-notes.md`'s
+        2026-07-02 entry.
+      - **CJK/Arabic/Devanagari languages (zh_cn, zh_tw, ja, ar,
+        ko, hi) can never feed a filesystem-path-generating role**
+        — see the new architectural finding below. They remain
+        candidates for content-only preprocessor roles only.
+      Top 16 by language (unchanged shortlist): EN (already
+      shipped), ES, FR, DE, JA, ZH-Hans, ZH-Hant, AR, RU, PT-BR,
+      IT, NL, PL, TR, HI, KO.
+- [ ] **New prerequisite found 2026-07-05: split `DaemonConfig`'s
+      single `wordlist` field into `identifier_wordlist`
+      (ASCII-only, feeds only `build_epoch_mapping`'s
+      filesystem-path wrapper names) and `content_wordlist` (may
+      be multi-language, feeds only `token_mapping` +
+      `WhitespaceWordlist::build`).**  Today both consumers read
+      the exact same `&'static Wordlist`
+      (`crates/v2-babbleon-daemon/src/state.rs:114`, `:460`,
+      `:601`); wiring any non-ASCII pool into that single field
+      would silently break the CWE-22 path-safety guarantee
+      `crates/babbleon/wordlist/README.md`'s Invariant 1 exists
+      to protect, since `build_epoch_mapping` has no ASCII check
+      of its own — it trusts the field. Neither
+      `MappingBuilder::new`/`with_cache` nor
+      `WhitespaceWordlist::build` need to change (both already
+      take `&Wordlist` as a plain parameter); this is a
+      `DaemonConfig`/`DaemonState` wiring change plus a
+      test-fixture update, not an API redesign. Build this BEFORE
+      any multi-language data lands, with a test pinning
+      `build_epoch_mapping`'s output stays `[a-z]+`-only even when
+      `content_wordlist` is swapped non-ASCII. See
+      `docs/v2/multi-language-density-notes.md` §4 for the full
+      trace. Not built this session — deserves its own reviewed
+      diff against a struct with a large existing test surface,
+      not a rider on a research note.
 - [ ] Per-epoch language cycling logic in `babbleon-core`.
 - [ ] Re-run `tools/tokenizer-benchmark/` on multilingual
       compounds vs spaced English; smaller-model superlinear
@@ -742,7 +793,9 @@ is worth a reader seeing.
       Disjoint subsets prevent cross-class leakage.  Sizes
       provisional: identifier ~370k, decoy ~100k, direction
       marker ~20k, whitespace ~10k, keyword ~5k per language,
-      prompt-injection ~0.5k.
+      prompt-injection ~0.5k.  Gated on the adversarial-LLM
+      re-test (Phase 4 supporting research, above) per prior
+      sessions' framing — unchanged.
 
 ### Phase 5 — hardware backends
 
@@ -850,13 +903,16 @@ genuinely open — see each item.
       implemented via `cargo cyclonedx` in `ci.yml`/`release.yml`.
       Duplicate of the "SBOM generation in CycloneDX or SPDX." item
       under Supply-chain + build integrity above.
-- [~] **GUAC-ingestible SBOM publication.**  The CycloneDX SBOMs
-      generated above are a format GUAC can ingest in principle,
-      but nothing publishes them to a GUAC-reachable location or
-      verifies GUAC can actually pull them — `standards-alignment.md`
-      itself calls GUAC integration "a downstream concern."  Open:
-      decide a publication target (release asset is already public;
-      does GUAC need more than that?) before closing this.
+- [x] **GUAC-ingestible SBOM publication.**  Closed 2026-07-05
+      (overnight autonomous session). Checked rather than assumed:
+      `release.yml`'s release step already publishes the CycloneDX
+      SBOM as a public GitHub Release asset (`gh release create ...
+      dist/*`, and `dist/` contains the SBOM). GUAC's own
+      `guaccollect github --github-mode release <release_url>`
+      collector mode is built to pull exactly that shape — no new
+      publish step, endpoint, or registry needed. See
+      `docs/v2/standards-alignment.md`'s GUAC section for the full
+      account and the exact command an operator runs.
 - [ ] **CSAF 2.0 JSON output for advisories.**  Genuinely open —
       `standards-alignment.md` only states future intent ("when we
       publish advisories, we publish them in CSAF 2.0 JSON").  No

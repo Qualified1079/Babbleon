@@ -169,8 +169,24 @@ release.
 **Why it matters:** the query layer over SBOM data.  OpenSSF
 project.
 
-**v2 stance:** publish CycloneDX SBOMs in a format GUAC can
-ingest.  GUAC integration itself is a downstream concern.
+**v2 stance — closed 2026-07-05 (overnight autonomous session):**
+publish CycloneDX SBOMs in a format GUAC can ingest, and confirm
+the existing publication point is actually reachable by GUAC's own
+collector rather than assuming "downstream concern" forever.
+Checked directly: `.github/workflows/release.yml`'s `create draft
+release` step runs `gh release create ... dist/*`, and `dist/`
+already contains the `cargo cyclonedx`-generated SBOM (copied in
+during the `build` job's `sbom` step) alongside the signed binaries
+— the SBOM is a public GitHub Release asset today, not just a CI
+artifact. GUAC's own `guaccollect` CLI ships a
+`github --github-mode release <release_url>` collector mode built
+for exactly this shape (point it at a release URL, it pulls every
+attached SBOM/attestation). No new publishing step, endpoint, or
+registry push is needed — an operator who wants Babbleon in a GUAC
+graph runs `guaccollect github --github-mode release
+https://github.com/qualified1079/babbleon/releases/tag/<tag>`
+against the existing release. This was a documentation-decision
+close, not a code change; nothing in `release.yml` needed to move.
 
 ### CSAF 2.0 — Common Security Advisory Framework
 
@@ -295,7 +311,7 @@ for completeness; no adoption planned.
 | **in-toto** | Missed | Adopted via sigstore/slsa-github-generator toolchain |
 | **TUF** | Missed | Not adopted (no consuming client yet — see correction, 2026-07-03) |
 | **CycloneDX vs SPDX** | Punted | **CycloneDX 1.6** chosen |
-| GUAC | Missed | Publish CycloneDX in GUAC-ingestible form |
+| GUAC | Missed | Closed 2026-07-05 — SBOM already a public release asset; `guaccollect github --github-mode release` pulls it directly |
 | CSAF 2.0 | Missed | Advisories emit CSAF JSON |
 | SARIF | Missed | CodeQL + Semgrep emit, GitHub consumes |
 | FIPS 140-3 | Missed | Out of scope for v2.0 |
