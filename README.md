@@ -8,7 +8,8 @@ their own (XBOW and similar pipelines have submitted 1,000+ real
 vulnerabilities via fully autonomous runs; see `handoff.md` for sourcing).
 `babbleon/` is a small, zero-dependency toolkit that plants **decoy files
 with embedded honeytokens** in a repository -- fake leaked config, a fake
-legacy admin backdoor, fake internal ops notes -- so that:
+legacy admin backdoor, fake internal ops notes, a fake npm registry
+token, fake CI/CD deploy secrets -- so that:
 
 - an automated recon/exploit agent burns tool-calls and time chasing fake
   attack surface instead of real code, and

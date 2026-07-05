@@ -93,7 +93,43 @@ class InternalNotesPack(DecoyPack):
         return path, content, [url]
 
 
-ALL_PACKS = [LeakedEnvPack, LegacyAdminPack, InternalNotesPack]
+class NpmRegistryTokenPack(DecoyPack):
+    name = "npm_registry_token"
+
+    def build(self, callback_base_url=None):
+        token = ht.make_registry_token("npm")
+        content = (
+            "# leftover from a local `npm publish --dry-run`, remove before commit\n"
+            f"//registry.npmjs.org/:_authToken={token.value}\n"
+            "always-auth=true\n"
+        )
+        path = ".npmrc.bak"
+        return path, content, [token]
+
+
+class CiDeploySecretsPack(DecoyPack):
+    name = "ci_deploy_secrets"
+
+    def build(self, callback_base_url=None):
+        codename = wb.pick(wb.PROJECT_CODENAMES)
+        deploy_token = ht.make_registry_token("deploy")
+        registry_token = ht.make_registry_token("docker")
+        content = (
+            f"# {codename} CI runner leftover -- do not commit real secrets here\n"
+            f"DEPLOY_TOKEN={deploy_token.value}\n"
+            f"DOCKER_REGISTRY_PASSWORD={registry_token.value}\n"
+        )
+        path = "ci/secrets.env.bak"
+        return path, content, [deploy_token, registry_token]
+
+
+ALL_PACKS = [
+    LeakedEnvPack,
+    LegacyAdminPack,
+    InternalNotesPack,
+    NpmRegistryTokenPack,
+    CiDeploySecretsPack,
+]
 
 
 def write_pack(root: Path, pack: DecoyPack, callback_base_url=None):

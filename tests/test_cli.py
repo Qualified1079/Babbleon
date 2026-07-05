@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from babbleon import cli
+from babbleon import cli, decoys
 from babbleon.registry import Registry
 
 
@@ -14,7 +14,7 @@ class CliTests(unittest.TestCase):
             self.assertEqual(rc, 0)
 
             reg = Registry(root)
-            self.assertEqual(len(reg.entries), 3)
+            self.assertEqual(len(reg.entries), len(decoys.ALL_PACKS))
             for entry in reg.entries:
                 self.assertTrue((root / entry["path"]).exists())
 

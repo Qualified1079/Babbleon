@@ -50,6 +50,26 @@ class DecoyPackTests(unittest.TestCase):
             self.assertFalse(any(t.live for t in tokens))
             self.assertNotIn("hooks.example.com", content)
 
+    def test_npm_registry_token_pack_shape(self):
+        path, content, tokens = decoys.NpmRegistryTokenPack().build()
+        self.assertEqual(path, ".npmrc.bak")
+        self.assertEqual(len(tokens), 1)
+        self.assertIn("_authToken=", content)
+        self.assertIn(tokens[0].value, content)
+
+    def test_ci_deploy_secrets_pack_shape(self):
+        path, content, tokens = decoys.CiDeploySecretsPack().build()
+        self.assertEqual(path, "ci/secrets.env.bak")
+        self.assertEqual(len(tokens), 2)
+        self.assertIn("DEPLOY_TOKEN=", content)
+        self.assertIn("DOCKER_REGISTRY_PASSWORD=", content)
+        for t in tokens:
+            self.assertIn(t.value, content)
+
+    def test_all_pack_names_are_unique(self):
+        names = [p.name for p in decoys.ALL_PACKS]
+        self.assertEqual(len(names), len(set(names)))
+
 
 if __name__ == "__main__":
     unittest.main()

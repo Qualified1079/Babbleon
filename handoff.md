@@ -288,7 +288,52 @@ all passing.
 
 - Decide whether to actually stand up a callback receiver, or keep this
   purely opt-in for people who bring their own.
-- Expand decoy packs (fake CI/CD secrets, fake package-registry tokens)
-  for supply-chain-flavored exploit agents.
+- ~~Expand decoy packs (fake CI/CD secrets, fake package-registry
+  tokens)~~ — **done next in this same session**, see below.
 - Decide whether to revisit the deleted install-time semantic-diversification
   track (source-level AST rewriting, months of scope, still un-started).
+
+---
+
+## 2026-07-05 (continued 3) — supply-chain-flavored decoy packs
+
+Added two more packs, bringing the total to five (`ALL_PACKS` in
+`decoys.py`):
+
+- `npm_registry_token` — a `.npmrc.bak` with a fake
+  `//registry.npmjs.org/:_authToken=...` line, framed as a leftover from
+  a local `npm publish --dry-run`.
+- `ci_deploy_secrets` — `ci/secrets.env.bak` with a fake `DEPLOY_TOKEN`
+  and `DOCKER_REGISTRY_PASSWORD`.
+
+Rationale: an autonomous exploit agent chasing supply-chain-style
+objectives (publish a malicious package version, push to a container
+registry, trigger a CI deploy) is a documented, higher-blast-radius
+outcome than reading one repo's own secrets — it's the "worm" framing
+in the project name at its most literal, since a compromised publish
+credential *does* propagate to every downstream consumer. These packs
+target exactly that reconnaissance path.
+
+Added a new `honeytoken.make_registry_token(label)` maker (same shape as
+`make_api_key`, distinct `kind="registry_token"` so `list -v`/`verify`
+output stays descriptive per pack). Both packs ignore
+`callback_base_url` for the same reason `leaked_env`/`legacy_admin` do —
+neither planted value is a URL, so there's nothing to point at a
+callback.
+
+Updated `test_seed_then_list_then_verify_then_clean` (`tests/test_cli.py`)
+to assert against `len(decoys.ALL_PACKS)` instead of a hardcoded `3`,
+so it won't silently need editing again next time a pack is added.
+Added dedicated shape tests for both new packs plus a
+`test_all_pack_names_are_unique` guard. 40 tests total, all passing.
+Manually inspected generated `.npmrc.bak` / `ci/secrets.env.bak` output
+for plausibility (see this entry's session log) rather than trusting
+assertions alone — same practice as the last two entries.
+
+### Still open, unchanged
+
+- Live-callback receiver infrastructure (client-side plumbing only
+  exists so far).
+- The deleted install-time semantic-diversification track — still
+  un-started, still a reasonable multi-month follow-up if the human
+  wants it, still orthogonal to everything built in this session.

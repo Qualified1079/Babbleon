@@ -51,6 +51,14 @@ class HoneytokenTests(unittest.TestCase):
         for _ in range(10):
             self.assertFalse(ht.make_api_key().value.startswith("AKIA"))
 
+    def test_registry_token_contains_label_and_mark(self):
+        token = ht.make_registry_token("npm")
+        self.assertEqual(token.kind, "registry_token")
+        self.assertIn("npm", token.value)
+        self.assertIn(ht.TOKEN_MARK, token.value)
+        other = ht.make_registry_token("npm")
+        self.assertNotEqual(token.value, other.value)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -47,6 +47,12 @@ def make_api_key(label: str = "live") -> Honeytoken:
     return Honeytoken(id=token_id, kind="api_key", value=value)
 
 
+def make_registry_token(label: str) -> Honeytoken:
+    token_id = _new_id()
+    value = f"{TOKEN_MARK}_{label}_{token_id}{_hex(12)}"
+    return Honeytoken(id=token_id, kind="registry_token", value=value)
+
+
 def make_db_password() -> Honeytoken:
     token_id = _new_id()
     value = f"{token_id}{_urlsafe(9)}"
