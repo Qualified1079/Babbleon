@@ -787,3 +787,77 @@ then genuinely try to break what you built, then fix what breaks, then
 do it again on the fix. Diminishing but not yet zero — worth another
 pass if there's time, but nothing left un-investigated from this
 round's specific target (the four prior bugfix commits).
+
+---
+
+## 2026-07-05 (continued 11) — research update on the deleted semantic-diversification track
+
+The decoy/honeytoken toolkit has now had three independent bug-hunting
+passes with real findings each time; further review of the same code
+is hitting diminishing returns. Rotating to a fresh research thread per
+the standing instruction, back to the *other* pillar this project's
+name implies: the deleted "LLM install-time semantic diversification"
+research doc (summarized in the very first entry above), which this
+session deliberately did not resurrect because it estimated 2-3 months
+for an academic prototype using a local code LLM.
+
+**New finding: that estimate assumed building the AST-rewrite engine
+from scratch, and mature open-source alternatives already exist.**
+Searched for prior art specifically on non-LLM, rule-based Python
+AST obfuscation/renaming tools and found several actively maintained
+options: **patchwork** (polymorphic multi-stage obfuscator — AST
+rewrites plus per-function bytecode encryption, deterministic builds
+under a `--seed` flag), **BlankOBF** (a 12-phase AST compiler pipeline,
+"multi-strategy transforms, deterministic output, zero-breakage
+semantic preservation, no external dependencies" per its own
+description), **bobskater** and **py-namer** (narrower — robust
+variable/name mangling only), and **python-obfuscator** (togglable
+independent AST-level techniques). None of these need a local LLM at
+all; they're deterministic, rule-based AST transforms, which is
+strictly cheaper to build, run, and reason about than the
+model-in-the-loop design the deleted doc proposed.
+
+**Why this doesn't just close the "still open" item, though.** The
+deleted doc's own stated differentiator was explicit: "it can't simply
+do a dictionary swap for diversification. If the attacker has the
+original codebase it's trivial to correlate 1:1 new semantics to
+original. Structural changes needed." That's precisely the dividing
+line between these tools. `bobskater`/`py-namer`-class renamers are
+exactly the weak case the deleted doc warned wouldn't survive an
+attacker with the original source — a name mapping is trivially
+inverted the moment you know it's just a name mapping. `patchwork` and
+`BlankOBF` claim to go further (per-function bytecode encryption,
+multi-phase structural transforms) and would need to be evaluated
+against that specific bar — do they restructure control flow /
+call-graph shape enough that an attacker with the original source
+still can't cheaply correlate function-to-function, or do they only
+add a layer that's removable/invertible once you know the tool that
+made it? I have not evaluated either tool's source against that
+question; that's the concrete next step if this track gets picked up,
+not something to conclude from a web search summary alone.
+
+**Recommendation, not a build:** if the human wants to pursue
+install-time semantic diversification, the right next move is
+evaluating `patchwork` and `BlankOBF` (both linked above) against the
+original doc's "must survive an attacker with the original source"
+bar, and only reaching for a from-scratch/local-LLM build if neither
+holds up — which would very plausibly cut the original 2-3 month
+academic-prototype estimate down to weeks of integration-and-hardening
+work instead of a build-from-zero effort. Not building anything here:
+adopting a third-party obfuscator as a dependency is a real
+supply-chain and trust decision (exactly the kind of thing this
+session's own honeytoken work is designed to make *harder* to get away
+with when done maliciously — a little on the nose to wave through
+unevaluated), and picking one is a call for the human, not something to
+default into unattended.
+
+### Still open (superseding the list eight entries up)
+
+- Live-callback receiver infrastructure — still just client-side
+  plumbing.
+- The `is-decoy` local-only limitation for hosted/remote assistants.
+- Missing `LICENSE` file.
+- Semantic diversification: **updated recommendation above** —
+  evaluate `patchwork`/`BlankOBF` against the "survives an attacker
+  with the original source" bar before considering a from-scratch or
+  local-LLM build.
