@@ -674,3 +674,30 @@ letting it propagate as a traceback.
 No other changes this pass. Everything from "Still open" three entries
 up is still open and still needs the human's call, not more unattended
 engineering.
+
+---
+
+## 2026-07-05 (continued 9) — a nonexistent --path silently reported "ok"
+
+Last one for this pass. Every command computes `root = Path(args.path).
+resolve()` and treats a missing directory the same as an empty one --
+harmless for `list` ("no decoys planted yet" is arguably still true),
+actively dangerous for `check` specifically, since that command exists
+to be trusted as a pre-commit safety gate. Verified: `babbleon --path
+/totally/nonexistent/dir check` printed "ok: no babbleon registry files
+are tracked, staged, or un-ignored" and exited 0 -- a typo'd `--path`
+(or a hook computing the wrong repo root) would silently claim "safe to
+commit" instead of the truth, which is that there's no repository there
+at all to check.
+
+Fixed by validating in `cli.main()`, before dispatching to any
+subcommand, that the resolved `--path` is an existing directory;
+otherwise print a clean error and exit 1. Verified all three of
+`check`/`list`/`seed` now correctly error instead of reporting a false
+"ok"/"nothing here" for the same nonexistent path. One new regression
+test parametrized over those three commands. 54 tests total.
+
+This closes out this pass of self-review-after-review. Nothing else
+found on this sweep; the "Still open" items four entries up remain the
+only things genuinely blocked on a human decision rather than more
+unattended work.

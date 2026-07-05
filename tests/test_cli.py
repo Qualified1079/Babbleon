@@ -88,6 +88,16 @@ class CliTests(unittest.TestCase):
             rc = cli.main(["--path", str(root), "is-decoy", "src/real_module.py"])
             self.assertEqual(rc, 1)
 
+    def test_nonexistent_path_errors_instead_of_reporting_ok(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = str(Path(tmp) / "does-not-exist")
+            for command in (["check"], ["list"], ["seed"]):
+                stderr = io.StringIO()
+                with redirect_stderr(stderr):
+                    rc = cli.main(["--path", missing] + command)
+                self.assertEqual(rc, 1, f"{command} should fail for a missing --path")
+                self.assertIn("is not a directory", stderr.getvalue())
+
     def test_corrupted_registry_surfaces_clean_error_not_a_traceback(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -211,6 +211,13 @@ def build_parser():
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
+    if not Path(args.path).resolve().is_dir():
+        # Every command treats a missing --path as "nothing here yet"
+        # rather than an error, which is actively dangerous for `check`
+        # specifically -- a typo'd path would silently report "ok, safe
+        # to commit" instead of the truth (there's no repo there at all).
+        print(f"error: --path {args.path!r} is not a directory", file=sys.stderr)
+        return 1
     try:
         return args.func(args)
     except RuntimeError as e:
