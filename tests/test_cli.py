@@ -51,6 +51,28 @@ class CliTests(unittest.TestCase):
             rc = cli.main(["--path", tmp, "list"])
             self.assertEqual(rc, 0)
 
+    def test_seed_with_callback_base_url_marks_internal_url_live(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rc = cli.main(
+                [
+                    "--path", str(root), "seed", "internal_notes",
+                    "--callback-base-url", "https://hooks.example.com/x",
+                ]
+            )
+            self.assertEqual(rc, 0)
+            reg = Registry(root)
+            token = reg.entries[0]["tokens"][0]
+            self.assertTrue(token["live"])
+            self.assertTrue(token["value"].startswith("https://hooks.example.com/x/babbleon/"))
+
+    def test_seed_rejects_non_http_callback_base_url(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rc = cli.main(
+                ["--path", tmp, "seed", "--callback-base-url", "ftp://not-http.example.com"]
+            )
+            self.assertEqual(rc, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

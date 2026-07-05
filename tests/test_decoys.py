@@ -35,6 +35,21 @@ class DecoyPackTests(unittest.TestCase):
         _, content, _ = decoys.LegacyAdminPack().build()
         compile(content, "<legacy_admin_decoy>", "exec")
 
+    def test_internal_notes_pack_uses_callback_base_url_when_given(self):
+        _, content, tokens = decoys.InternalNotesPack().build(
+            callback_base_url="https://hooks.example.com/x"
+        )
+        self.assertTrue(any(t.live for t in tokens))
+        self.assertIn("hooks.example.com/x/babbleon/", content)
+
+    def test_other_packs_ignore_callback_base_url(self):
+        for pack_cls in (decoys.LeakedEnvPack, decoys.LegacyAdminPack):
+            _, content, tokens = pack_cls().build(
+                callback_base_url="https://hooks.example.com/x"
+            )
+            self.assertFalse(any(t.live for t in tokens))
+            self.assertNotIn("hooks.example.com", content)
+
 
 if __name__ == "__main__":
     unittest.main()

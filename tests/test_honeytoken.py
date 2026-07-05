@@ -25,6 +25,20 @@ class HoneytokenTests(unittest.TestCase):
         token = ht.make_internal_url("svc.internal.corp")
         self.assertTrue(token.value.startswith("https://svc.internal.corp/"))
         self.assertIn(token.id, token.value)
+        self.assertFalse(token.live)
+
+    def test_internal_url_with_callback_base_url_is_live(self):
+        token = ht.make_internal_url(
+            "svc.internal.corp", callback_base_url="https://hooks.example.com/abc/"
+        )
+        self.assertTrue(token.live)
+        self.assertTrue(token.value.startswith("https://hooks.example.com/abc/babbleon/"))
+        self.assertIn("svc.internal.corp", token.value)
+        self.assertIn(token.id, token.value)
+
+    def test_default_honeytoken_is_not_live(self):
+        for maker in (ht.make_api_key, ht.make_db_password, ht.make_admin_override):
+            self.assertFalse(maker().live)
 
     def test_to_dict_roundtrip_fields(self):
         token = ht.make_api_key()

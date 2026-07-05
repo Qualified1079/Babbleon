@@ -235,3 +235,60 @@ generates a script meant to run outside this process.
 30 unit/integration tests total, all passing. Nothing else changed in
 this pass — the limitations, safety note, and remaining "needs manual
 review" items from the first entry above still stand unchanged.
+
+---
+
+## 2026-07-05 (continued 2) — opt-in live callback
+
+Picked up next-step #2 (now renumbered #1): a live-callback variant so a
+honeytoken can point at a real endpoint the operator controls, instead
+of only ever being inert local text.
+
+- `honeytoken.Honeytoken` gained a `live: bool = False` field.
+  `make_internal_url(host, callback_base_url=None)` now takes an
+  optional http(s) base URL; when given, the token's value becomes
+  `<callback_base_url>/babbleon/<fake-host>/<token-id>` and `live=True`.
+  With no argument (the default, unchanged from before), behavior is
+  identical to the original local-placeholder URL.
+- `DecoyPack.build()` across all three packs now accepts
+  `callback_base_url=None`; only `InternalNotesPack` acts on it (it's the
+  only pack whose planted value is a URL an agent might actually fetch —
+  `leaked_env`'s DB connection string and `legacy_admin`'s hardcoded
+  password aren't things a generic HTTP client tool-call would hit, so
+  wiring them to a callback wouldn't do anything and would be dishonest
+  plumbing). The other two packs accept and ignore the parameter so the
+  call signature stays uniform across `ALL_PACKS`.
+- `babbleon seed --callback-base-url <url>` is the opt-in switch,
+  validated to start with `http://`/`https://` or the command fails
+  before touching disk. Omitting it (the default) makes zero network
+  calls, matching the design constraint from the first entry above.
+  `list -v` and `verify` now tag live tokens with `[live]` so an operator
+  can tell at a glance which planted values are wired to something real
+  versus which are just text.
+- Found one polish-level bug via manual smoke test rather than unit
+  tests: `InternalNotesPack` built its fake host as
+  `f"{service}.internal.{random_tld}"`, and the TLD wordbank includes
+  `"internal"` as one of its options — occasionally producing
+  `search-svc.internal.internal`, which reads as obviously fake to a
+  human (redundant labeling) in a way the rest of the decoy doesn't.
+  Fixed by excluding `"internal"` from the TLD choice in that one pack.
+  Not security-relevant, but worth noting: **manual smoke-testing the
+  actual generated output caught this; the unit tests (which only
+  checked structural properties like "token id appears in the URL")
+  never would have.** Same lesson as the pre-commit hook bug two entries
+  up — generated/templated output needs a human (or an agent) actually
+  looking at a sample, not just asserting invariants about it.
+
+Still no live callback *infrastructure* was built or deployed — this is
+client-side plumbing only, per the original scoping note ("where it's
+hosted is an infra decision for whoever deploys this"). 36 tests total,
+all passing.
+
+### Still open (unchanged from the first entry, restated for whoever picks this up next)
+
+- Decide whether to actually stand up a callback receiver, or keep this
+  purely opt-in for people who bring their own.
+- Expand decoy packs (fake CI/CD secrets, fake package-registry tokens)
+  for supply-chain-flavored exploit agents.
+- Decide whether to revisit the deleted install-time semantic-diversification
+  track (source-level AST rewriting, months of scope, still un-started).

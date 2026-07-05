@@ -19,15 +19,22 @@ from . import wordbank as wb
 class DecoyPack:
     name = ""
 
-    def build(self):
-        """Return (relative_path, content, [Honeytoken, ...])."""
+    def build(self, callback_base_url=None):
+        """Return (relative_path, content, [Honeytoken, ...]).
+
+        `callback_base_url`, when given, is an http(s) URL the caller
+        controls; packs that embed a fetchable URL may point it there
+        instead of a local placeholder so a real request from an agent
+        reaches something the operator can see. Packs that don't embed
+        a URL (most of them) simply ignore it.
+        """
         raise NotImplementedError
 
 
 class LeakedEnvPack(DecoyPack):
     name = "leaked_env"
 
-    def build(self):
+    def build(self, callback_base_url=None):
         env = wb.pick(wb.ENVIRONMENTS)
         service = wb.pick(wb.SERVICE_NAMES)
         host = f"{service}.{env}.{wb.pick(wb.TLDS)}"
@@ -48,7 +55,7 @@ class LeakedEnvPack(DecoyPack):
 class LegacyAdminPack(DecoyPack):
     name = "legacy_admin"
 
-    def build(self):
+    def build(self, callback_base_url=None):
         override = ht.make_admin_override()
         codename = wb.pick(wb.PROJECT_CODENAMES)
         content = (
@@ -69,11 +76,12 @@ class LegacyAdminPack(DecoyPack):
 class InternalNotesPack(DecoyPack):
     name = "internal_notes"
 
-    def build(self):
+    def build(self, callback_base_url=None):
         codename = wb.pick(wb.PROJECT_CODENAMES)
         service = wb.pick(wb.SERVICE_NAMES)
-        host = f"{service}.internal.{wb.pick(wb.TLDS)}"
-        url = ht.make_internal_url(host)
+        tld = wb.pick([t for t in wb.TLDS if t != "internal"])
+        host = f"{service}.internal.{tld}"
+        url = ht.make_internal_url(host, callback_base_url=callback_base_url)
         ticket = random.randint(1000, 9999)
         content = (
             f"# {codename} internal notes\n\n"
@@ -88,8 +96,8 @@ class InternalNotesPack(DecoyPack):
 ALL_PACKS = [LeakedEnvPack, LegacyAdminPack, InternalNotesPack]
 
 
-def write_pack(root: Path, pack: DecoyPack):
-    rel_path, content, tokens = pack.build()
+def write_pack(root: Path, pack: DecoyPack, callback_base_url=None):
+    rel_path, content, tokens = pack.build(callback_base_url=callback_base_url)
     full_path = Path(root) / rel_path
     full_path.parent.mkdir(parents=True, exist_ok=True)
     full_path.write_text(content)

@@ -31,6 +31,22 @@ python3 -m babbleon.cli --path /path/to/repo clean          # remove decoys
 
 Or, after an editable install (`pip install -e .`), just `babbleon ...`.
 
+### Optional: live callbacks
+
+By default every honeytoken is a local, inert placeholder -- babbleon
+never makes a network call. If you run your own webhook receiver (or a
+canary-token service) and want a real hit when an agent actually fetches
+a planted URL, pass `--callback-base-url`:
+
+```sh
+python3 -m babbleon.cli --path /path/to/repo seed --callback-base-url https://hooks.example.com/<your-id>
+```
+
+Only the `internal_notes` pack embeds a fetchable URL, so it's the only
+one affected; it points at `<callback-base-url>/babbleon/<fake-host>/<token-id>`
+instead of a placeholder, and `list -v`/`verify` mark that token `[live]`.
+This flag is entirely opt-in -- omit it and nothing changes.
+
 ### Important: the registry is sensitive
 
 Every `seed` run writes `<repo>/.babbleon/registry.json` with every planted

@@ -33,6 +33,11 @@ fi
 
 
 def cmd_seed(args):
+    callback_base_url = args.callback_base_url
+    if callback_base_url and not callback_base_url.startswith(("http://", "https://")):
+        print("--callback-base-url must start with http:// or https://", file=sys.stderr)
+        return 1
+
     root = Path(args.path).resolve()
     registry = Registry(root)
     packs = decoys.ALL_PACKS
@@ -43,9 +48,10 @@ def cmd_seed(args):
             return 1
     for pack_cls in packs:
         pack = pack_cls()
-        rel_path, tokens = decoys.write_pack(root, pack)
+        rel_path, tokens = decoys.write_pack(root, pack, callback_base_url=callback_base_url)
         registry.add(rel_path, pack.name, tokens)
-        print(f"planted {pack.name} -> {rel_path} ({len(tokens)} token(s))")
+        live_note = " [live]" if any(t.live for t in tokens) else ""
+        print(f"planted {pack.name} -> {rel_path} ({len(tokens)} token(s)){live_note}")
     registry.save()
     print(f"registry: {registry.file} (gitignored -- do not commit)")
     return 0
@@ -61,7 +67,8 @@ def cmd_list(args):
         print(f"{entry['path']}  [{entry['pack']}]  {len(entry['tokens'])} token(s)")
         if args.verbose:
             for t in entry["tokens"]:
-                print(f"    {t['kind']}: {t['value']}")
+                live_note = " [live]" if t.get("live") else ""
+                print(f"    {t['kind']}: {t['value']}{live_note}")
     return 0
 
 
@@ -73,7 +80,8 @@ def cmd_verify(args):
         print("no match: this string was not planted by babbleon in this repo")
         return 1
     for entry, token in hits:
-        print(f"MATCH: {token['kind']} from {entry['path']} (planted {entry['created_at']})")
+        live_note = " [live]" if token.get("live") else ""
+        print(f"MATCH: {token['kind']} from {entry['path']} (planted {entry['created_at']}){live_note}")
     return 0
 
 
@@ -132,6 +140,16 @@ def build_parser():
 
     p_seed = sub.add_parser("seed", help="plant decoy files with honeytokens")
     p_seed.add_argument("pack", nargs="*", help="specific pack name(s); default all")
+    p_seed.add_argument(
+        "--callback-base-url",
+        default=None,
+        help=(
+            "http(s) URL you control (e.g. your own webhook receiver); "
+            "URL-shaped honeytokens point here instead of a local "
+            "placeholder, so a real request from an agent reaches you. "
+            "Opt-in only -- omit this and babbleon makes no network calls."
+        ),
+    )
     p_seed.set_defaults(func=cmd_seed)
 
     p_list = sub.add_parser("list", help="list planted decoys")
