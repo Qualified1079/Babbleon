@@ -211,7 +211,15 @@ def build_parser():
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    except RuntimeError as e:
+        # Raised deliberately (a corrupted registry.json, or write_pack
+        # exhausting its collision-avoidance budget) for conditions that
+        # are real but expected-and-actionable -- surface them as a clean
+        # message, not a Python traceback.
+        print(f"error: {e}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

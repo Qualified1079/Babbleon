@@ -639,3 +639,38 @@ against real inputs and real failure conditions instead of stopping at
 manually reproduce the failure mode a change is meant to fix, and
 manually reproduce that the fix actually closes it, before considering
 it done.
+
+---
+
+## 2026-07-05 (continued 8) — one more robustness gap, found while re-reading the review's own fixes
+
+While re-reading `registry.py` to write the entry above, noticed
+`Registry._load()` had no error handling at all around
+`json.loads(self.file.read_text())` — a `registry.json` that's
+corrupted (partial write from some future non-atomic path, hand-editing,
+disk issue) would blow up with a raw, unhandled `JSONDecodeError` on
+every single command (`list`, `verify`, `is-decoy`, `clean`, even a
+fresh `seed`, since `Registry.__init__` always calls `_load()`).
+Silently treating a corrupt file as an empty registry would be worse —
+that would make `list`/`verify` quietly forget about decoys that are
+still sitting on disk with live honeytoken values — so the fix fails
+loud, but with an actual message instead of a traceback: `_load()` now
+catches `JSONDecodeError` and re-raises as `RuntimeError` with the file
+path, the underlying parse error, and a warning not to delete the file
+without first checking whether decoy files are still on disk. Wired a
+top-level `try/except RuntimeError` into `cli.main()` so this (and the
+existing collision-budget-exhaustion `RuntimeError` from `write_pack`,
+finding #3 two entries up) prints as a clean `error: ...` line and exits
+1, instead of a Python traceback reaching the terminal.
+
+Verified end-to-end against a real corrupted file (not just the two new
+unit tests): `echo "{not valid json" > .babbleon/registry.json` then
+`babbleon list` now prints exactly the intended message and exits 1,
+where before this fix it would have dumped a full traceback. 53 tests
+total (up from 51): one on `Registry` raising directly, one at the CLI
+layer confirming `cli.main()` converts it to a clean message rather than
+letting it propagate as a traceback.
+
+No other changes this pass. Everything from "Still open" three entries
+up is still open and still needs the human's call, not more unattended
+engineering.

@@ -80,6 +80,16 @@ class RegistryTests(unittest.TestCase):
             self.assertTrue(reg.is_decoy("./internal/legacy_admin.py"))
             self.assertFalse(reg.is_decoy("../outside.py"))
 
+    def test_corrupted_registry_raises_clear_runtime_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".babbleon").mkdir()
+            (root / ".babbleon" / "registry.json").write_text("{not valid json")
+            with self.assertRaises(RuntimeError) as ctx:
+                Registry(root)
+            self.assertIn("not valid JSON", str(ctx.exception))
+            self.assertNotIn("Traceback", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

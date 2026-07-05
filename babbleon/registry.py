@@ -29,11 +29,23 @@ class Registry:
         self._load()
 
     def _load(self):
-        if self.file.exists():
-            data = json.loads(self.file.read_text())
-            self.entries = data.get("entries", [])
-        else:
+        if not self.file.exists():
             self.entries = []
+            return
+        try:
+            data = json.loads(self.file.read_text())
+        except json.JSONDecodeError as e:
+            # Don't silently treat this as an empty registry -- that would
+            # make `list`/`verify`/`is-decoy` quietly forget about decoys
+            # that are still sitting on disk. Fail loud with something
+            # actionable instead of a bare JSONDecodeError traceback.
+            raise RuntimeError(
+                f"babbleon registry at {self.file} is not valid JSON ({e}). "
+                f"It may have been partially written or hand-edited. Do not "
+                f"delete it without first checking whether decoy files are "
+                f"still on disk -- see handoff.md for what the registry is for."
+            ) from e
+        self.entries = data.get("entries", [])
 
     def save(self):
         self.dir.mkdir(parents=True, exist_ok=True)

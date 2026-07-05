@@ -1,5 +1,7 @@
+import io
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 
 from babbleon import cli, decoys
@@ -85,6 +87,20 @@ class CliTests(unittest.TestCase):
 
             rc = cli.main(["--path", str(root), "is-decoy", "src/real_module.py"])
             self.assertEqual(rc, 1)
+
+    def test_corrupted_registry_surfaces_clean_error_not_a_traceback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".babbleon").mkdir()
+            (root / ".babbleon" / "registry.json").write_text("{not valid json")
+
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                rc = cli.main(["--path", str(root), "list"])
+
+            self.assertEqual(rc, 1)
+            self.assertIn("error:", stderr.getvalue())
+            self.assertNotIn("Traceback", stderr.getvalue())
 
 
 if __name__ == "__main__":
