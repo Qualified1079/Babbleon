@@ -165,6 +165,22 @@ impl<'a> MappingBuilder<'a> {
     /// different secrets is a correctness bug (the cache cannot
     /// distinguish secrets and would serve a stale permutation).
     /// Call [`PermutationCache::clear`] across a secret rotation.
+    ///
+    /// The same hazard applies to **different wordlists**, including
+    /// two wordlists of different lengths: the cache key is
+    /// `(epoch, purpose_id)` only, so it cannot tell "epoch 6 built
+    /// against wordlist A" apart from "epoch 6 built against
+    /// wordlist B." If two logical roles can pass numerically
+    /// overlapping epoch values to builders backed by different
+    /// wordlists (the daemon's `token_mapping` deliberately computes
+    /// "virtual epochs" as small multiples of the real rotation
+    /// epoch, guaranteeing overlap over the daemon's lifetime — see
+    /// `crates/v2-babbleon-daemon/src/state.rs`'s
+    /// `identifier_permutation_cache` doc), each role needs its OWN
+    /// cache instance, not a shared one, the moment their wordlists
+    /// can diverge. See [`PermutationCache`]'s test
+    /// `sharing_a_cache_across_different_wordlist_lengths_serves_the_wrong_permutation`
+    /// for a direct demonstration of the failure mode this avoids.
     #[must_use]
     pub fn with_cache(
         secret: &'a PerHostSecret,

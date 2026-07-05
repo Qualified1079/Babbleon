@@ -487,18 +487,43 @@ decision in §1 above — building the split now would be untested
 scaffolding for data that may not land in its currently-planned
 form.
 
+### Follow-up — the `DaemonConfig`/cache split landed later the same session
+
+The prerequisite above was filed as "not built this session" earlier
+in this same overnight run; it was subsequently built once the trace
+above made the exact shape of the fix unambiguous. `DaemonConfig` now
+has `identifier_wordlist` + `content_wordlist` fields (both still
+populated from one constructor parameter — behavior-preserving,
+since no multi-language data exists yet to diverge them), and
+`rotate`/`token_mapping`/`whitespace_compounds` each read only their
+own field. Building this surfaced a SECOND, related hazard not
+described above: `DaemonState`'s `PermutationCache` was shared
+between `rotate` (real epoch numbers) and `token_mapping` (virtual
+epoch numbers = `real_epoch * stride + alias_index`) — numbers
+guaranteed to collide as the daemon rotates, since virtual epochs are
+small multiples of real ones. A cache keyed by `(epoch, purpose_id)`
+alone can't tell those two apart, so once `identifier_wordlist` and
+`content_wordlist` diverge in length, a shared cache would silently
+serve one role's permutation to the other. Fixed by splitting into
+`identifier_permutation_cache` (capacity 4) and
+`content_permutation_cache` (capacity 12, unchanged sizing). See
+`TODO.md`'s Phase 4 multi-language section for the closed checklist
+entry and the exact test names. All 135 `v2-babbleon-daemon` +
+98 `v2-babbleon-core` tests pass; clippy clean on both crates.
+
 ### Revised recommendation for whoever picks up phase-4 wordlist vendoring next
 
 1. Get the operator's licensing call on §1 (CC-BY-SA-4.0
    attribution + share-alike acceptance for a vendored data file,
    specifically its interaction with the M5 Enterprise track) before
    fetching anything for real.
-2. Once licensing is settled, build the `DaemonConfig` wordlist
-   split from §4 FIRST, with tests pinning that `build_epoch_mapping`
-   output stays `[a-z]+`-only even when `content_wordlist` is
-   swapped to a non-ASCII pool — that ordering makes the ASCII
-   invariant a property the test suite enforces structurally, not
-   an assumption a data-vendoring PR has to remember.
+2. ~~Once licensing is settled, build the `DaemonConfig` wordlist
+   split from §4 FIRST~~ — **done** (see the follow-up note above);
+   `identifier_wordlist`/`content_wordlist` and their two
+   permutation caches already exist and are covered by tests. What's
+   still missing is wiring an actual non-ASCII pool into
+   `content_wordlist` once licensing clears — the split itself no
+   longer blocks on that.
 3. Per-language content filter (§3): reject non-letter-category
    entries (punctuation, contractions, abbreviations-with-periods)
    for every language, including English, before any frequency list

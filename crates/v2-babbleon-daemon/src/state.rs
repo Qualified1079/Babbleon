@@ -110,8 +110,39 @@ use crate::materialization::{
 };
 
 /// Static configuration shared across both lifecycle states.
+///
+/// # Why two wordlist fields, not one
+///
+/// `identifier_wordlist` and `content_wordlist` are deliberately
+/// separate fields, even though every constructor today populates
+/// both from the same single input and they are therefore always
+/// equal in practice. They feed two consumers with different safety
+/// requirements:
+///
+/// - `identifier_wordlist` feeds ONLY [`build_unlocked_state`] and
+///   [`DaemonState::rotate`] — the path that produces the scrambled
+///   compound used as an actual filesystem path component for
+///   wrapper binaries (`materialization::materialize_atomic`).  That
+///   consumer has no ASCII check of its own; it trusts this field to
+///   already satisfy `crates/babbleon/wordlist/README.md`'s
+///   Invariant 1 (`[a-z]+` only — CWE-22 path-traversal defence).
+/// - `content_wordlist` feeds ONLY [`DaemonState::token_mapping`]
+///   (preprocessor L2 identifier-scramble aliases) and
+///   [`DaemonState::whitespace_compounds`] — both content-only,
+///   embedded in a scrambled source file's body text and never used
+///   as a path.
+///
+/// Phase 4's multi-language wordlist work will want `content_wordlist`
+/// to hold non-ASCII entries while `identifier_wordlist` stays
+/// English-only; keeping the fields distinct now means that future
+/// change only has to touch [`build_config`]'s signature and its
+/// production call site, not every consumer. See
+/// `docs/v2/multi-language-density-notes.md`'s "2026-07-05 update"
+/// §4 for the full trace of why a single shared field is unsafe once
+/// the two wordlists can actually diverge.
 struct DaemonConfig {
-    wordlist: &'static Wordlist,
+    identifier_wordlist: &'static Wordlist,
+    content_wordlist: &'static Wordlist,
     tracked_tools: Vec<TrackedTool>,
     materialization: MaterializationConfig,
     /// Test-only knob: skip on-disk materialisation.  Production
@@ -144,16 +175,57 @@ enum SecretState {
 pub struct DaemonState {
     config: DaemonConfig,
     secret_state: SecretState,
-    /// LRU cache for [`Permutation`]s consumed by the
-    /// `MappingBuilder` hot path ([`Self::token_mapping`]).  Sized
-    /// to the production daemon's worst-case fan-out
-    /// (`ALIAS_COUNT_WIRE` virtual epochs x identifier + honey).
+    /// LRU cache for [`Permutation`]s consumed by [`Self::rotate`]'s
+    /// materialization path — real rotation-epoch numbers only.
+    ///
+    /// Deliberately a SEPARATE cache from
+    /// [`Self::content_permutation_cache`], not a shared one keyed by
+    /// a wider `(epoch, purpose)` space. `Self::token_mapping` builds
+    /// permutations at "virtual epoch" numbers
+    /// (`real_epoch * stride + alias_index`) that are small integer
+    /// multiples of the real epoch and WILL numerically collide with
+    /// this cache's real epoch numbers as the daemon rotates (e.g.
+    /// real epoch 6 vs. virtual epoch 6 from real epoch 2 at
+    /// stride 3). A shared cache keyed only by `(epoch, purpose_id)`
+    /// cannot distinguish "real materialization epoch" from "virtual
+    /// token-mapping epoch" and would silently serve one role's
+    /// cached `Permutation` (built against `content_wordlist`'s
+    /// length) to the other role (which needs one built against
+    /// `identifier_wordlist`'s length) the moment those two wordlists
+    /// diverge in size — today they're always the same `Wordlist`
+    /// instance so this is latent, not observable, but splitting the
+    /// wordlist fields ([`DaemonConfig::identifier_wordlist`] /
+    /// [`DaemonConfig::content_wordlist`]) without also splitting the
+    /// cache would silently reintroduce this the moment phase 4 wires
+    /// in a differently-sized content wordlist. See
+    /// `docs/v2/multi-language-density-notes.md`'s "2026-07-05
+    /// update" §4.
+    ///
+    /// Sized smaller than [`Self::content_permutation_cache`]:
+    /// `rotate` only ever touches the current epoch's identifier +
+    /// honey permutations (2 entries), plus slack for the previous
+    /// epoch during a resume/rotate overlap.
+    ///
     /// Cleared on any state transition that could change the
     /// per-host secret; today only `unlock` does that, and it
     /// refuses re-unlock without a daemon restart so a fresh cache
     /// at construction is always consistent.
-    permutation_cache: PermutationCache,
+    identifier_permutation_cache: PermutationCache,
+    /// LRU cache for [`Permutation`]s consumed by the
+    /// `MappingBuilder` hot path in [`Self::token_mapping`].  Sized
+    /// to the production daemon's worst-case fan-out
+    /// (`MAX_ALIAS_COUNT_WIRE` virtual epochs x identifier + honey).
+    /// See [`Self::identifier_permutation_cache`]'s doc for why this
+    /// is a separate cache rather than a shared one.
+    content_permutation_cache: PermutationCache,
 }
+
+/// Capacity for [`DaemonState::identifier_permutation_cache`]:
+/// identifier + honey permutations (2) for the current epoch, plus
+/// 2-entry slack for the previous epoch during a resume/rotate
+/// overlap — far smaller than the content cache's virtual-epoch
+/// fan-out.
+const IDENTIFIER_PERMUTATION_CACHE_CAPACITY: usize = 4;
 
 impl DaemonState {
     /// Construct a daemon in the Locked state.  No secret in memory
@@ -182,7 +254,10 @@ impl DaemonState {
         Ok(Self {
             config,
             secret_state: SecretState::Locked,
-            permutation_cache: PermutationCache::with_default_capacity(),
+            identifier_permutation_cache: PermutationCache::new(
+                IDENTIFIER_PERMUTATION_CACHE_CAPACITY,
+            ),
+            content_permutation_cache: PermutationCache::with_default_capacity(),
         })
     }
 
@@ -215,7 +290,10 @@ impl DaemonState {
         Ok(Self {
             config,
             secret_state: unlocked,
-            permutation_cache: PermutationCache::with_default_capacity(),
+            identifier_permutation_cache: PermutationCache::new(
+                IDENTIFIER_PERMUTATION_CACHE_CAPACITY,
+            ),
+            content_permutation_cache: PermutationCache::with_default_capacity(),
         })
     }
 
@@ -242,7 +320,10 @@ impl DaemonState {
         Ok(Self {
             config,
             secret_state: unlocked,
-            permutation_cache: PermutationCache::with_default_capacity(),
+            identifier_permutation_cache: PermutationCache::new(
+                IDENTIFIER_PERMUTATION_CACHE_CAPACITY,
+            ),
+            content_permutation_cache: PermutationCache::with_default_capacity(),
         })
     }
 
@@ -457,8 +538,8 @@ impl DaemonState {
         // about idempotency, not steady-state hit rate.
         let new_mapping = MappingBuilder::with_cache(
             secret,
-            self.config.wordlist,
-            &self.permutation_cache,
+            self.config.identifier_wordlist,
+            &self.identifier_permutation_cache,
         )
         .build(&names, new_epoch)?;
         let stale = stale_names_from(cached_mapping);
@@ -542,7 +623,7 @@ impl DaemonState {
         };
         let wl = babbleon_preprocessor_v2::WhitespaceWordlist::build(
             secret,
-            self.config.wordlist,
+            self.config.content_wordlist,
             *epoch,
         )
         .map_err(|e| Error::Mapping(e.to_string()))?;
@@ -598,13 +679,16 @@ impl DaemonState {
                     .into(),
             ));
         };
-        let wl = self.config.wordlist;
+        let wl = self.config.content_wordlist;
         // Cache-backed builder: each (virtual_epoch, purpose) pair
         // is built once per daemon lifetime; subsequent requests at
         // the same epoch hit the cache and skip the ~35 ms Fisher-
-        // Yates pass.  See `DaemonState::permutation_cache`.
-        let builder =
-            MappingBuilder::with_cache(secret, wl, &self.permutation_cache);
+        // Yates pass.  See `DaemonState::content_permutation_cache`.
+        let builder = MappingBuilder::with_cache(
+            secret,
+            wl,
+            &self.content_permutation_cache,
+        );
         let (alias_count, stride) = if format_version
             < ALIAS_COUNT_VARIABLE_FROM_VERSION_WIRE
         {
@@ -653,6 +737,12 @@ impl DaemonState {
 
 /// Validate and pack the static configuration shared across lifecycle
 /// states.  Mirrors v1's `DaemonState::new`'s validation pass.
+///
+/// Takes a single `wordlist` and stores it in both
+/// [`DaemonConfig::identifier_wordlist`] and
+/// [`DaemonConfig::content_wordlist`] — every caller today wants the
+/// same wordlist for both roles. See [`DaemonConfig`]'s doc for why
+/// the two fields exist separately regardless.
 fn build_config(
     wordlist: &'static Wordlist,
     tracked_tools: Vec<TrackedTool>,
@@ -680,7 +770,8 @@ fn build_config(
         }
     }
     Ok(DaemonConfig {
-        wordlist,
+        identifier_wordlist: wordlist,
+        content_wordlist: wordlist,
         tracked_tools,
         materialization,
         skip_materialization,
@@ -702,8 +793,8 @@ fn build_unlocked_state(
         .iter()
         .map(|t| t.name.clone())
         .collect();
-    let cached_mapping =
-        MappingBuilder::new(&secret, config.wordlist).build(&names, epoch)?;
+    let cached_mapping = MappingBuilder::new(&secret, config.identifier_wordlist)
+        .build(&names, epoch)?;
     if !config.skip_materialization {
         materialize_atomic(
             &config.materialization,
@@ -1079,8 +1170,12 @@ mod tests {
     fn with_skip_materialization(s: &mut DaemonState) -> DaemonState {
         let tools = s.config.tracked_tools.clone();
         let mat = s.config.materialization.clone();
-        DaemonState::new_locked_skip_for_tests(s.config.wordlist, tools, mat)
-            .unwrap()
+        DaemonState::new_locked_skip_for_tests(
+            s.config.identifier_wordlist,
+            tools,
+            mat,
+        )
+        .unwrap()
     }
 
     // ----- private test-only constructor surfaced via super::DaemonState -----
@@ -1100,7 +1195,10 @@ mod tests {
             Ok(Self {
                 config,
                 secret_state: SecretState::Locked,
-                permutation_cache: PermutationCache::with_default_capacity(),
+                identifier_permutation_cache: PermutationCache::new(
+                IDENTIFIER_PERMUTATION_CACHE_CAPACITY,
+            ),
+            content_permutation_cache: PermutationCache::with_default_capacity(),
             })
         }
     }
@@ -1426,14 +1524,14 @@ mod tests {
 
     #[test]
     fn token_mapping_repeats_warm_the_permutation_cache() {
-        // Property: the daemon's `permutation_cache` field is
+        // Property: the daemon's `content_permutation_cache` field is
         // exercised by `token_mapping`.  After the first call the
         // cache holds ALIAS_COUNT_WIRE * 2 entries (identifier +
         // honey per virtual epoch); a second call at the same
         // host-epoch hits without growing the cache.
         use babbleon_daemon_protocol_v2::ALIAS_COUNT_WIRE;
         let s = build_state(tracked(), "/wrappers");
-        assert!(s.permutation_cache.is_empty());
+        assert!(s.content_permutation_cache.is_empty());
         let tokens = vec!["alpha".to_string(), "beta".to_string()];
         let (_, first) = s.token_mapping(
             &tokens,
@@ -1441,7 +1539,7 @@ mod tests {
         )
         .unwrap();
         // ALIAS_COUNT_WIRE distinct virtual epochs * (identifier + honey).
-        assert_eq!(s.permutation_cache.len(), ALIAS_COUNT_WIRE * 2);
+        assert_eq!(s.content_permutation_cache.len(), ALIAS_COUNT_WIRE * 2);
 
         let (_, second) = s.token_mapping(
             &tokens,
@@ -1449,8 +1547,64 @@ mod tests {
         )
         .unwrap();
         // Repeat call: cache stays the same size; outputs identical.
-        assert_eq!(s.permutation_cache.len(), ALIAS_COUNT_WIRE * 2);
+        assert_eq!(s.content_permutation_cache.len(), ALIAS_COUNT_WIRE * 2);
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn rotate_and_token_mapping_populate_independent_caches() {
+        // Property: `rotate` (materialization/path-name role) and
+        // `token_mapping` (preprocessor content role) warm SEPARATE
+        // `PermutationCache` instances, never each other's. This is
+        // the regression test for the 2026-07-05 finding: `rotate`'s
+        // real epoch numbers and `token_mapping`'s virtual epoch
+        // numbers (`real_epoch * stride + alias_index`) are guaranteed
+        // to numerically collide as the daemon rotates (e.g. real
+        // epoch 6 vs. virtual epoch 6 from real epoch 2 at stride 3).
+        // A single shared cache keyed by `(epoch, purpose_id)` cannot
+        // tell those two apart; splitting the cache per role is what
+        // makes it safe for `identifier_wordlist` and
+        // `content_wordlist` to diverge in phase 4 without silently
+        // serving one role's cached permutation (built against the
+        // other role's wordlist length) to the wrong consumer.
+        let tmp = tempfile::tempdir().unwrap();
+        let tools = tracked_in(tmp.path(), &["curl"]);
+        let cfg = cfg_in_tmp(tmp.path());
+        let mut s = DaemonState::new_unlocked(
+            fixed_secret(),
+            Wordlist::english_baseline(),
+            tools,
+            cfg,
+        )
+        .unwrap();
+
+        // `new_unlocked`'s genesis build goes through
+        // `build_unlocked_state`, which does NOT use either cache
+        // (`MappingBuilder::new`, not `with_cache`) — both caches
+        // start empty.
+        assert!(s.identifier_permutation_cache.is_empty());
+        assert!(s.content_permutation_cache.is_empty());
+
+        // `token_mapping` only ever touches the content cache.
+        let tokens = vec!["alpha".to_string()];
+        s.token_mapping(
+            &tokens,
+            babbleon_daemon_protocol_v2::LEGACY_FORMAT_VERSION_WIRE,
+        )
+        .unwrap();
+        assert!(s.identifier_permutation_cache.is_empty());
+        assert!(!s.content_permutation_cache.is_empty());
+        let content_len_after_token_mapping = s.content_permutation_cache.len();
+
+        // `rotate` only ever touches the identifier cache, and does
+        // not disturb the content cache's existing entries.
+        s.rotate().unwrap();
+        assert!(!s.identifier_permutation_cache.is_empty());
+        assert_eq!(
+            s.content_permutation_cache.len(),
+            content_len_after_token_mapping,
+            "rotate must not touch the content-role cache",
+        );
     }
 
     #[test]

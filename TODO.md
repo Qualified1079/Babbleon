@@ -758,31 +758,48 @@ is worth a reader seeing.
       Top 16 by language (unchanged shortlist): EN (already
       shipped), ES, FR, DE, JA, ZH-Hans, ZH-Hant, AR, RU, PT-BR,
       IT, NL, PL, TR, HI, KO.
-- [ ] **New prerequisite found 2026-07-05: split `DaemonConfig`'s
-      single `wordlist` field into `identifier_wordlist`
-      (ASCII-only, feeds only `build_epoch_mapping`'s
-      filesystem-path wrapper names) and `content_wordlist` (may
-      be multi-language, feeds only `token_mapping` +
-      `WhitespaceWordlist::build`).**  Today both consumers read
-      the exact same `&'static Wordlist`
-      (`crates/v2-babbleon-daemon/src/state.rs:114`, `:460`,
-      `:601`); wiring any non-ASCII pool into that single field
-      would silently break the CWE-22 path-safety guarantee
-      `crates/babbleon/wordlist/README.md`'s Invariant 1 exists
-      to protect, since `build_epoch_mapping` has no ASCII check
-      of its own — it trusts the field. Neither
-      `MappingBuilder::new`/`with_cache` nor
-      `WhitespaceWordlist::build` need to change (both already
-      take `&Wordlist` as a plain parameter); this is a
-      `DaemonConfig`/`DaemonState` wiring change plus a
-      test-fixture update, not an API redesign. Build this BEFORE
-      any multi-language data lands, with a test pinning
-      `build_epoch_mapping`'s output stays `[a-z]+`-only even when
-      `content_wordlist` is swapped non-ASCII. See
-      `docs/v2/multi-language-density-notes.md` §4 for the full
-      trace. Not built this session — deserves its own reviewed
-      diff against a struct with a large existing test surface,
-      not a rider on a research note.
+- [x] **`DaemonConfig`'s single `wordlist` field split into
+      `identifier_wordlist` (feeds only the materialization path
+      that produces filesystem-path wrapper names) and
+      `content_wordlist` (feeds only `token_mapping` +
+      `whitespace_compounds`).**  Closed 2026-07-05 (overnight
+      autonomous session), same session that found the gap.
+      `crates/v2-babbleon-daemon/src/state.rs`: `DaemonConfig` now
+      has two `&'static Wordlist` fields instead of one; every
+      constructor still takes a single `wordlist` parameter and
+      populates both (100% behavior-preserving — no multi-language
+      data exists yet to diverge them). `rotate`/
+      `build_unlocked_state` read only `identifier_wordlist`;
+      `token_mapping`/`whitespace_compounds` read only
+      `content_wordlist`. A second finding surfaced while building
+      this: the daemon's single shared `PermutationCache` is keyed
+      by `(epoch, purpose_id)` only, and `token_mapping`'s "virtual
+      epoch" numbers (`real_epoch * stride + alias_index`) are
+      small multiples of the real rotation epoch — guaranteed to
+      numerically collide with `rotate`'s real epoch numbers over
+      the daemon's lifetime. Sharing one cache across both roles
+      would silently serve one role's permutation (built against
+      the other role's wordlist length) to the wrong consumer the
+      moment the two wordlists diverge in size. Fixed by splitting
+      into `identifier_permutation_cache` (capacity 4 — only ever
+      holds the current epoch's identifier + honey permutations)
+      and `content_permutation_cache` (capacity 12, unchanged
+      sizing rationale). New tests:
+      `rotate_and_token_mapping_populate_independent_caches` in
+      `state.rs` (pins the two caches stay independent through a
+      real rotate + token_mapping cycle) and
+      `sharing_a_cache_across_different_wordlist_lengths_serves_the_wrong_permutation`
+      in `crates/v2-babbleon-core/src/permutation_cache.rs` (a
+      direct, hand-constructed demonstration of the hazard the
+      split avoids). `MappingBuilder::with_cache`'s doc comment
+      extended to document the wordlist-divergence hazard alongside
+      its existing cross-secret warning. All 135
+      `v2-babbleon-daemon` tests + 98 `v2-babbleon-core` tests pass;
+      `cargo clippy --all-targets -- -D warnings` clean on both
+      crates. The multi-language *data* itself is still blocked on
+      the CC-BY-SA-4.0 licensing decision above — this item was
+      purely the structural prerequisite, done ahead of that
+      decision since it's content-neutral.
 - [ ] Per-epoch language cycling logic in `babbleon-core`.
 - [ ] Re-run `tools/tokenizer-benchmark/` on multilingual
       compounds vs spaced English; smaller-model superlinear

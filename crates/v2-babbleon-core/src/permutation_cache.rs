@@ -434,6 +434,78 @@ mod tests {
     }
 
     #[test]
+    fn sharing_a_cache_across_different_wordlist_lengths_serves_the_wrong_permutation() {
+        // Demonstrates the hazard `MappingBuilder::with_cache`'s doc
+        // warns about: the cache key is `(epoch, purpose_id)` only,
+        // with no wordlist identity in it. Two callers building
+        // permutations for the SAME epoch/purpose but DIFFERENT
+        // wordlist lengths, sharing one cache, silently corrupt each
+        // other — whichever call lands second gets the first call's
+        // permutation back, sized for the wrong domain.
+        //
+        // This is exactly why `crates/v2-babbleon-daemon`'s
+        // `DaemonState` gives `rotate` (identifier_wordlist) and
+        // `token_mapping` (content_wordlist) their own cache
+        // instances rather than sharing
+        // `PermutationCache::with_default_capacity()` between them —
+        // see that crate's `state.rs` for the real-world epoch
+        // numbering (real rotation epochs vs. token_mapping's virtual
+        // epochs) that makes the numeric collision this test
+        // hand-constructs actually happen in production.
+        let secret = PerHostSecret::from_bytes(&[3u8; 32]).unwrap();
+        let cache = PermutationCache::new(4);
+        let purpose = b"v2-shared-hazard-demo";
+
+        // Role A (e.g. materialization) builds against a 100-entry
+        // wordlist at epoch 5 and caches the result.
+        let perm_len_100 =
+            Arc::new(Permutation::build(&secret, 5, purpose, 100).unwrap());
+        cache.insert(5, PURPOSE_ID_IDENTIFIER, Arc::clone(&perm_len_100));
+
+        // Role B (e.g. token_mapping's virtual-epoch math) wants a
+        // permutation for a DIFFERENT, smaller 64-entry wordlist, but
+        // happens to land on the same numeric epoch (5) and the same
+        // purpose byte — plausible in production since virtual
+        // epochs are small multiples of the real epoch and both
+        // roles use the same `PURPOSE_ID_IDENTIFIER` internally
+        // (see `MappingBuilder::build`).
+        let served = cache
+            .get(5, PURPOSE_ID_IDENTIFIER)
+            .expect("cache has an entry for (5, PURPOSE_ID_IDENTIFIER)");
+
+        // The cache hands Role B Role A's 100-entry permutation —
+        // wrong domain for a 64-entry wordlist. Applying it to any
+        // index >= 64 is already silently unsafe for Role B's
+        // wordlist even though it's in-bounds for the cached
+        // permutation itself.
+        assert!(Arc::ptr_eq(&served, &perm_len_100));
+        let out_of_range_for_role_b = served.apply(80).unwrap();
+        assert!(
+            out_of_range_for_role_b < 100,
+            "the served permutation is valid for a 100-entry domain, \
+             not Role B's 64-entry one — index {out_of_range_for_role_b} \
+             would be out of bounds for Role B's wordlist",
+        );
+
+        // The fix is NOT a smarter cache key — it's giving each role
+        // its own cache instance, which trivially can't collide:
+        let cache_a = PermutationCache::new(4);
+        let cache_b = PermutationCache::new(4);
+        cache_a.insert(5, PURPOSE_ID_IDENTIFIER, Arc::clone(&perm_len_100));
+        let perm_len_64 =
+            Arc::new(Permutation::build(&secret, 5, purpose, 64).unwrap());
+        cache_b.insert(5, PURPOSE_ID_IDENTIFIER, Arc::clone(&perm_len_64));
+        assert!(Arc::ptr_eq(
+            &cache_a.get(5, PURPOSE_ID_IDENTIFIER).unwrap(),
+            &perm_len_100
+        ));
+        assert!(Arc::ptr_eq(
+            &cache_b.get(5, PURPOSE_ID_IDENTIFIER).unwrap(),
+            &perm_len_64
+        ));
+    }
+
+    #[test]
     fn cache_is_send_and_sync() {
         // Compile-time assertion: PermutationCache is Send + Sync.
         // The Mutex<VecDeque<Entry>> guards us; this test compiles

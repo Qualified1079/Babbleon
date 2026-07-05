@@ -7406,9 +7406,7 @@ session (deliberately — see reasoning above for why the
 - **Multi-language wordlists remain blocked on an operator
   licensing decision** (CC-BY-SA-4.0 share-alike vs. the M5
   Enterprise track), not on scope-uncertainty anymore — the scope
-  is now settled and written down. Once that decision lands, the
-  `DaemonConfig` wordlist-split prerequisite is the next concrete
-  step, before any data vendoring.
+  is now settled and written down.
 - Same standing operator-gated items, unchanged: seccomp/exec
   finding, PAM wiring, A08 (v2 binaries in the release pipeline),
   the secret-literal runtime-channel question, and now the
@@ -7417,3 +7415,109 @@ session (deliberately — see reasoning above for why the
   adversarial-LLM measurement remain genuinely dry of unblocked
   autonomous work, confirmed again this session rather than
   re-investigated from scratch.
+
+---
+
+## 2026-07-05 (overnight autonomous session, continued) — built the `DaemonConfig` wordlist/cache split the previous entry filed as a prerequisite
+
+Author: Claude Sonnet 5 (same session as the entry immediately
+above). That entry filed the `identifier_wordlist`/`content_wordlist`
+split as "not built this session — deserves its own reviewed diff."
+Having just finished tracing every consumer to write that entry, the
+exact shape of the fix was already unambiguous, so built it rather
+than leaving a note for a future session to re-derive the same trace.
+Scope stayed disciplined: content-neutral only, no multi-language
+data touched, no wait on the CC-BY-SA-4.0 licensing call.
+
+**What changed**, all in `crates/v2-babbleon-daemon/src/state.rs`
+plus a doc/test addition in `crates/v2-babbleon-core`:
+
+- `DaemonConfig`'s single `wordlist` field is now two:
+  `identifier_wordlist` (read only by `rotate` and
+  `build_unlocked_state` — the materialization path that produces
+  filesystem-path wrapper names) and `content_wordlist` (read only
+  by `token_mapping` and `whitespace_compounds` — content-only,
+  embedded in scrambled source text). Every existing constructor
+  (`new_locked`, `new_unlocked`, `new_without_materialization`,
+  the test-only `new_locked_skip_for_tests`) still takes ONE
+  `wordlist` parameter and populates both fields from it — zero
+  behavior change today, since nothing has a second wordlist to
+  pass yet. None of the ~30 existing call sites in `state.rs`,
+  `handlers.rs`, or `main.rs` needed to change.
+- **Second hazard found while building this, not by the prior
+  entry's trace**: `DaemonState`'s single `PermutationCache` is
+  keyed by `(epoch, purpose_id)` only. `rotate` caches under real
+  rotation-epoch numbers; `token_mapping` caches under "virtual
+  epoch" numbers (`real_epoch * stride + alias_index`, stride 3 or
+  up to `MAX_ALIAS_COUNT_WIRE=5`) — small integer multiples of the
+  real epoch, GUARANTEED to numerically collide with real epoch
+  values as the daemon rotates over its lifetime (e.g. real epoch 6
+  vs. virtual epoch 6 from real epoch 2 at stride 3). Both roles
+  also use the same internal `PURPOSE_ID_IDENTIFIER` byte (an
+  implementation detail of `MappingBuilder::build`, invisible to
+  either caller). Today this is silent and harmless ONLY because
+  both roles happen to share the exact same `Wordlist` instance, so
+  a same-numbered cache hit is deterministically identical either
+  way. The moment `identifier_wordlist` and `content_wordlist`
+  diverge in length (which is the whole point of the split above),
+  a shared cache would silently serve one role's permutation —
+  built against the other role's wordlist length — to the wrong
+  consumer, corrupting compounds without necessarily erroring.
+  Fixed by giving each role its own cache:
+  `identifier_permutation_cache` (capacity 4 — `rotate` only ever
+  needs the current epoch's identifier + honey permutations, plus
+  slack for a resume/rotate overlap) and `content_permutation_cache`
+  (capacity 12, unchanged from the original shared cache's sizing
+  rationale, which was already specifically about `token_mapping`'s
+  virtual-epoch fan-out).
+- Extended `MappingBuilder::with_cache`'s doc comment
+  (`crates/v2-babbleon-core/src/mapping.rs`) to document the
+  wordlist-divergence hazard as the same class of bug as its
+  existing cross-secret warning, rather than leaving it
+  undocumented for the next crate that reaches for a shared cache.
+- Two new tests, not just the existing suite re-run:
+  `rotate_and_token_mapping_populate_independent_caches`
+  (`state.rs`) drives a real `new_unlocked` → `token_mapping` →
+  `rotate` sequence and asserts each cache only grows from its own
+  role's calls, never the other's.
+  `sharing_a_cache_across_different_wordlist_lengths_serves_the_wrong_permutation`
+  (`crates/v2-babbleon-core/src/permutation_cache.rs`) hand-
+  constructs the exact hazard (two `Permutation`s of different
+  domain sizes inserted under the same `(epoch, purpose_id)` key in
+  one shared cache, demonstrating the wrong one gets served) and
+  then shows two separate cache instances trivially avoid it — a
+  direct demonstration, not just an assertion that the daemon-level
+  fix "should" work.
+
+**Verified**, not assumed: `cargo build` clean for both crates;
+`cargo clippy -p v2-babbleon-core -p v2-babbleon-daemon --all-targets
+-- -D warnings` clean (zero warnings); full test run across every v2
+crate (`v2-babbleon-core`, `v2-babbleon-daemon`,
+`v2-babbleon-daemon-protocol`, `v2-babbleon-preprocessor`,
+`v2-babbleon`) — every suite passes, 135 tests in
+`v2-babbleon-daemon` (was 134; the new independent-caches test), 98
+in `v2-babbleon-core` (includes the new cache-hazard demonstration).
+Did not run `cargo fmt --check`: it reports diffs across essentially
+every file in both crates, including files untouched this session —
+a rustfmt version/style-edition mismatch in this environment, not
+real formatting debt (matches every prior session's verification
+method in this file, which checks clippy + tests, never `cargo
+fmt --check`). Did not touch `cargo fmt` on anything to avoid an
+unrelated repo-wide reformat.
+
+`TODO.md`'s Phase 4 multi-language section and
+`docs/v2/multi-language-density-notes.md` §4 both updated to record
+this as closed rather than left as a filed prerequisite.
+
+### For the next session
+
+- The `DaemonConfig`/cache split is done; multi-language wordlist
+  work is now blocked on ONLY the CC-BY-SA-4.0 licensing decision
+  (§1 of the density-notes doc), not on any remaining code
+  prerequisite.
+- Same standing operator-gated items, unchanged: seccomp/exec
+  finding, PAM wiring, A08, the secret-literal runtime-channel
+  question, and the CC-BY-SA-4.0 licensing call.
+- Phase-4 obfuscation-layer backlog (Layer 7/8/10) and the
+  adversarial-LLM measurement remain genuinely dry of unblocked
+  autonomous work.
