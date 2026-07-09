@@ -7521,3 +7521,207 @@ this as closed rather than left as a filed prerequisite.
 - Phase-4 obfuscation-layer backlog (Layer 7/8/10) and the
   adversarial-LLM measurement remain genuinely dry of unblocked
   autonomous work.
+
+---
+
+## 2026-07-09 (overnight autonomous session) — fixed `MVP_LIMITATIONS` #1: multi-line triple-quoted strings now tokenize and round-trip correctly
+
+Author: Claude Sonnet 5 (sleeping-operator session; user asleep,
+autonomous). Read `CLAUDE.md` → `HANDOFF.md` (this file) →
+`V2_PLAN.md` → `TODO.md` per the routing document's own reading
+order. Confirmed the standing conclusion from the last several
+entries (Phase-4 obfuscation-layer backlog, adversarial-LLM
+measurement) is still accurate — no frontier-LLM API credentials in
+this environment either, and Layer 7/8/10 are still blocked on a real
+parser or an operator decision — and did not re-derive it from
+scratch, matching what those entries asked the next session to do.
+
+Went looking for unblocked work in a category those entries hadn't
+exhausted: correctness gaps in the MVP tokenizer itself that don't
+require a full parser swap. `python_tokenizer`'s own module doc
+(`MVP_LIMITATIONS` #1) has said since the phase-3 MVP shipped:
+"Multi-line string literals (`\"\"\"...\"\"\"` or `'''...'''` spanning
+newlines) are NOT preserved correctly — the tokenizer's string-state
+resets at every line boundary." That's a real, self-contained,
+non-operator-gated correctness bug, distinct from the Layer 7/8/10
+question (which is about *safely adding new obfuscation layers* on
+top of the tokenizer, not about the tokenizer faithfully round-
+tripping ordinary Python that's already in wide use — triple-quoted
+docstrings are extremely common).
+
+**What changed, in two layers, because fixing the first one exposed
+a second, independent bug:**
+
+1. **`crates/v2-babbleon-preprocessor/src/python_tokenizer.rs`** —
+   rewritten from a two-phase design (pre-split on `\n`, then a
+   per-line `tokenize_intra_line` that always started fresh in
+   `LineState::Code`) to a single-pass character scanner
+   (`tokenize_line_start` + `tokenize_body_char`) that carries state
+   across line boundaries. Every state except the two new
+   `TripleSingle`/`TripleDouble` variants still treats a raw `\n`
+   exactly the way the old per-line-reset design did (flush the
+   current word, emit one `Newline` token, start fresh indent
+   detection) — verified by keeping every pre-existing unit test
+   unchanged and passing, including the ones for unterminated
+   single/double-quoted strings and comments, which pin that
+   backward-compat boundary explicitly
+   (`single_quoted_string_still_does_not_span_raw_newline`, new this
+   session). The two triple-quote states are the one case that
+   carries the accumulated `word` (with the interior `\n` bytes
+   pushed as ordinary characters) and the state itself across the
+   line boundary, emitting no `Newline` token and doing no indent
+   detection until the closing `\"\"\"`/`'''` is found — which is
+   exactly what keeps the string's interior formatting byte-exact
+   through `tokens_to_source`'s indent-block-firing logic (that
+   machinery only fires on `Newline`-token boundaries and Space/Tab/
+   Word tokens; a multi-line string is now ONE `Word` token with the
+   newlines and every continuation line's original leading
+   whitespace baked into its content, so no indent gets spuriously
+   injected into the string body). Escape-aware (a `\` inside a
+   triple-quoted string consumes the next char without inspecting it
+   for a closing delimiter) and nesting-aware (`\"\"\"\"` — four
+   quotes — closes the triple at the first three, matching how real
+   Python would also treat that fragment). An unterminated
+   triple-quoted string (invalid Python) flushes whatever was
+   accumulated as one `Word` at EOF rather than panicking or looping
+   — consistent with limitation 6 (no validation). 12 new unit tests
+   cover single-line and multi-line cases, embedded blank lines,
+   under-indented and over-indented continuation lines (the string's
+   interior whitespace is content, not Python indent structure, and
+   must survive verbatim even when it wouldn't make sense as a real
+   indent transition), escaped quotes and escaped triple-quote
+   sequences, code following a same-line-closing triple string, and
+   the EOF/unterminated case. Confirmed the tokenizer's own
+   `tokens_to_source` round-trip (not just the token stream shape)
+   for four of these via direct `tokenize` → `tokens_to_source`
+   assertions.
+
+2. **`crates/v2-babbleon-preprocessor/src/file_format.rs`** — found
+   by testing the fix through the *actual production pipeline*
+   rather than stopping at the tokenizer's own unit tests (this
+   file's own recurring discipline: "verified, not assumed"). A
+   multi-line triple-quoted string is now correctly one `Word` token
+   with embedded `\n` bytes — but the scrambled-file header's
+   `tokens:` line is line-based (`content.splitn(6, '\n')`) and
+   tab-joined (`sorted_tokens.join("\t")`), so a token containing a
+   literal `\n` byte silently shifted every subsequent header field
+   and broke `decode`'s separator-line check
+   (`HeaderParse("expected \"---\" separator line, got \"\"")`) —
+   caught by a new `pipeline_with_real_mapping.rs` test that scrambles
+   a real docstring through `scramble_pipeline`/`unscramble_pipeline`
+   with the real `MappingBuilder`, not a synthetic one. This was a
+   **latent bug that predates this session**: a `Word` token
+   containing a literal (not backslash-escaped) tab byte inside a
+   quoted string — legal single-line Python, just unusual style —
+   would have hit the exact same tab/field-separator collision before
+   today; the multi-line-string fix just made the newline variant of
+   the same class of bug reachable via an extremely common Python
+   construct (any docstring). Fixed both at once: `escape_token` /
+   `unescape_token` (new, `file_format.rs`) replace literal `\n`/`\t`
+   bytes with two private-use-area sentinel characters (U+E000 /
+   U+E001) ONLY while a token is embedded in the header's `tokens:`
+   line; `encode_versioned` escapes each token before the tab-join,
+   `decode` unescapes each field after the tab-split. The `Token` IR,
+   L2's mapping, and the L3 body never see the sentinels — this is
+   scoped entirely to the header serialization, the one place the
+   line/tab-based format actually breaks. Deliberately did NOT
+   generalize to escaping literal backslashes too: token content
+   already legitimately contains raw backslash bytes today (any
+   string literal with a `\n`/`\t`/`\\` escape *sequence* the
+   programmer typed, since this tokenizer doesn't interpret Python
+   escapes — see limitation 6) and none of those collide with the
+   line/tab boundary, so escaping backslash generically would have
+   been a real wire-format change for a huge fraction of existing
+   files with no bug to justify it. Chose PUA sentinel characters
+   over a textual marker (`__bbnpos<N>__`-style) specifically because
+   real Python source cannot plausibly contain them, so no
+   escape-of-the-escape logic is needed; guarded with a
+   `debug_assert!` (not a hard runtime error) if a token somehow
+   already contains a sentinel — deliberately matching this crate's
+   existing posture for its other markers (`__bbnpos`, `__bbndecoy`,
+   `__bbnfold*`), none of which runtime-defend against a source file
+   that happens to contain the marker text either; documented as an
+   explicit non-goal in both the module doc and the assert message
+   rather than left implicit. This is purely additive: for any token
+   that doesn't contain a literal `\n`/`\t` byte (the overwhelming
+   majority — ordinary identifiers, keywords, and single-line string
+   literals), `escape_token` is a no-op and the on-disk wire format is
+   byte-identical to before this session; no format-version bump
+   needed, unlike the L6/L9 layer additions, because this changes
+   nothing about how existing files decode. 3 new tests cover a
+   token with an embedded newline, a token with an embedded tab, and
+   a mix of both alongside ordinary tokens, each round-tripped through
+   `encode`/`decode`.
+
+**Load-bearing verification, not assumed:** a new
+`round_trip_multiline_docstring_executes_identically` test in
+`pipeline_with_real_mapping.rs` scrambles a function with a
+two-paragraph docstring (including a deliberately under-indented
+continuation line — content whitespace, not Python indent structure)
+through the real `scramble_pipeline`/`unscramble_pipeline` with the
+real `MappingBuilder`, asserts the docstring's plaintext does NOT
+survive in the scrambled BODY (L2 replaces the body occurrence with a
+compound; the header's `tokens:` line legitimately still lists the
+plaintext token, same as every other identifier/string-literal token —
+that's the documented Kerckhoffs-principle design in this file's own
+module doc, not something this fix changes or should hide), asserts
+byte-exact round-trip against the original source, and diffs real
+`python3` stdout between the original and the recovered source. All
+green.
+
+`cargo build` clean; full test suite green across every v2 crate
+touched or dependent (`v2-babbleon-core`, `v2-babbleon-preprocessor`,
+`v2-babbleon-daemon-protocol`, `v2-babbleon-daemon`, `v2-babbleon`,
+`v2-babbleon-python-shim`, `v2-babbleon-vault`,
+`v2-babbleon-launch-untrusted`, `v2-babbleon-launch-artefacts`,
+`v2-babbleon-login-shell`, `v2-babbleon-pam`) — zero failures.
+`cargo clippy -p v2-babbleon-preprocessor --all-targets -- -D
+warnings` reports the same 19 pre-existing findings as an unmodified
+checkout (confirmed by diffing the error count against `git stash`
+before/after this session's changes) — all in files this session
+didn't touch (`decoy_injection.rs`, `direction_reversal.rs`,
+`identifier_scrambler.rs`, `tokenizer_noise.rs`, and two pre-existing
+doc-comment/reference lints in `full_round_trip.rs` /
+`pipeline_with_real_mapping.rs`'s existing helper functions) — a
+clippy-toolchain-drift count that has grown from the 11 a 2026-07-04
+entry recorded to 19 today, consistent with time passing rather than
+anything this session did; zero new findings introduced. `python3
+--version` confirmed 3.11.15 present for the real-execution checks.
+
+`python_tokenizer.rs`'s module doc (`MVP_LIMITATIONS` #1) rewritten
+in place to describe the new (fixed) behavior instead of the old
+limitation, with a pointer to exactly which code carries the
+cross-line state. No `TODO.md` line existed for this specific item
+(it was only ever documented as a module-doc limitation, not a
+tracked checklist entry), so there was nothing to check off there;
+confirmed by grepping `TODO.md`/`HANDOFF.md` for "triple-quot" /
+"docstring" before concluding this.
+
+### For the next session
+
+- `MVP_LIMITATIONS` is now down to #2 (mixed-width indent
+  normalization — a documented, intentional design choice, not a
+  bug), #3 (operators not split from identifiers — the real blocker
+  for Layer 7/8, per every prior session's investigation), #4
+  (f-string interiors opaque — intentional), #5 (trailing whitespace
+  preserved — intentional), and #6 (no Python validation —
+  intentional). None of the remaining five are "not preserved
+  correctly" bugs the way #1 was; they're documented scope
+  boundaries. Don't go looking for another quick MVP-tokenizer
+  correctness fix assuming there's a second one sitting there the
+  way #1 was — there wasn't a queue of these, #1 was flagged as a
+  known gap for a long time specifically because it was the one
+  actual bug in the list.
+- The `file_format.rs` sentinel-escaping fix is a genuine, if narrow,
+  hardening of the header format's real invariant (any token must
+  not contain the line/field-separator bytes) — worth knowing about
+  if a future session ever touches `python_tokenizer.rs` again in a
+  way that could put a literal `\t` or `\n` into a `Word` token by a
+  new path; the escaping now defends that generically, not just for
+  the triple-quoted-string case that surfaced it.
+- Same standing operator-gated items, unchanged: seccomp/exec
+  finding, PAM wiring, A08, the secret-literal runtime-channel
+  question, and the CC-BY-SA-4.0 licensing call. Phase-4
+  obfuscation-layer backlog (Layer 7/8/10) and the adversarial-LLM
+  measurement remain genuinely dry of unblocked autonomous work —
+  still true, not re-derived this session.

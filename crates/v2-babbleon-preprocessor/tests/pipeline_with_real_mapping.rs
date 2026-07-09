@@ -408,3 +408,71 @@ print(port)
         "folded-then-recovered integer literals must compute identically",
     );
 }
+
+#[test]
+fn round_trip_multiline_docstring_executes_identically() {
+    // MVP_LIMITATIONS #1 load-bearing check: a triple-quoted
+    // docstring spanning several lines, with a blank line and a
+    // continuation line indented LESS than the function body, must
+    // survive scramble -> unscramble byte-for-byte through the full
+    // production pipeline (file-format header included) and execute
+    // identically. Also asserts the docstring's plaintext does not
+    // survive in the scrambled BODY specifically (L2 replaces the
+    // body occurrence with a compound) — the file HEADER's
+    // `tokens:` line legitimately still lists the plaintext token,
+    // same as it does for every other identifier/string-literal
+    // token; that's the documented unscramble-without-source
+    // mechanism, not something this fix changes or is expected to
+    // hide.
+    let original = "\
+def greet(name):
+    \"\"\"Greet a person by name.
+
+    Second paragraph, deliberately under-indented relative to the
+    function body it lives in.
+    \"\"\"
+    return \"hello \" + name
+
+print(greet(\"world\"))
+";
+    let epoch = 3;
+    let wl = build_whitespace_wordlist(epoch);
+    let scrambled = scramble_pipeline(
+        original,
+        epoch,
+        &wl,
+        build_real_identifier_mapping,
+    )
+    .expect("scramble_pipeline must succeed");
+
+    let decoded = decode_file(&scrambled.file).expect("decode header");
+    for needle in ["Greet a person by name", "Second paragraph"] {
+        assert!(
+            !decoded.body.contains(needle),
+            "docstring text {needle:?} must not survive in the scrambled body",
+        );
+    }
+    let mapping =
+        build_real_identifier_mapping(&decoded.sorted_tokens, epoch)
+            .expect("rebuild identifier mapping");
+    let unscrambled = unscramble_pipeline(
+        decoded.version,
+        decoded.epoch,
+        &decoded.body,
+        &wl,
+        &mapping,
+    );
+    assert_eq!(
+        unscrambled, original,
+        "multi-line docstring must round-trip byte-for-byte"
+    );
+
+    let original_out = python_exec(original).expect("baseline executes");
+    let unscrambled_out = python_exec(&unscrambled).unwrap_or_else(|| {
+        panic!("unscrambled failed to execute:\n---\n{unscrambled}\n---")
+    });
+    assert_eq!(
+        original_out, unscrambled_out,
+        "multi-line docstring round-trip must execute identically",
+    );
+}

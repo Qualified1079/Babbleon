@@ -61,11 +61,81 @@
 //! HKDF derivation of the per-epoch compounds, not from hiding which
 //! tokens exist in the file.  See `docs/v2/structure-scrambling.md`
 //! §"Kerckhoffs's principle for the token list."
+//!
+//! # Token escaping on the `tokens:` line
+//!
+//! The header is line-based (`splitn(6, '\n')`) and the token list is
+//! tab-joined, so a token whose own content contains a literal `\n`
+//! or `\t` byte would otherwise corrupt the line/field boundaries.
+//! Before `python_tokenizer` grew multi-line triple-quoted-string
+//! support, a `Word` token could still (rarely) contain a raw tab
+//! byte typed literally inside a quoted string (`"a<TAB>b"`,
+//! distinct from the two-character escape sequence `\t`); now a
+//! multi-line triple-quoted string is intentionally one `Word` token
+//! with embedded `\n` bytes (see `python_tokenizer`'s
+//! `MVP_LIMITATIONS` #1). [`escape_token`] / [`unescape_token`]
+//! replace those two bytes with private-use-area sentinel characters
+//! (U+E000 / U+E001) before/after they touch the `tokens:` line only
+//! — the `Token` IR, the L2 mapping, and the L3 body never see the
+//! sentinels. Real source practically never contains U+E000/U+E001
+//! (reserved by Unicode for private use, never assigned meaning), so
+//! this is the same "assumed-safe, not runtime-defended" posture the
+//! `__bbnpos<N>__` / `__bbndecoy<N>__` / `__bbnfold*__` markers
+//! elsewhere in this crate already take for their own collision
+//! surface — see the `debug_assert!` in `escape_token` for the
+//! dev-build tripwire.
 
 use crate::errors::Error;
 
 /// Magic string that opens every scrambled file header.
 pub const HEADER_MAGIC: &str = "babbleon-v2";
+
+/// Private-use-area stand-in for a literal `\n` byte inside a token,
+/// used only while the token is embedded in the header's `tokens:`
+/// line.  See the module doc's "Token escaping" section.
+const NEWLINE_SENTINEL: char = '\u{E000}';
+
+/// Private-use-area stand-in for a literal `\t` byte inside a token,
+/// used only while the token is embedded in the header's `tokens:`
+/// line.  See the module doc's "Token escaping" section.
+const TAB_SENTINEL: char = '\u{E001}';
+
+/// Replace literal `\n` / `\t` bytes in `token` with their header-only
+/// sentinel stand-ins so the token can safely occupy one field of the
+/// tab-joined, newline-terminated `tokens:` line.
+///
+/// Debug-asserts that `token` doesn't already contain either sentinel
+/// — see the module doc for why that's treated as a non-goal to
+/// defend in release builds, matching this crate's existing marker
+/// conventions (`__bbnpos<N>__` and friends).
+fn escape_token(token: &str) -> String {
+    debug_assert!(
+        !token.contains(NEWLINE_SENTINEL) && !token.contains(TAB_SENTINEL),
+        "token already contains a header sentinel character; \
+         real Python source is not expected to contain U+E000/U+E001"
+    );
+    token
+        .chars()
+        .map(|ch| match ch {
+            '\n' => NEWLINE_SENTINEL,
+            '\t' => TAB_SENTINEL,
+            other => other,
+        })
+        .collect()
+}
+
+/// Inverse of [`escape_token`]: replace the header-only sentinel
+/// stand-ins back with the literal `\n` / `\t` bytes they represent.
+fn unescape_token(field: &str) -> String {
+    field
+        .chars()
+        .map(|ch| match ch {
+            NEWLINE_SENTINEL => '\n',
+            TAB_SENTINEL => '\t',
+            other => other,
+        })
+        .collect()
+}
 
 /// Separator line between the header and the L3 body.
 pub const HEADER_SEP: &str = "---";
@@ -122,7 +192,11 @@ pub fn encode_versioned(
     sorted_tokens: &[String],
     body: &str,
 ) -> String {
-    let tokens_line = sorted_tokens.join("\t");
+    let tokens_line = sorted_tokens
+        .iter()
+        .map(|t| escape_token(t))
+        .collect::<Vec<_>>()
+        .join("\t");
     if version == FORMAT_VERSION_LEGACY {
         format!(
             "{HEADER_MAGIC}\nepoch:{epoch}\ntokens:{tokens_line}\n{HEADER_SEP}\n{body}"
@@ -211,7 +285,7 @@ pub fn decode(content: &str) -> Result<DecodedFile, Error> {
     let sorted_tokens: Vec<String> = if tokens_str.is_empty() {
         Vec::new()
     } else {
-        tokens_str.split('\t').map(str::to_owned).collect()
+        tokens_str.split('\t').map(unescape_token).collect()
     };
 
     let sep = lines.next().unwrap_or("");
@@ -342,6 +416,49 @@ mod tests {
         let encoded = encode(1, &[], body);
         let d = decode(&encoded).unwrap();
         assert_eq!(d.body, body);
+    }
+
+    #[test]
+    fn token_containing_newline_round_trips_through_header() {
+        // A multi-line triple-quoted string is one Word token with
+        // embedded '\n' bytes (python_tokenizer::MVP_LIMITATIONS #1).
+        // Without escaping, this token's newline would be
+        // misinterpreted as a header line boundary.
+        let toks = vec!["\"\"\"line one\nline two\"\"\"".to_string()];
+        let encoded = encode(1, &toks, "body");
+        // The tokens line itself must not contain a raw newline: the
+        // header is still exactly 5 lines + body.
+        assert_eq!(encoded.matches('\n').count(), 5);
+        let d = decode(&encoded).unwrap();
+        assert_eq!(d.sorted_tokens, toks);
+        assert_eq!(d.body, "body");
+    }
+
+    #[test]
+    fn token_containing_tab_round_trips_through_header() {
+        // A literal tab byte inside a quoted string ("a<TAB>b") was
+        // already representable in a Word token before the
+        // multi-line-string fix; this pins that it doesn't get
+        // misread as a tokens-line field separator either.
+        let toks =
+            vec!["\"a\tb\"".to_string(), "plain".to_string()];
+        let encoded = encode(1, &toks, "body");
+        let d = decode(&encoded).unwrap();
+        assert_eq!(d.sorted_tokens, toks);
+    }
+
+    #[test]
+    fn token_with_newline_and_tab_and_ordinary_tokens_all_round_trip() {
+        let toks = vec![
+            "alpha".to_string(),
+            "\"\"\"multi\nline\"\"\"".to_string(),
+            "\"tabbed\ttoken\"".to_string(),
+            "zoo".to_string(),
+        ];
+        let encoded = encode(9, &toks, "b");
+        let d = decode(&encoded).unwrap();
+        assert_eq!(d.sorted_tokens, toks);
+        assert_eq!(d.body, "b");
     }
 
     #[test]

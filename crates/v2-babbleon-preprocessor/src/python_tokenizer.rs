@@ -31,10 +31,25 @@
 //!
 //! # `MVP_LIMITATIONS` (read before extending)
 //!
-//! 1. **Multi-line string literals** (`"""..."""` or `'''...'''`
-//!    spanning newlines) are NOT preserved correctly — the
-//!    tokenizer's string-state resets at every line boundary.  Use
-//!    single-line string literals only; embed newlines via `\n`.
+//! 1. **Multi-line triple-quoted strings ARE preserved, as a single
+//!    opaque `Word` token.**  `"""..."""` / `'''...'''` spanning any
+//!    number of newlines is scanned as one contiguous run (escape-
+//!    aware, nested-quote-aware) and kept as one `Token::Word` whose
+//!    content includes the embedded `\n` characters and each
+//!    continuation line's original leading whitespace verbatim.  No
+//!    indent-transition or whitespace tokens are emitted for lines
+//!    *inside* the triple-quoted run — see `tokenize_body_char` and
+//!    its `TripleSingle`/`TripleDouble` arms — which is what keeps
+//!    the string's interior formatting byte-exact through
+//!    `tokens_to_source`'s per-line indent re-emission (that
+//!    machinery only fires on `Newline`-token boundaries, and none
+//!    are emitted mid-string). An *unterminated* triple-quoted
+//!    string (invalid Python) is flushed as one `Word` at EOF,
+//!    consistent with limitation 6 (no validation). Single/double
+//!    quoted strings still do NOT span raw newlines (matches real
+//!    Python — an un-escaped newline inside `'...'`/`"..."` is a
+//!    `SyntaxError`); hitting one flushes the partial word and
+//!    resumes fresh at the next line, same as before this was fixed.
 //! 2. **Mixed-width indent's level component is normalized to four
 //!    spaces per level; residuals are preserved verbatim.**  A line
 //!    with seven leading spaces decomposes to one level (`4 / 4`)
@@ -51,7 +66,9 @@
 //!    bodies.**  `f"hello {name}"` becomes one `Word`; the
 //!    `{name}` interior is preserved literally but not tokenized.
 //!    Spaces inside the interpolation survive verbatim because the
-//!    whole f-string is a single `Word`.
+//!    whole f-string is a single `Word`.  A triple-quoted f-string
+//!    (`f"""..."""`) gets the same multi-line handling as any other
+//!    triple-quoted string per limitation 1.
 //! 5. **Trailing whitespace on a line is preserved.**  Lines with
 //!    only whitespace produce only `Whitespace` tokens; this is
 //!    fine for round-trip.
@@ -67,55 +84,57 @@ use crate::tokens::{Token, WhitespaceKind};
 /// test fixture; not a knob the operator turns at runtime.
 pub const INDENT_WIDTH: usize = 4;
 
+/// Per-line lexer state for the character-by-character walk.
+///
+/// `TripleSingle`/`TripleDouble` are the only variants that persist
+/// across a raw `\n` — see `MVP_LIMITATIONS` #1 (module docs).  Every
+/// other state treats an unescaped `\n` as "flush and start a fresh
+/// logical line," matching how the pre-fix line-split design worked.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum State {
+    /// At the start of a logical line: about to measure indent.
+    LineStart,
+    /// Outside any string or comment.
+    Code,
+    /// Inside a `'...'` string literal (single-line only).
+    SingleQuote,
+    /// Inside a `"..."` string literal (single-line only).
+    DoubleQuote,
+    /// Inside a `'''...'''` string literal (spans newlines).
+    TripleSingle,
+    /// Inside a `"""..."""` string literal (spans newlines).
+    TripleDouble,
+    /// Inside a `#...` comment; everything to EOL is one word.
+    Comment,
+}
+
 /// Tokenize a Python source string into the layer-3 IR.
 ///
 /// See `MVP_LIMITATIONS` (module docs) for the supported subset.
 #[must_use]
 pub fn tokenize(source: &str) -> Vec<Token> {
+    let chars: Vec<char> = source.chars().collect();
+    let n = chars.len();
     let mut tokens = Vec::new();
+    let mut word = String::new();
     let mut prev_level: usize = 0;
+    let mut state = State::LineStart;
+    let mut i = 0usize;
 
-    // `split('\n')` produces a trailing empty element iff the input
-    // ends in a newline.  We use that to decide whether to emit a
-    // final `Newline` token.
-    let parts: Vec<&str> = source.split('\n').collect();
-    let trailing_newline =
-        parts.last().is_some_and(|s| s.is_empty()) && parts.len() > 1;
-    let line_count = if trailing_newline {
-        parts.len() - 1
-    } else {
-        parts.len()
-    };
-
-    for (idx, line) in parts.iter().take(line_count).enumerate() {
-        let (indent_chars, content) = split_leading_whitespace(line);
-        let is_blank = content.is_empty();
-
-        // Indent-level transitions only fire on non-blank lines —
-        // blank lines don't change Python's logical indent
-        // structure.
-        if is_blank {
-            // Blank line: emit the leading whitespace verbatim if
-            // any (rare for valid Python; harmless for round-trip).
-            for ch in indent_chars.chars() {
-                tokens.push(whitespace_for_char(ch));
+    while i < n {
+        match state {
+            State::LineStart => {
+                i = tokenize_line_start(&chars, i, &mut prev_level, &mut tokens, &mut state);
             }
-        } else {
-            let (level, residual_spaces) = indent_level(indent_chars);
-            emit_indent_transition(prev_level, level, &mut tokens);
-            for _ in 0..residual_spaces {
-                tokens.push(Token::whitespace(WhitespaceKind::Space));
+            _ => {
+                i = tokenize_body_char(&chars, i, &mut word, &mut tokens, &mut state);
             }
-            prev_level = level;
-            tokenize_intra_line(content, &mut tokens);
-        }
-
-        // Newline at end of each line except possibly the last.
-        let is_last_line = idx + 1 == line_count;
-        if !is_last_line || trailing_newline {
-            tokens.push(Token::whitespace(WhitespaceKind::Newline));
         }
     }
+
+    // EOF while mid-word (including an unterminated string/comment —
+    // limitation 6, no validation) flushes whatever was accumulated.
+    flush_word(&mut word, &mut tokens);
 
     // Close any indents still open at EOF.
     while prev_level > 0 {
@@ -124,6 +143,170 @@ pub fn tokenize(source: &str) -> Vec<Token> {
     }
 
     tokens
+}
+
+/// Handle the `State::LineStart` case: measure leading indent,
+/// decide blank vs. content, and transition to `Code` (or stay in
+/// `LineStart` after consuming a fully blank line).
+///
+/// Returns the new cursor position; mutates `prev_level`, `tokens`,
+/// and `state` in place.
+fn tokenize_line_start(
+    chars: &[char],
+    i: usize,
+    prev_level: &mut usize,
+    tokens: &mut Vec<Token>,
+    state: &mut State,
+) -> usize {
+    let start = i;
+    let mut i = i;
+    while i < chars.len() && (chars[i] == ' ' || chars[i] == '\t') {
+        i += 1;
+    }
+    let is_blank_line = i >= chars.len() || chars[i] == '\n';
+
+    if is_blank_line {
+        // Blank line: emit the leading whitespace verbatim (rare for
+        // valid Python; harmless for round-trip).  Indent level is
+        // untouched — blank lines don't change Python's logical
+        // indent structure.
+        for &ch in &chars[start..i] {
+            tokens.push(whitespace_for_char(ch));
+        }
+        if i < chars.len() {
+            // chars[i] == '\n'
+            tokens.push(Token::whitespace(WhitespaceKind::Newline));
+            i += 1;
+        }
+        *state = State::LineStart;
+    } else {
+        let (level, residual_spaces) = indent_level(&chars[start..i]);
+        emit_indent_transition(*prev_level, level, tokens);
+        for _ in 0..residual_spaces {
+            tokens.push(Token::whitespace(WhitespaceKind::Space));
+        }
+        *prev_level = level;
+        *state = State::Code;
+    }
+    i
+}
+
+/// Handle one character while inside `Code`, `SingleQuote`,
+/// `DoubleQuote`, `TripleSingle`, `TripleDouble`, or `Comment`.
+///
+/// Returns the new cursor position; mutates `word`, `tokens`, and
+/// `state` in place.
+fn tokenize_body_char(
+    chars: &[char],
+    i: usize,
+    word: &mut String,
+    tokens: &mut Vec<Token>,
+    state: &mut State,
+) -> usize {
+    let ch = chars[i];
+
+    // Every state except the two triple-quote states treats a raw
+    // newline as "flush the current word, emit Newline, start a
+    // fresh logical line" — this is the line-boundary behavior the
+    // pre-fix design got for free by re-splitting on '\n' and
+    // resetting state every line.  Triple-quoted strings are the
+    // one case that must carry `word` and `state` across the
+    // newline instead (MVP_LIMITATIONS #1).
+    if ch == '\n' && !matches!(state, State::TripleSingle | State::TripleDouble) {
+        flush_word(word, tokens);
+        tokens.push(Token::whitespace(WhitespaceKind::Newline));
+        *state = State::LineStart;
+        return i + 1;
+    }
+
+    match *state {
+        State::LineStart => unreachable!("caller dispatches LineStart separately"),
+        State::Code => match ch {
+            ' ' => {
+                flush_word(word, tokens);
+                tokens.push(Token::whitespace(WhitespaceKind::Space));
+                i + 1
+            }
+            '\t' => {
+                flush_word(word, tokens);
+                tokens.push(Token::whitespace(WhitespaceKind::Tab));
+                i + 1
+            }
+            '#' => {
+                word.push(ch);
+                *state = State::Comment;
+                i + 1
+            }
+            '"' if starts_triple(chars, i, '"') => {
+                word.push_str("\"\"\"");
+                *state = State::TripleDouble;
+                i + 3
+            }
+            '\'' if starts_triple(chars, i, '\'') => {
+                word.push_str("'''");
+                *state = State::TripleSingle;
+                i + 3
+            }
+            '"' => {
+                word.push(ch);
+                *state = State::DoubleQuote;
+                i + 1
+            }
+            '\'' => {
+                word.push(ch);
+                *state = State::SingleQuote;
+                i + 1
+            }
+            _ => {
+                word.push(ch);
+                i + 1
+            }
+        },
+        State::Comment => {
+            word.push(ch);
+            i + 1
+        }
+        State::SingleQuote | State::DoubleQuote => {
+            let closing = if *state == State::SingleQuote { '\'' } else { '"' };
+            word.push(ch);
+            if ch == '\\' {
+                if let Some(&next) = chars.get(i + 1) {
+                    word.push(next);
+                    return i + 2;
+                }
+                return i + 1;
+            }
+            if ch == closing {
+                *state = State::Code;
+            }
+            i + 1
+        }
+        State::TripleSingle | State::TripleDouble => {
+            let closing = if *state == State::TripleSingle { '\'' } else { '"' };
+            if ch == '\\' {
+                word.push(ch);
+                if let Some(&next) = chars.get(i + 1) {
+                    word.push(next);
+                    return i + 2;
+                }
+                return i + 1;
+            }
+            if ch == closing && starts_triple(chars, i, closing) {
+                word.push(closing);
+                word.push(closing);
+                word.push(closing);
+                *state = State::Code;
+                return i + 3;
+            }
+            word.push(ch);
+            i + 1
+        }
+    }
+}
+
+/// True iff `chars[i..i+3]` is `[q, q, q]`.
+fn starts_triple(chars: &[char], i: usize, q: char) -> bool {
+    chars.get(i) == Some(&q) && chars.get(i + 1) == Some(&q) && chars.get(i + 2) == Some(&q)
 }
 
 /// Map a single whitespace character to its `WhitespaceKind`.
@@ -140,27 +323,16 @@ fn whitespace_for_char(ch: char) -> Token {
     Token::whitespace(kind)
 }
 
-/// Split a line into `(leading_whitespace, content)`.
-///
-/// Leading whitespace is the maximal run of `\t` or ` ` at the
-/// start; `content` is everything after.
-fn split_leading_whitespace(line: &str) -> (&str, &str) {
-    let idx = line
-        .find(|c: char| c != ' ' && c != '\t')
-        .unwrap_or(line.len());
-    line.split_at(idx)
-}
-
 /// Compute the `(level, residual_spaces)` decomposition of a leading
 /// whitespace run.
 ///
 /// `level` is the number of full indent-width quanta (tab = one
 /// level; four spaces = one level).  `residual_spaces` is the
 /// leftover (`0..INDENT_WIDTH`).
-fn indent_level(leading: &str) -> (usize, usize) {
+fn indent_level(leading: &[char]) -> (usize, usize) {
     let mut level = 0;
     let mut spaces = 0;
-    for ch in leading.chars() {
+    for &ch in leading {
         match ch {
             '\t' => {
                 level += 1;
@@ -195,82 +367,6 @@ fn emit_indent_transition(
             tokens.push(Token::whitespace(WhitespaceKind::IndentClose));
         }
     }
-}
-
-/// Per-line lexer state for the intra-line walk.
-#[derive(Clone, Copy)]
-enum LineState {
-    /// Outside any string or comment.
-    Code,
-    /// Inside a `'...'` string literal.
-    SingleQuoteString,
-    /// Inside a `"..."` string literal.
-    DoubleQuoteString,
-    /// Inside a `#...` comment; everything to EOL is one word.
-    Comment,
-}
-
-/// Tokenize the post-indent content of one line.
-///
-/// Maintains a small state machine so quoted strings preserve
-/// internal spaces verbatim, comments preserve internal spaces
-/// verbatim, and ordinary code splits on whitespace.
-fn tokenize_intra_line(content: &str, tokens: &mut Vec<Token>) {
-    let mut state = LineState::Code;
-    let mut word = String::new();
-    let mut chars = content.chars().peekable();
-
-    while let Some(ch) = chars.next() {
-        match state {
-            LineState::Code => match ch {
-                ' ' => {
-                    flush_word(&mut word, tokens);
-                    tokens.push(Token::whitespace(WhitespaceKind::Space));
-                }
-                '\t' => {
-                    flush_word(&mut word, tokens);
-                    tokens.push(Token::whitespace(WhitespaceKind::Tab));
-                }
-                '#' => {
-                    word.push(ch);
-                    state = LineState::Comment;
-                }
-                '"' => {
-                    word.push(ch);
-                    state = LineState::DoubleQuoteString;
-                }
-                '\'' => {
-                    word.push(ch);
-                    state = LineState::SingleQuoteString;
-                }
-                _ => word.push(ch),
-            },
-            LineState::DoubleQuoteString => {
-                word.push(ch);
-                if ch == '\\' {
-                    if let Some(next) = chars.next() {
-                        word.push(next);
-                    }
-                } else if ch == '"' {
-                    state = LineState::Code;
-                }
-            }
-            LineState::SingleQuoteString => {
-                word.push(ch);
-                if ch == '\\' {
-                    if let Some(next) = chars.next() {
-                        word.push(next);
-                    }
-                } else if ch == '\'' {
-                    state = LineState::Code;
-                }
-            }
-            LineState::Comment => {
-                word.push(ch);
-            }
-        }
-    }
-    flush_word(&mut word, tokens);
 }
 
 /// Move `word` into the tokens vec if non-empty, leaving `word`
@@ -439,5 +535,129 @@ mod tests {
             .count();
         assert_eq!(opens, 1);
         assert_eq!(closes, 1);
+    }
+
+    // ---- multi-line triple-quoted strings (MVP_LIMITATIONS #1) ----
+
+    #[test]
+    fn single_line_triple_quoted_string_is_one_word() {
+        let toks = tokenize("x = \"\"\"hello\"\"\"");
+        let words: Vec<&str> = toks
+            .iter()
+            .filter_map(|t| match t {
+                Token::Word(s) => Some(s.as_str()),
+                Token::Whitespace(_) => None,
+            })
+            .collect();
+        assert_eq!(words, vec!["x", "=", "\"\"\"hello\"\"\""]);
+    }
+
+    #[test]
+    fn multi_line_triple_double_quoted_string_is_one_word_with_embedded_newlines() {
+        let src = "x = \"\"\"line one\nline two\"\"\"\ny = 1\n";
+        let toks = tokenize(src);
+        let words: Vec<&str> = toks
+            .iter()
+            .filter_map(|t| match t {
+                Token::Word(s) => Some(s.as_str()),
+                Token::Whitespace(_) => None,
+            })
+            .collect();
+        assert_eq!(
+            words,
+            vec!["x", "=", "\"\"\"line one\nline two\"\"\"", "y", "=", "1"]
+        );
+        // Exactly two Newline tokens: one after the closing `"""`,
+        // one after `y = 1`. None inside the string body.
+        let newlines = toks
+            .iter()
+            .filter(|t| matches!(t, Token::Whitespace(WhitespaceKind::Newline)))
+            .count();
+        assert_eq!(newlines, 2);
+    }
+
+    #[test]
+    fn multi_line_triple_single_quoted_string_round_trips() {
+        use crate::unscrambler::tokens_to_source;
+        let src = "def f():\n    \"\"\"Docstring.\n\n    Second paragraph.\n    \"\"\"\n    return 1\n";
+        let toks = tokenize(src);
+        assert_eq!(tokens_to_source(&toks), src);
+    }
+
+    #[test]
+    fn docstring_with_arbitrary_continuation_indent_preserved_verbatim() {
+        use crate::unscrambler::tokens_to_source;
+        // Continuation-line indentation inside the string is part of
+        // the string content, not Python indent structure — it must
+        // survive exactly, including a line indented LESS than the
+        // opening line (which would be nonsensical as a real indent
+        // transition but is perfectly legal inside string content).
+        let src = "x = '''first\n  second\nthird\n        fourth'''\n";
+        let toks = tokenize(src);
+        assert_eq!(tokens_to_source(&toks), src);
+    }
+
+    #[test]
+    fn unterminated_triple_quoted_string_flushes_at_eof() {
+        // Invalid Python (limitation 6: no validation) but must not
+        // panic or infinite-loop; everything accumulated flushes as
+        // one trailing Word.
+        let src = "x = \"\"\"never closed\nmore text";
+        let toks = tokenize(src);
+        match toks.last() {
+            Some(Token::Word(s)) => assert!(s.ends_with("more text")),
+            other => panic!("expected trailing Word, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn escaped_triple_quote_inside_triple_string_does_not_close_it() {
+        use crate::unscrambler::tokens_to_source;
+        let src = "x = \"\"\"a \\\"\\\"\\\" b\nc\"\"\"\n";
+        let toks = tokenize(src);
+        assert_eq!(tokens_to_source(&toks), src);
+    }
+
+    #[test]
+    fn code_after_multiline_triple_string_closes_on_same_line_is_tokenized_normally() {
+        let src = "x = \"\"\"a\nb\"\"\" + y\n";
+        let toks = tokenize(src);
+        let words: Vec<&str> = toks
+            .iter()
+            .filter_map(|t| match t {
+                Token::Word(s) => Some(s.as_str()),
+                Token::Whitespace(_) => None,
+            })
+            .collect();
+        assert_eq!(words, vec!["x", "=", "\"\"\"a\nb\"\"\"", "+", "y"]);
+    }
+
+    #[test]
+    fn multiline_triple_string_followed_by_dedent_tracks_indent_correctly() {
+        use crate::unscrambler::tokens_to_source;
+        let src =
+            "def f():\n    \"\"\"doc\n    more\n    \"\"\"\n    return 1\nx = 2\n";
+        let toks = tokenize(src);
+        assert_eq!(tokens_to_source(&toks), src);
+    }
+
+    #[test]
+    fn single_quoted_string_still_does_not_span_raw_newline() {
+        // Matches real Python: an unescaped newline inside a
+        // single/double-quoted (non-triple) string is a SyntaxError.
+        // The tokenizer doesn't validate (limitation 6), but it must
+        // not accidentally start swallowing lines the way triple-
+        // quote handling does — this pins the boundary between the
+        // two behaviors.
+        let src = "x = 'abc\ny = 2\n";
+        let toks = tokenize(src);
+        let words: Vec<&str> = toks
+            .iter()
+            .filter_map(|t| match t {
+                Token::Word(s) => Some(s.as_str()),
+                Token::Whitespace(_) => None,
+            })
+            .collect();
+        assert_eq!(words, vec!["x", "=", "'abc", "y", "=", "2"]);
     }
 }
