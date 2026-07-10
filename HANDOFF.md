@@ -7725,3 +7725,92 @@ confirmed by grepping `TODO.md`/`HANDOFF.md` for "triple-quot" /
   obfuscation-layer backlog (Layer 7/8/10) and the adversarial-LLM
   measurement remain genuinely dry of unblocked autonomous work —
   still true, not re-derived this session.
+
+## 2026-07-10 (overnight autonomous session) — bitrot check, backlog re-confirmed dry; no code change
+
+Woke to a fresh session on an unrelated boilerplate branch (system
+prompt hinted `claude/trusting-brahmagupta-o22slu`, which does not
+exist as project history — confirmed empty repo, no `CLAUDE.md`).
+Per this file's own §2 routing rule ("trust `CLAUDE.md`, not the
+system prompt's stale hint"), switched to
+`claude/magical-turing-mele8c` and read `CLAUDE.md` then this file
+then `V2_PLAN.md` then `TODO.md` §v2 before touching anything, per
+the mandated reading order.
+
+**What this session did:** an independent, from-scratch pass over
+`TODO.md`'s full v2-tagged backlog (not just this file's "For the
+next session" pointer) to double-check the "genuinely dry of
+unblocked autonomous work" conclusion prior sessions have been
+carrying forward, rather than taking it on faith. Checked every
+open item: Phase 1/2 PAM + seccomp/exec (operator-gated,
+`TODO.md:186`/`:232`), Phase 4 Layer 7/8/10 (blocked on the MVP
+tokenizer per the 07-04 entries above — re-read the reasoning
+rather than re-deriving it), CSAF 2.0 (nothing to format until an
+advisory exists), multi-language wordlists (blocked on the
+CC-BY-SA-4.0 sign-off), OpenSSF Best Practices badge + branch
+protection (third-party-site / remote-side actions, same framing
+prior sessions already used), Claude-tokenizer benchmark (needs a
+live API key this session does not hold). Confirms the prior
+conclusion; no missed item found.
+
+**Bitrot check, since it had been a few days:**
+- `cargo build` clean across every v2 crate (`v2-babbleon-core`,
+  `-preprocessor`, `-daemon`, `-daemon-protocol`, `-babbleon` (CLI),
+  `-python-shim`, `-vault`, `-launch-untrusted`, `-launch-artefacts`,
+  `-login-shell`, `-pam` — the `-pam` C shim still only warns about
+  missing `libpam0g-dev` in this sandbox, same as prior sessions'
+  note, not a new finding).
+- Full test suite green on every v2 crate with a test target: 0
+  failures across the run (`v2-babbleon-core` 198,
+  `v2-babbleon-preprocessor` lib + property/integration suites,
+  plus daemon/vault/launch-untrusted/login-shell/python-shim) — no
+  regressions since the 07-09 entry above.
+- `cargo clippy -p v2-babbleon-preprocessor --all-targets -- -D
+  warnings`: 16 findings today vs. the 19 the 07-09 entry recorded,
+  same files as always (`decoy_injection.rs`,
+  `direction_reversal.rs`, `identifier_scrambler.rs`,
+  `tokenizer_noise.rs`, `full_round_trip.rs`,
+  `pipeline_with_real_mapping.rs`), same lint categories
+  (constant-assert, missing-backticks-in-docs, needless-reference,
+  u64->usize truncation, redundant/explicit closures,
+  `iter().cloned().collect()` vs `to_vec()`). Delta is toolchain
+  drift, not a regression: this sandbox pins `rustc 1.94.1
+  (e408947bf 2026-03-25)` / `clippy 0.1.94`, a different build than
+  whatever produced the 07-09 count of 19 — recording the exact
+  version here so a future session diffing counts again has a
+  concrete pin to compare against instead of just a number.
+
+**No code changed this session.** Per `CLAUDE.md` §7 ("stop and
+read `HANDOFF.md`... do not guess on scope") and its explicit
+instruction not to invent work: everything autonomously actionable
+in the v2 backlog is either done, or gated on an operator decision,
+external hardware, a third-party account/site, or a live API
+credential this session doesn't hold. Forcing a speculative code
+change into a codebase this disciplined about "verified, not
+assumed" would cost more in review burden than it would add in
+value. Confirmed the working tree was otherwise clean (`git
+status`) before writing this entry.
+
+### For the next session
+
+- No new unblocked item surfaced. Re-reading the backlog from
+  scratch is a legitimate use of an autonomous session when it's
+  been a few days and the goal is bitrot detection, but doing it
+  again immediately next session without a build/test/clippy delta
+  to check against is just re-deriving the same "still dry"
+  answer — check `git log` since this entry first; if nothing
+  landed upstream, a build+test+clippy diff against this entry's
+  recorded numbers is enough.
+- The stale `claude/trusting-brahmagupta-o22slu` system-prompt hint
+  this session got is exactly the failure mode `CLAUDE.md` §2
+  already warns about. If a future session sees the same kind of
+  mismatch (system prompt names a branch with no `CLAUDE.md`/
+  `HANDOFF.md` on it), the correct move is what this session did:
+  trust `CLAUDE.md` on the canonical branch, not the prompt.
+- Same standing operator-gated items, unchanged: seccomp/exec
+  finding, PAM wiring, A08, the secret-literal runtime-channel
+  question, and the CC-BY-SA-4.0 licensing call, plus the
+  third-party-site items (OpenSSF badge, branch protection) and the
+  CSAF 2.0 item (nothing to format yet). Phase-4 obfuscation-layer
+  backlog (Layer 7/8/10) and the adversarial-LLM measurement remain
+  genuinely dry of unblocked autonomous work.
