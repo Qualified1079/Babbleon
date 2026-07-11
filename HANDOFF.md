@@ -7814,3 +7814,137 @@ status`) before writing this entry.
   CSAF 2.0 item (nothing to format yet). Phase-4 obfuscation-layer
   backlog (Layer 7/8/10) and the adversarial-LLM measurement remain
   genuinely dry of unblocked autonomous work.
+
+## 2026-07-11 (overnight autonomous session) — bitrot check confirmed clean; real-parser feasibility research for the Layer 7/8/10 wall
+
+Author: Claude Sonnet 5 (sleeping-operator session; user asleep,
+autonomous). Woke on a fresh throwaway branch the system prompt
+called `claude/trusting-brahmagupta-xu26wj` — no `CLAUDE.md`, no
+project history beyond the empty-repo `d77f496` lineage, exactly
+the failure mode the 2026-07-10 entry above already named and
+warned the next session about. Per `CLAUDE.md` §2 and that entry's
+own "For the next session" note, switched to
+`claude/magical-turing-mele8c`, confirmed `HANDOFF.md`'s own
+preamble names this branch, and read `CLAUDE.md` → `HANDOFF.md` →
+`V2_PLAN.md` → `TODO.md` §v2 in the mandated order before touching
+anything.
+
+### Bitrot check (independent re-verification, not taken on faith)
+
+Re-ran the same three checks the 2026-07-10 entry recorded, rather
+than trusting that entry's numbers:
+
+- `cargo build` clean across every v2 crate (`-core`, `-preprocessor`,
+  `-daemon-protocol`, `-daemon`, `-babbleon` CLI, `-python-shim`,
+  `-vault`, `-launch-untrusted`, `-launch-artefacts`, `-login-shell`,
+  `-pam` — same `libpam0g-dev`-missing warning as every prior
+  session, not new).
+- Full test suite green, 0 failures: `v2-babbleon-core` 198 (matches
+  2026-07-10's recorded count exactly), `-preprocessor` 135 lib +
+  proptest/integration suites, plus daemon/vault/launch-untrusted/
+  login-shell/python-shim/daemon-protocol — no regressions since the
+  last entry.
+- `cargo clippy -p v2-babbleon-preprocessor --all-targets -- -D
+  warnings`: 16 findings, same count and same files/categories
+  `2026-07-10` recorded (`decoy_injection.rs`, `direction_reversal.rs`,
+  `identifier_scrambler.rs`, `tokenizer_noise.rs`, `full_round_trip.rs`,
+  `pipeline_with_real_mapping.rs`). Confirmed `rustc 1.94.1
+  (e408947bf 2026-03-25)` — identical toolchain pin to the recorded
+  entry, so the unchanged count means genuinely nothing drifted, not
+  just "another toolchain that happens to agree."
+
+### Backlog re-check
+
+Independently re-read `TODO.md`'s full `v2`-tagged section end to
+end (Phase 0 through Phase 6, the OWASP-gaps block, the
+missed-standards block, the test-perf block) against the actual
+current file state rather than re-quoting the 2026-07-09/07-10
+entries' conclusion. Same result: everything either `[x]` or gated
+on an operator decision, external hardware, a third-party account,
+or a live API credential this session doesn't hold. No new item
+surfaced. (Everything at `## M1` and below in `TODO.md` is v1 —
+`CLAUDE.md` §4 says v1 is read-only, out of scope regardless.)
+
+### What this session did instead of a fourth identical "still dry" entry
+
+Every Layer 7/8/10 entry since 2026-07-04 ends the same way: blocked
+on "a real parser or an operator decision," with a note that if an
+operator ever authorizes one, Layer 7, Layer 8, and a correct
+"insert new top-level statement safely" primitive all unblock at
+once. No prior session had actually evaluated a candidate parser —
+that gap was still open, and closing it is squarely the kind of
+research this project already does elsewhere (e.g. the wordlist
+role-partitioning sizing work, the tokenizer-benchmark measurements)
+to make an eventual operator decision cheap rather than speculative.
+
+Pulled `rustpython-parser` 0.4.0 and `tree-sitter`+`tree-sitter-python`
+into a throwaway scratch crate **outside this repo** (nothing added
+to any `Cargo.toml` here, nothing committed from the probe itself)
+and exercised both against the exact two Layer-7/8 blockers
+(decorator-target binding; modern syntax coverage) instead of just
+reading their docs. Findings, and the full comparison, are in the
+new `docs/v2/real-parser-feasibility.md`:
+
+- `rustpython-parser` 0.4.0: pure Rust (46 transitive deps, no `cc`/
+  C-toolchain build step), MIT (already on `deny.toml`'s allow
+  list), MSRV 1.72.1 / edition 2021 (under the workspace's `1.75`
+  floor), builds clean under this sandbox's `rustc 1.94.1`. Its AST
+  exposes `decorator_list` as an explicit `StmtFunctionDef` field
+  with byte ranges — directly the information `chunk_reorder.rs`/
+  `decoy_injection.rs`'s depth-0 heuristic lacks, verified by parsing
+  a decorated function and printing the tree. Also parses `match`/
+  `case`, `async def`/`async with`, walrus, and nested f-strings with
+  format specs cleanly — modern Python surface syntax, not just
+  Python-2-era grammar.
+- `tree-sitter`+`tree-sitter-python` (the multi-language mechanism
+  `docs/v2/dynamic-keywords.md` originally designed for Layer 2, before
+  the shipped `identifier_scrambler.rs` went a different,
+  language-agnostic route and made that design moot for Layer 2
+  specifically — see `TODO.md`'s Phase 0 entry): pulls in `cc` as a
+  build-dependency (the grammar ships as generated C, compiled at
+  build time) and a larger transitive tree (+20 packages) for query
+  machinery this project's use case wouldn't exercise. Its
+  multi-language reach is real but currently unused — the shipped
+  preprocessor is Python-only.
+- Recommendation for the operator, not a decision made here:
+  `rustpython-parser` is the better-fit candidate for this project's
+  actual current shape (Python-only, no-C-toolchain, MIT-compatible),
+  with Tree-sitter worth revisiting specifically if/when a second
+  target language is prioritized. Framed as a swap of
+  `python_tokenizer.rs`'s IR, not an addition of Tree-sitter's
+  multi-language machinery to a single-language preprocessor.
+
+Cross-referenced from `TODO.md`'s Layer 7 and Layer 8 entries so a
+future session (or the operator) finds this without re-deriving it.
+**Not built**: this remains exactly what it was before this session
+— blocked on an operator decision — because swapping the tokenizer's
+IR is an architecture-scale change (a new mandatory dependency in a
+crate that today has exactly one, `thiserror`; a rewrite every
+downstream layer L2-L12 and the wire format are built against), the
+same class of call `CLAUDE.md` §4 reserves for the operator, not
+something to decide by importing it and wiring it through
+unilaterally.
+
+### For the next session
+
+- If the operator authorizes the `rustpython-parser` swap, start
+  from `docs/v2/real-parser-feasibility.md`'s recommendation section
+  rather than re-evaluating candidates from scratch — the evaluation
+  work (license, MSRV, dependency footprint, AST shape verification)
+  is done; what's left is the actual IR rewrite in
+  `python_tokenizer.rs` and updating every layer that depends on its
+  `Word`/`Newline`/indent token shapes.
+- If no such authorization has happened, don't re-run this same
+  candidate evaluation again — read the doc instead. The next
+  autonomous-safe research gap, if this one closes without code
+  changing, would be sizing the actual IR-rewrite effort (which
+  layers' code needs to change and how much) — filed here as a
+  pointer, not attempted this session since it's speculative work on
+  top of a decision that hasn't been made yet.
+- Same standing operator-gated items, unchanged: seccomp/exec
+  finding, PAM wiring, A08, the secret-literal runtime-channel
+  question, the CC-BY-SA-4.0 licensing call, the third-party-site
+  items (OpenSSF badge, branch protection), the CSAF 2.0 item, and
+  now the real-parser swap decision documented above. The
+  adversarial-LLM measurement remains genuinely dry of unblocked
+  autonomous work.

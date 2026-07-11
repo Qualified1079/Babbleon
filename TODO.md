@@ -367,7 +367,10 @@ composes with the phase-3 five-layer base; they don't replace it.
       Composes with layers 2-5: existing unflatteners (D810,
       CaDeCFF) pattern-match against switch-case shapes that
       whitespace-as-words destroys.  Cost: ~20-50% runtime
-      overhead per literature.
+      overhead per literature.  Blocked on a real parser (see
+      `docs/v2/real-parser-feasibility.md`, 2026-07-11: candidate
+      evaluated and recommended, swap not built — operator
+      decision, same as Layer 8 below).
 - [ ] **Layer 8 — opaque predicates + bogus control flow.  Investigated
       2026-07-04, confirmed blocked on the MVP tokenizer, NOT an
       autonomous pickup.  Empirically substantiated, not just a
@@ -425,7 +428,12 @@ composes with the phase-3 five-layer base; they don't replace it.
       constructs, and semicolon-joined statements (the same
       prerequisite Layer 7 needs — see HANDOFF's Layer 9 entry, which
       flagged Layer 7/8 as "very likely blocked on the same wall" and
-      this investigation confirms it with a reproduction), or (b) an
+      this investigation confirms it with a reproduction — 2026-07-11:
+      `docs/v2/real-parser-feasibility.md` evaluates `rustpython-parser`
+      as the concrete candidate, confirms it exposes exactly the
+      `decorator_list` binding this paragraph needs, and recommends it
+      over Tree-sitter for this project's Python-only, no-C-toolchain
+      constraints; still an operator call, not built), or (b) an
       operator decision to accept a narrower, explicitly-scoped
       insertion point (e.g., only ever the very last line of the
       file, never mid-file) that trades most of the layer's value for
