@@ -1183,6 +1183,96 @@ genuinely open — see each item.
       collapses rotation to one atomic table write.  Combined with the
       perm pre-build above, enables millisecond-class rotation.
 
+- [ ] **Rotate the banner-deception table with the mapping HKDF tree.**
+      `crates/babbleon-cli/src/deception.rs::fake_tool_for`.  Currently
+      a compile-time `OnceLock<HashMap>` (lines 45–67): `real → decoy`
+      is a static injective mapping, so scrambled `curl` always fakes
+      `less`, `ssh` always fakes `sort`, etc.  Under Kerckhoffs (the
+      table is public source) an agent inverts decoy → real with one
+      hashmap lookup, and — worse — the assignment survives every
+      epoch rotation the mapping layer works to produce, leaking a
+      stable cross-epoch identity signal that partially undoes M3 /
+      M3.5's rotation contract.
+      Fix: change signature to `fake_tool_for(real, epoch,
+      host_secret)`, pick the decoy via the same HKDF-keyed
+      permutation used in `v2-babbleon-core/src/mapping.rs`, and make
+      the mapping many-to-many so inversion is not deterministic.
+      Filed from red-team audit 2026-07-22 (pass C).
+
+- [ ] **Per-host `--help` snippet corpus, not hand-written stubs.**
+      `crates/babbleon-cli/src/deception.rs::deception_snippets`
+      (lines 71–107).  Snippets are 3–8 lines of caricatured usage;
+      the real tools' `--help` output is dozens of lines with vendor
+      headers, copyright, specific option-column widths.  Existing
+      test `deceptive_response_is_not_empty` accepts >20 chars (line
+      140), which sets the fidelity bar orders of magnitude below what
+      a byte-level fingerprinter uses.  Any adversary that stored real
+      `--help` corpora (which `tests/corpus_fingerprint.rs` proves we
+      already assume they can) flags every snippet as synthetic.
+      Fix: source snippets from a per-host generated corpus (or
+      captured real `--help` outputs) selected via the same HKDF key
+      as the decoy assignment above; ratchet the fingerprint test to
+      compare line count + header shape + option-column width against
+      the captured corpus, not just length.
+      Filed from red-team audit 2026-07-22 (pass C).
+
+- [ ] **Break the compound-name shape signature.**
+      `crates/v2-babbleon-core/src/mapping.rs::build_compound`
+      (lines 286–308).  Current construction concatenates four
+      `dwyl/english-words` entries with no separator, no digits, no
+      case variation, always in `[a-z]` — producing 16–48 char pure-
+      lowercase blobs that look nothing like any real Unix binary or
+      credential path.  A tokenizer that finds four consecutive well-
+      formed English morphemes with zero non-alpha bytes flags every
+      Babbleon output on sight; the tell requires no per-host
+      information and no access to the wordlist beyond the public
+      `dwyl` copy.  Recognizing the host is Babbleon'd is a strictly
+      easier problem than recovering a specific mapping, and today
+      it's a one-shot inference.
+      Fix options (pick or combine): (a) mix a separator character
+      and/or digit slot into the compound layout; (b) vary compound
+      arity per name so length distribution overlaps normal binaries;
+      (c) pull from a multilingual / mixed-case source (V2_PLAN.md
+      phase-4 multilingual work — the shape argument makes it
+      phase-1 critical); (d) template compounds against real-binary
+      naming distributions harvested per-host.  Update
+      `compound_consists_of_concatenated_wordlist_entries`
+      (mapping.rs:423–438) to reflect the new invariant.
+      Filed from red-team audit 2026-07-22 (pass B) — flagged as the
+      single **structural** break in the v2 core.
+
+- [ ] **Flatten the honey-vs-real referential/usage graph.**
+      `crates/v2-babbleon-core/src/mapping.rs` and launcher tier.
+      Honey compounds and real scrambled compounds are
+      indistinguishable *as strings* (both drawn from
+      `PURPOSE_IDENTIFIER` / `PURPOSE_HONEY` under the same HKDF
+      tree, lines 68–71), but the honeys sit inert: only the real
+      compounds get invoked, referenced by env vars, appear in
+      scrambled `PATH`, spawn children in `/proc`, or show up in
+      shell history.  Five seconds of activity monitoring separates
+      the sets without touching the strings.
+      Fix: generate synthetic invocation traffic against honey
+      compounds from the launcher tier (periodic no-op execs,
+      occasional PATH lookups, plausible env-var references) so the
+      activity graph mirrors the string-level flatness.  Coordinate
+      with the honey-tripwire policy — synthetic traffic must not
+      itself fire `HoneyTriggered`.
+      Filed from red-team audit 2026-07-22 (pass A).
+
+- [ ] **Randomize `HONEY_COUNT` per epoch.**
+      `crates/v2-babbleon-core/src/mapping.rs:62`.  Currently a
+      hardcoded `50`.  Under Kerckhoffs the attacker reads the
+      constant off the source, so seeing a directory of `N` Babbleon-
+      shaped names immediately bounds the real set at `N − 50`.  This
+      is a free cardinality leak.
+      Fix: draw honey count per epoch from a wide range (e.g.
+      `20..200`) via the existing HKDF tree (add a
+      `PURPOSE_HONEY_COUNT` label), so the count itself becomes
+      per-host and per-epoch and reveals nothing about the tracked
+      set size.  Update the `HONEY_COUNT` constant call sites and any
+      tests that pin the value.
+      Filed from red-team audit 2026-07-22 (pass A).
+
 ## M4 — Credential vault
 
 - [x] Path-gated credential dirs (`credentials::discover` + `apply_untrusted_gate`)
