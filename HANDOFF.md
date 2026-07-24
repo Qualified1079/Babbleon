@@ -32,6 +32,88 @@ role-partitioning tool this session builds on.
 
 ---
 
+## 2026-07-23 — sleeping-operator: scramble-core carve executed (steps 1–4)
+
+Author: Claude Opus 4.8 (autonomous, operator asleep / away mode).
+Branch: `carve-plan-turing` (tracks and pushes to
+`claude/magical-turing-mele8c`).  Task: "work on the protocol / android /
+linux carve" — i.e. execute the plan filed in `d49e92b`
+(`docs/v2/scramble-core-carve.md`).
+
+### What landed
+
+Two commits, both mechanical, both grep-verified (no toolchain on this
+host — see the blocker below):
+
+- **`5fa6bd7`** — carve the pure scramble engine out of
+  `v2-babbleon-core` into a new crate `v2-babbleon-scramble` (lib name
+  `babbleon_scramble_v2`, `forbid(unsafe_code)`).  Eight modules moved as
+  a closed set via git-tracked renames (`errors`, `crypto_compare`,
+  `per_host_secret`, `key_derivation`, `wordlist`, `permutation`,
+  `permutation_cache`, `mapping`).  `v2-babbleon-core` becomes a
+  Linux-tier facade: keeps `events`/`tripwire`/`wrapper`/
+  `activated_table_bridge`, re-exports the eight pure modules under their
+  original `babbleon_core_v2::...` paths, and gains a path dep on the new
+  crate.  Public surface of `babbleon_core_v2` preserved byte-for-byte →
+  zero downstream churn.  New crate's deps trimmed to what the pure code
+  actually uses (dropped `serde`/`serde_json`/`ed25519-dalek`/
+  `launch-artefacts` — verified none of the eight modules reference
+  them).  Registered in root `Cargo.toml` members ahead of
+  `v2-babbleon-core`.
+
+- **`134e0b3`** — step 4: repoint `v2-babbleon-preprocessor` from the
+  facade onto `v2-babbleon-scramble` directly (dep swap + uniform
+  `babbleon_core_v2::` → `babbleon_scramble_v2::` rename across 7 src
+  files).  Confirmed empirically that the preprocessor only ever reaches
+  pure modules — the exact shape the mobile fork will consume.
+
+`docs/v2/scramble-core-carve.md` gained a `## Status` block recording
+steps 1–4 landed + the verification gate still pending.
+
+### Verification done here (grep-level, not build-level)
+
+- Pure DAG is closed: no moved module imports a Linux-welded one.
+- Every `crate::` ref in the moved set targets one of the eight moved
+  modules (so their internal `use crate::...` still resolves).
+- Every re-exported symbol (`COMPOUND_N`, `HONEY_COUNT`,
+  `MappingBuilder`, `EpochMapping`, `PerHostSecret`,
+  `PER_HOST_SECRET_LEN`, `Permutation`, `PermutationCache`,
+  `DEFAULT_CAPACITY`, `Wordlist`, `Error`, `Result`) exists in its
+  source module.
+- Remaining Linux modules' `crate::errors`/`::mapping`/`::events`/… refs
+  and the `crate::{MappingBuilder,PerHostSecret,Wordlist}` test import
+  all still resolve through the facade re-exports.
+- Zero `babbleon_core_v2` references remain in the preprocessor.
+
+### BLOCKERS — need operator (noted, then moved on per away-mode brief)
+
+1. **Push is blocked.**  `origin` is the HTTPS remote
+   `https://github.com/Qualified1079/Babbleon.git`; this host has no
+   stored credentials and no `gh` CLI, so
+   `git push origin HEAD:claude/magical-turing-mele8c` fails with
+   `could not read Username for 'https://github.com'`.  **The two carve
+   commits (plus this HANDOFF/doc commit) are saved locally on
+   `carve-plan-turing` only.**  Operator must push them, or provision a
+   credential/token for this environment.
+2. **Verification gate not run** — no Rust toolchain on this host
+   (`cargo`/`rustc` absent).  Before merge, run on a build host:
+   `cargo build --workspace`;
+   `cargo test -p v2-babbleon-core --test v1_compat` (the v1-parity
+   go/no-go);
+   `cargo test -p v2-babbleon-preprocessor` (round-trip proptests).
+   If any fails, the likely culprit is a trimmed dep in the new crate's
+   `Cargo.toml` or a symbol I mis-verified — both are localized.
+3. **`.idea/` appeared untracked** and was deliberately kept OUT of the
+   commits (IDE config, not part of the carve).
+
+### Still deferred (unchanged from the plan)
+
+events/tripwire/wrapper → dedicated `linux-babbleon` response crate;
+rename `v2-babbleon-core` away from "core"; vault path abstraction.
+None needed to unblock the mobile fork.
+
+---
+
 ## 2026-07-03 (session 3) — sleeping-operator: autonomous-safe follow-ups from session 2's backlog
 
 Author: Claude Sonnet 5 (autonomous overnight continuation).

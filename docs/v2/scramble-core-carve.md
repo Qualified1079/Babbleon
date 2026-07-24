@@ -80,6 +80,22 @@ the pure surface, so every existing `babbleon_core_v2::...` call site
 keeps compiling.  A mobile crate depends on `v2-babbleon-scramble`
 directly and never pulls the facade.
 
+## Status
+
+- **Steps 1–3 landed** in `5fa6bd7` (carve + facade + workspace member).
+- **Step 4 landed** in `134e0b3` (preprocessor repointed onto
+  `v2-babbleon-scramble`).
+- **Verification gate — NOT yet run.**  This host has no Rust
+  toolchain, so `cargo build`/`cargo test` (below) could not be
+  executed.  The changes are mechanical (git-tracked renames + a
+  re-export facade + a uniform import rename) and were grep-verified —
+  every `crate::` reference in the moved set targets one of the eight
+  moved modules, every re-exported symbol exists, and zero
+  `babbleon_core_v2` references remain in the preprocessor — but the
+  carve is not "done" until the gate is green on a real build host.
+- Deferred items below (events/tripwire/wrapper relocation, core rename,
+  vault path abstraction) remain unstarted.
+
 ## Steps
 
 ### 1. Create `crates/v2-babbleon-scramble`
