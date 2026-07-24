@@ -1,0 +1,34 @@
+[package]
+name = "v2-babbleon-scramble"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Babbleon v2 scramble engine: OS-agnostic per-host mapping/permutation/key-derivation primitives.  Pure Rust (forbid(unsafe_code)), no syscalls, no paths — shareable by the Linux facade and a mobile fork alike."
+publish = false
+
+[lib]
+name = "babbleon_scramble_v2"
+path = "src/lib.rs"
+
+[dependencies]
+# Crypto stack (all RustCrypto, audit-friendly).
+hkdf = { workspace = true }
+sha2 = { workspace = true }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
+hex = { workspace = true }
+# Secret hygiene.
+zeroize = { workspace = true }
+subtle = { workspace = true }
+# Errors.
+thiserror = { workspace = true }
+# Logging.
+tracing = { workspace = true }
+# Internal cache: lazy wordlist.
+once_cell = { workspace = true }
+
+# Deliberately absent — they belong to the Linux facade
+# (events / activated_table_bridge), not the pure engine:
+#   serde, serde_json, ed25519-dalek, v2-babbleon-launch-artefacts, hmac.
+# hmac is pulled transitively by hkdf but never referenced directly here.

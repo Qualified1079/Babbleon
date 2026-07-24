@@ -10,22 +10,30 @@
 //! names.  See `docs/threat-model.md` (v1) and `docs/v2/threat-model.md`
 //! (v2; in flight) for the full model.
 //!
-//! v2 (this crate) extends v1's identifier-only scramble with the
+//! v2 extends v1's identifier-only scramble with the
 //! structural-scrambling layers from `docs/v2/structure-scrambling.md`
-//! (phase 3+).  This crate ships the foundational primitives that
-//! every later phase builds on:
+//! (phase 3+).
 //!
-//! - **`per_host_secret`** — the only secret on the box.  Held in
-//!   `zeroize::Zeroizing<[u8; 32]>` so its plaintext is wiped from
-//!   memory on drop.
-//! - **`key_derivation`** — HKDF-SHA-256 (RFC 5869) sub-key
-//!   derivation per `(epoch, purpose)` tuple.  Replaces v1's
-//!   hand-rolled `SHA256(host_secret || label)`.
-//! - **`permutation`** — bijective Fisher-Yates over a wordlist,
-//!   seeded by HKDF.  Replaces v1's `mapping/fpe.rs`.
-//! - **`wordlist`** — wordlist loader.
-//! - **`mapping`** — `EpochMapping` (the per-epoch name table) and
-//!   `MappingBuilder` (the constructor).
+//! # This crate is the Linux-tier facade
+//!
+//! The OS-agnostic scramble engine — `per_host_secret`,
+//! `key_derivation`, `permutation`, `permutation_cache`, `wordlist`,
+//! `mapping`, `crypto_compare`, `errors` — was carved out into
+//! `v2-babbleon-scramble` (`babbleon_scramble_v2`) so a mobile fork can
+//! reuse the math without this crate's Linux detection/response glue
+//! (see `docs/v2/scramble-core-carve.md`).  This crate re-exports those
+//! modules under their original `babbleon_core_v2::...` paths — so no
+//! downstream consumer changed — and adds the Linux-welded layer on top:
+//!
+//! - **`events`** — `/proc`-aware event model with JSONL file sinks and
+//!   an ed25519 audit-chain sink.
+//! - **`tripwire`** — decoy-access detection and response policy.
+//! - **`wrapper`** — emits the `/bin/sh` tripwire wrapper scripts.
+//! - **`activated_table_bridge`** — builds a launch-artefact
+//!   `ActivatedTable` from a scramble-engine `EpochMapping`.
+//!
+//! New code that needs only the scramble engine (the preprocessor, the
+//! mobile fork) should depend on `v2-babbleon-scramble` directly.
 //!
 //! # Security baseline applied
 //!
@@ -56,17 +64,23 @@
 // Pedantic lints we explicitly relax — none yet; reconsider per file
 // as the crate grows.
 
+// The pure scramble engine was carved out into `v2-babbleon-scramble`
+// (see `docs/v2/scramble-core-carve.md`) so a mobile fork can share it
+// without pulling this crate's Linux detection/response glue.  Core is
+// now a Linux-tier facade: it re-exports the pure modules under their
+// old paths — so every `babbleon_core_v2::mapping::...`,
+// `::key_derivation::...`, `::per_host_secret::...` call site (including
+// this crate's own `wrapper`/`tripwire`/`activated_table_bridge`, which
+// reference `crate::mapping` etc.) keeps resolving unchanged — and keeps
+// the OS-welded modules as real modules.
+pub use babbleon_scramble_v2::{
+    crypto_compare, errors, key_derivation, mapping, per_host_secret,
+    permutation, permutation_cache, wordlist,
+};
+
 pub mod activated_table_bridge;
-pub mod crypto_compare;
-pub mod errors;
 pub mod events;
-pub mod key_derivation;
-pub mod mapping;
-pub mod per_host_secret;
-pub mod permutation;
-pub mod permutation_cache;
 pub mod tripwire;
-pub mod wordlist;
 pub mod wrapper;
 
 // The `activated_table` and `credentials` modules were extracted

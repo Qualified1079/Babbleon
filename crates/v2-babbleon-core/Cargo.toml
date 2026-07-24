@@ -12,6 +12,11 @@ name = "babbleon_core_v2"
 path = "src/lib.rs"
 
 [dependencies]
+# The OS-agnostic scramble engine, carved out of this crate
+# (docs/v2/scramble-core-carve.md).  Re-exported so that every
+# `babbleon_core_v2::mapping::...` / `::per_host_secret::...` etc. call
+# site keeps resolving; a mobile fork depends on it directly instead.
+v2-babbleon-scramble = { path = "../v2-babbleon-scramble" }
 # Secret-free launch artefacts (re-exported for back-compat with
 # existing `babbleon_core_v2::ActivatedTable` etc. consumers).
 v2-babbleon-launch-artefacts = { path = "../v2-babbleon-launch-artefacts" }
