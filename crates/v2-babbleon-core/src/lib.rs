@@ -14,26 +14,27 @@
 //! structural-scrambling layers from `docs/v2/structure-scrambling.md`
 //! (phase 3+).
 //!
-//! # This crate is the Linux-tier facade
+//! # This crate is now a re-export facade
 //!
-//! The OS-agnostic scramble engine — `per_host_secret`,
-//! `key_derivation`, `permutation`, `permutation_cache`, `wordlist`,
-//! `mapping`, `crypto_compare`, `errors` — was carved out into
-//! `v2-babbleon-scramble` (`babbleon_scramble_v2`) so a mobile fork can
-//! reuse the math without this crate's Linux detection/response glue
-//! (see `docs/v2/scramble-core-carve.md`).  This crate re-exports those
-//! modules under their original `babbleon_core_v2::...` paths — so no
-//! downstream consumer changed — and adds the Linux-welded layer on top:
+//! The implementation was carved into two crates (see
+//! `docs/v2/scramble-core-carve.md`) so a mobile fork can share the math
+//! without this crate's Linux glue:
 //!
-//! - **`events`** — `/proc`-aware event model with JSONL file sinks and
-//!   an ed25519 audit-chain sink.
-//! - **`tripwire`** — decoy-access detection and response policy.
-//! - **`wrapper`** — emits the `/bin/sh` tripwire wrapper scripts.
-//! - **`activated_table_bridge`** — builds a launch-artefact
-//!   `ActivatedTable` from a scramble-engine `EpochMapping`.
+//! - **`v2-babbleon-scramble`** (`babbleon_scramble_v2`) — the
+//!   OS-agnostic scramble engine: `per_host_secret`, `key_derivation`,
+//!   `permutation`, `permutation_cache`, `wordlist`, `mapping`,
+//!   `crypto_compare`, `errors`.
+//! - **`v2-babbleon-linux`** (`babbleon_linux_v2`) — the Linux
+//!   detection/response tier: `events` (`/proc`-aware event model with
+//!   JSONL + ed25519 audit-chain sinks), `tripwire` (decoy detection +
+//!   response policy), `wrapper` (`/bin/sh` wrapper emission),
+//!   `activated_table_bridge`.
 //!
-//! New code that needs only the scramble engine (the preprocessor, the
-//! mobile fork) should depend on `v2-babbleon-scramble` directly.
+//! This crate re-exports both under their original `babbleon_core_v2::...`
+//! paths, so no downstream consumer changed.  New code that needs only
+//! the scramble engine (the preprocessor, the mobile fork) should depend
+//! on `v2-babbleon-scramble` directly; new Linux-tier code should depend
+//! on `v2-babbleon-linux`.
 //!
 //! # Security baseline applied
 //!
@@ -64,24 +65,26 @@
 // Pedantic lints we explicitly relax — none yet; reconsider per file
 // as the crate grows.
 
-// The pure scramble engine was carved out into `v2-babbleon-scramble`
-// (see `docs/v2/scramble-core-carve.md`) so a mobile fork can share it
-// without pulling this crate's Linux detection/response glue.  Core is
-// now a Linux-tier facade: it re-exports the pure modules under their
-// old paths — so every `babbleon_core_v2::mapping::...`,
-// `::key_derivation::...`, `::per_host_secret::...` call site (including
-// this crate's own `wrapper`/`tripwire`/`activated_table_bridge`, which
-// reference `crate::mapping` etc.) keeps resolving unchanged — and keeps
-// the OS-welded modules as real modules.
+// Core is now a pure re-export facade over two carved-out crates (see
+// `docs/v2/scramble-core-carve.md`):
+//
+//   * `v2-babbleon-scramble` — the OS-agnostic scramble engine
+//     (`errors`, `crypto_compare`, `per_host_secret`, `key_derivation`,
+//     `wordlist`, `permutation`, `permutation_cache`, `mapping`);
+//   * `v2-babbleon-linux` — the Linux detection/response tier
+//     (`events`, `tripwire`, `wrapper`, `activated_table_bridge`).
+//
+// It re-exports every module under its original `babbleon_core_v2::...`
+// path, so every existing call site — module-qualified or flat — keeps
+// resolving unchanged.  A mobile fork depends on `v2-babbleon-scramble`
+// directly and never pulls this facade or the Linux tier.
 pub use babbleon_scramble_v2::{
     crypto_compare, errors, key_derivation, mapping, per_host_secret,
     permutation, permutation_cache, wordlist,
 };
-
-pub mod activated_table_bridge;
-pub mod events;
-pub mod tripwire;
-pub mod wrapper;
+pub use babbleon_linux_v2::{
+    activated_table_bridge, events, tripwire, wrapper,
+};
 
 // The `activated_table` and `credentials` modules were extracted
 // to `v2-babbleon-launch-artefacts` so the launcher and PAM can

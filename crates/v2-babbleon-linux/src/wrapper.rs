@@ -42,9 +42,9 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::errors::{Error, Result};
-use crate::key_derivation::derive_subkey;
-use crate::per_host_secret::PerHostSecret;
+use babbleon_scramble_v2::errors::{Error, Result};
+use babbleon_scramble_v2::key_derivation::derive_subkey;
+use babbleon_scramble_v2::per_host_secret::PerHostSecret;
 
 // ---------------------------------------------------------------------------
 // Input validation
@@ -228,7 +228,7 @@ fn render(
 
 fn write_executable(path: &Path, contents: &str) -> Result<()> {
     std::fs::write(path, contents)
-        .map_err(|e| crate::errors::Error::Internal(format!("I/O failed: {}", e.kind())))?;
+        .map_err(|e| babbleon_scramble_v2::errors::Error::Internal(format!("I/O failed: {}", e.kind())))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -236,7 +236,7 @@ fn write_executable(path: &Path, contents: &str) -> Result<()> {
             path,
             std::fs::Permissions::from_mode(0o755),
         )
-        .map_err(|e| crate::errors::Error::Internal(format!("I/O failed: {}", e.kind())))?;
+        .map_err(|e| babbleon_scramble_v2::errors::Error::Internal(format!("I/O failed: {}", e.kind())))?;
     }
     Ok(())
 }
@@ -269,7 +269,7 @@ pub fn write_wrapper(
     let real_path_str = real_path.to_string_lossy();
     validate_path(&real_path_str)?;
     std::fs::create_dir_all(output_dir)
-        .map_err(|e| crate::errors::Error::Internal(format!("I/O failed: {}", e.kind())))?;
+        .map_err(|e| babbleon_scramble_v2::errors::Error::Internal(format!("I/O failed: {}", e.kind())))?;
     let padding = wrapper_padding_hex(secret, epoch, scrambled_name)?;
     let inode = trusted_ns_inode.map_or_else(|| "0".into(), |i| i.to_string());
     let contents = render(
@@ -310,7 +310,7 @@ pub fn write_tripwire_wrapper(
         validate_path(fifo)?;
     }
     std::fs::create_dir_all(output_dir)
-        .map_err(|e| crate::errors::Error::Internal(format!("I/O failed: {}", e.kind())))?;
+        .map_err(|e| babbleon_scramble_v2::errors::Error::Internal(format!("I/O failed: {}", e.kind())))?;
     let padding = wrapper_padding_hex(secret, epoch, honey_name)?;
     let fifo = events_fifo.unwrap_or(TRIPWIRE_EVENTS_FIFO);
     let contents = render(
@@ -421,11 +421,11 @@ fn write_name_list<'a>(
 ) -> Result<()> {
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)
-            .map_err(|e| crate::errors::Error::Internal(format!("I/O failed: {}", e.kind())))?;
+            .map_err(|e| babbleon_scramble_v2::errors::Error::Internal(format!("I/O failed: {}", e.kind())))?;
     }
     let content: String = names.into_iter().flat_map(|n| [n, "\n"]).collect();
     std::fs::write(dest, content)
-        .map_err(|e| crate::errors::Error::Internal(format!("I/O failed: {}", e.kind())))?;
+        .map_err(|e| babbleon_scramble_v2::errors::Error::Internal(format!("I/O failed: {}", e.kind())))?;
     Ok(())
 }
 
@@ -436,7 +436,7 @@ fn write_name_list<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::per_host_secret::PerHostSecret;
+    use babbleon_scramble_v2::per_host_secret::PerHostSecret;
 
     fn secret(byte: u8) -> PerHostSecret {
         PerHostSecret::from_bytes(&[byte; 32]).unwrap()

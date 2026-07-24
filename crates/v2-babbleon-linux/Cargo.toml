@@ -1,0 +1,31 @@
+[package]
+name = "v2-babbleon-linux"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Babbleon v2 Linux detection/response tier: /proc-aware event model + JSONL/ed25519 audit-chain sinks, decoy tripwire policy, and /bin/sh wrapper emission.  Welded to Linux; a mobile fork rebuilds this layer and reuses only v2-babbleon-scramble."
+publish = false
+
+[lib]
+name = "babbleon_linux_v2"
+path = "src/lib.rs"
+
+[dependencies]
+# The OS-agnostic scramble engine this tier drives (wrapper derives
+# sub-keys; activated_table_bridge maps an EpochMapping).
+v2-babbleon-scramble = { path = "../v2-babbleon-scramble" }
+# Secret-free launch artefacts (activated_table_bridge builds one).
+v2-babbleon-launch-artefacts = { path = "../v2-babbleon-launch-artefacts" }
+# Event serialization (sinks emit JSONL).
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Audit-chain signing.
+ed25519-dalek = { workspace = true }
+sha2 = { workspace = true }
+rand = { workspace = true }
+hex = { workspace = true }
+# Secret hygiene.
+zeroize = { workspace = true }
+# Logging.
+tracing = { workspace = true }

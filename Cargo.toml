@@ -9,6 +9,7 @@ members = [
     # from v1 per the phase-0 decisions; differential tests against v1
     # live inside the v2 crates.
     "crates/v2-babbleon-scramble",
+    "crates/v2-babbleon-linux",
     "crates/v2-babbleon-core",
     "crates/v2-babbleon",
     "crates/v2-babbleon-launch-untrusted",

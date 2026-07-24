@@ -33,8 +33,8 @@ use std::path::Path;
 
 use babbleon_launch_artefacts_v2::{ActivatedTable, ActivatedTableBuilder};
 
-use crate::errors::{Error, Result};
-use crate::mapping::EpochMapping;
+use babbleon_scramble_v2::errors::{Error, Result};
+use babbleon_scramble_v2::mapping::EpochMapping;
 
 /// Build an [`ActivatedTable`] from an [`EpochMapping`] and a
 /// wrapper directory.
@@ -78,7 +78,7 @@ pub fn build_activated_table_from_mapping(
 #[cfg(test)]
 mod tests {
     use super::build_activated_table_from_mapping;
-    use crate::{MappingBuilder, PerHostSecret, Wordlist};
+    use babbleon_scramble_v2::{MappingBuilder, PerHostSecret, Wordlist};
 
     #[test]
     fn build_from_mapping_produces_table_for_every_tracked_tool() {
