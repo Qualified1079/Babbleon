@@ -44,8 +44,8 @@
 
 use crate::errors::Result;
 use crate::secret_literal_wordlist::SecretLiteralWordlist;
-use babbleon_core_v2::per_host_secret::PerHostSecret;
-use babbleon_core_v2::wordlist::Wordlist;
+use babbleon_scramble_v2::per_host_secret::PerHostSecret;
+use babbleon_scramble_v2::wordlist::Wordlist;
 
 /// The literal sequence the scanner recognises as a secret-call
 /// opener.  Operators can change this in a future revision (e.g.
@@ -228,8 +228,8 @@ mod tests {
         walk_secret_calls, Chunk,
     };
     use crate::secret_literal_wordlist::SecretLiteralWordlist;
-    use babbleon_core_v2::per_host_secret::PerHostSecret;
-    use babbleon_core_v2::wordlist::Wordlist;
+    use babbleon_scramble_v2::per_host_secret::PerHostSecret;
+    use babbleon_scramble_v2::wordlist::Wordlist;
 
     fn secret(byte: u8) -> PerHostSecret {
         PerHostSecret::from_bytes(&[byte; 32]).unwrap()

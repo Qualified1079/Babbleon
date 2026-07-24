@@ -227,8 +227,8 @@ mod tests {
     use crate::scrambler::scramble;
     use crate::tokens::{Token, WhitespaceKind};
     use crate::whitespace_wordlist::WhitespaceWordlist;
-    use babbleon_core_v2::per_host_secret::PerHostSecret;
-    use babbleon_core_v2::wordlist::Wordlist;
+    use babbleon_scramble_v2::per_host_secret::PerHostSecret;
+    use babbleon_scramble_v2::wordlist::Wordlist;
 
     fn fixed_wl() -> WhitespaceWordlist {
         let s = PerHostSecret::from_bytes(&[11u8; 32]).unwrap();

@@ -61,10 +61,10 @@
 
 use std::collections::HashMap;
 
-use babbleon_core_v2::key_derivation::derive_subkey;
-use babbleon_core_v2::mapping::COMPOUND_N;
-use babbleon_core_v2::per_host_secret::PerHostSecret;
-use babbleon_core_v2::wordlist::Wordlist;
+use babbleon_scramble_v2::key_derivation::derive_subkey;
+use babbleon_scramble_v2::mapping::COMPOUND_N;
+use babbleon_scramble_v2::per_host_secret::PerHostSecret;
+use babbleon_scramble_v2::wordlist::Wordlist;
 
 use crate::errors::{Error, Result};
 
@@ -374,8 +374,8 @@ fn derive_compound(
 mod tests {
     use super::SecretLiteralWordlist;
     use crate::errors::Error;
-    use babbleon_core_v2::per_host_secret::PerHostSecret;
-    use babbleon_core_v2::wordlist::Wordlist;
+    use babbleon_scramble_v2::per_host_secret::PerHostSecret;
+    use babbleon_scramble_v2::wordlist::Wordlist;
     use std::collections::HashMap;
 
     fn secret(byte: u8) -> PerHostSecret {

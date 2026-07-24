@@ -53,7 +53,7 @@ pub enum Error {
     /// the original cause; this variant exists only to bridge the
     /// two crates' error types without dropping information.
     #[error("v2-babbleon-core error: {0}")]
-    Core(#[from] babbleon_core_v2::errors::Error),
+    Core(#[from] babbleon_scramble_v2::errors::Error),
 
     /// The scrambler produced a whitespace compound that occurs as
     /// a substring of a non-whitespace `Word` in the same source.

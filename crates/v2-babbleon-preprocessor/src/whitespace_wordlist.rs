@@ -37,10 +37,10 @@
 //! astronomically unlikely; tests assert per-epoch
 //! distinct-from-each-other invariants.
 
-use babbleon_core_v2::mapping::COMPOUND_N;
-use babbleon_core_v2::per_host_secret::PerHostSecret;
-use babbleon_core_v2::permutation::Permutation;
-use babbleon_core_v2::wordlist::Wordlist;
+use babbleon_scramble_v2::mapping::COMPOUND_N;
+use babbleon_scramble_v2::per_host_secret::PerHostSecret;
+use babbleon_scramble_v2::permutation::Permutation;
+use babbleon_scramble_v2::wordlist::Wordlist;
 
 use crate::errors::{Error, Result};
 use crate::tokens::WhitespaceKind;
@@ -254,12 +254,12 @@ fn build_compound(
     for j in 0..COMPOUND_N {
         let idx_in = (slot_base + j) % n;
         let idx_out = perm.apply(idx_in).ok_or_else(|| {
-            Error::Core(babbleon_core_v2::errors::Error::Internal(format!(
+            Error::Core(babbleon_scramble_v2::errors::Error::Internal(format!(
                 "whitespace permutation index {idx_in} out of range for size {n}"
             )))
         })?;
         let word = wordlist.get(idx_out).ok_or_else(|| {
-            Error::Core(babbleon_core_v2::errors::Error::Internal(format!(
+            Error::Core(babbleon_scramble_v2::errors::Error::Internal(format!(
                 "whitespace wordlist index {idx_out} out of range for size {n}"
             )))
         })?;
@@ -273,8 +273,8 @@ mod tests {
     use super::{WhitespaceWordlist, MIN_WORDLIST_SIZE};
     use crate::errors::Error;
     use crate::tokens::WhitespaceKind;
-    use babbleon_core_v2::per_host_secret::PerHostSecret;
-    use babbleon_core_v2::wordlist::Wordlist;
+    use babbleon_scramble_v2::per_host_secret::PerHostSecret;
+    use babbleon_scramble_v2::wordlist::Wordlist;
 
     fn fixed_secret() -> PerHostSecret {
         PerHostSecret::from_bytes(&[7u8; 32]).unwrap()

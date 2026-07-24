@@ -23,7 +23,12 @@ missing_docs = "deny"
 pedantic = { level = "warn", priority = -1 }
 
 [dependencies]
-v2-babbleon-core = { path = "../v2-babbleon-core" }
+# The preprocessor only ever reaches the pure scramble engine
+# (per_host_secret, wordlist, key_derivation, mapping, permutation,
+# errors) — never the Linux facade's events/tripwire/wrapper — so it
+# depends on v2-babbleon-scramble directly instead of v2-babbleon-core.
+# See docs/v2/scramble-core-carve.md step 4.
+v2-babbleon-scramble = { path = "../v2-babbleon-scramble" }
 thiserror.workspace = true
 
 [dev-dependencies]

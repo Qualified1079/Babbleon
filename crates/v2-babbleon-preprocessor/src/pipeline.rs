@@ -291,8 +291,8 @@ mod tests {
     use crate::file_format::decode as decode_file;
     use crate::identifier_scrambler::{IdentifierMapping, ALIAS_COUNT};
     use crate::whitespace_wordlist::WhitespaceWordlist;
-    use babbleon_core_v2::per_host_secret::PerHostSecret;
-    use babbleon_core_v2::wordlist::Wordlist;
+    use babbleon_scramble_v2::per_host_secret::PerHostSecret;
+    use babbleon_scramble_v2::wordlist::Wordlist;
 
     fn fixed_wl(epoch: u64) -> WhitespaceWordlist {
         let s = PerHostSecret::from_bytes(&[7u8; 32]).unwrap();
