@@ -147,11 +147,22 @@ noted rather than executed:
   product crate blind (no compiler) and unreviewed.  The carve has
   already proven it is unblocked: the preprocessor consuming only
   `babbleon_scramble_v2` is the exact shape the fork will take.
-- **protocol** — assess whether `v2-babbleon-daemon-protocol` (the
-  `GetWhitespaceCompounds` / `GetTokenMapping` wire types) is itself
-  OS-agnostic and shareable with the mobile fork, or whether the mobile
-  fork needs a different transport (binder/AIDL vs the Linux daemon's
-  socket).  Worth a short audit doc before any code.
+- **protocol** — **audit done this session:**
+  `docs/v2/protocol-transport-split.md`.  Finding: the wire layer
+  (`protocol.rs` + `errors.rs` + `unlock_secret.rs` — `Request` /
+  `Response` / `UnlockSecret` types + the hand parser) is OS-agnostic and
+  shareable as-is; only `client.rs` (`UnixStream`) and `socket_path.rs`
+  (`/run/babbleon/daemon.sock`) are Linux-welded, and every current
+  transport caller (CLI, python-shim, launch-untrusted, the daemon's own
+  admin subcommand) is a Linux binary the fork does not reuse.
+  Recommended (but NOT pre-emptive — nothing is blocked yet) carve:
+  `v2-babbleon-protocol` (wire types) + leave the transport in
+  `v2-babbleon-daemon-protocol` as a re-export facade, exactly mirroring
+  the scramble/linux split.  **Open question for you** is in the doc:
+  what IPC does the Android untrusted tier use (a `LocalSocket` with a
+  different path → even `socket_path` is nearly reusable behind a path
+  trait, vs. binder/AIDL → a wholly new `round_trip`)?  The carve waits
+  on the fork existing + that answer.
 
 ---
 
