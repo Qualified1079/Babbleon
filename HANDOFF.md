@@ -106,11 +106,52 @@ steps 1–4 landed + the verification gate still pending.
 3. **`.idea/` appeared untracked** and was deliberately kept OUT of the
    commits (IDE config, not part of the carve).
 
+### Also landed this session — the Linux-tier carve (`ebb843a`)
+
+Went further than the four steps and executed the first deferred carve
+too, since it is the named "linux" half of the task and follows the same
+proven pattern.  `events`/`tripwire`/`wrapper`/`activated_table_bridge`
+moved out of core into a new `v2-babbleon-linux` (`babbleon_linux_v2`,
+`forbid(unsafe_code)`).  Unlike the scramble set, these are not closed
+downward — `wrapper` and `activated_table_bridge` reach into the
+scramble engine — so their internal `crate::errors/mapping/
+key_derivation/per_host_secret` imports were rewritten to
+`babbleon_scramble_v2::...` (13 edits, two files).  `events`/`tripwire`
+needed no internal edits.
+
+`v2-babbleon-core` is now a **pure re-export facade** over
+`v2-babbleon-scramble` + `v2-babbleon-linux` — no source modules of its
+own beyond `lib.rs`.  The two external consumers (daemon
+materialization's `write_all_tripwire_wrappers`, launch-untrusted's
+wrapper test) resolve through the facade → zero downstream churn.
+Grep-verified every re-exported symbol; same build-gate caveat as the
+scramble carve (no toolchain here).
+
 ### Still deferred (unchanged from the plan)
 
-events/tripwire/wrapper → dedicated `linux-babbleon` response crate;
-rename `v2-babbleon-core` away from "core"; vault path abstraction.
-None needed to unblock the mobile fork.
+Rename `v2-babbleon-core` away from "core" (now more clearly worth doing
+— zero source modules left — but gated on green build + operator's
+naming call); vault path abstraction.  The `events/tripwire/wrapper`
+relocation is no longer deferred — it landed (above).
+
+### Suggested next steps for the operator (the "protocol / android" halves)
+
+The "linux" half of the task is done (scramble split + Linux-tier
+crate).  The remaining two halves both need operator input, so they are
+noted rather than executed:
+
+- **android** — scaffold the mobile fork crate (`v2-babbleon-mobile` or
+  similar) that depends on `v2-babbleon-scramble` directly and rebuilds
+  enforcement.  This is a *product* decision (new shippable crate,
+  SELinux/zygote enforcement design) and I did not want to create a
+  product crate blind (no compiler) and unreviewed.  The carve has
+  already proven it is unblocked: the preprocessor consuming only
+  `babbleon_scramble_v2` is the exact shape the fork will take.
+- **protocol** — assess whether `v2-babbleon-daemon-protocol` (the
+  `GetWhitespaceCompounds` / `GetTokenMapping` wire types) is itself
+  OS-agnostic and shareable with the mobile fork, or whether the mobile
+  fork needs a different transport (binder/AIDL vs the Linux daemon's
+  socket).  Worth a short audit doc before any code.
 
 ---
 

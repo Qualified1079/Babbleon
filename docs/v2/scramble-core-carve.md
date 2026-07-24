@@ -85,6 +85,13 @@ directly and never pulls the facade.
 - **Steps 1–3 landed** in `5fa6bd7` (carve + facade + workspace member).
 - **Step 4 landed** in `134e0b3` (preprocessor repointed onto
   `v2-babbleon-scramble`).
+- **Linux-tier carve landed** in `ebb843a` — the first "deliberately
+  deferred" item below.  `events`/`tripwire`/`wrapper`/
+  `activated_table_bridge` moved into a new `v2-babbleon-linux`
+  (`babbleon_linux_v2`); `v2-babbleon-core` is now a pure re-export
+  facade over `v2-babbleon-scramble` + `v2-babbleon-linux` with no
+  source modules of its own.  Zero downstream churn (both external
+  consumers resolve through the facade).
 - **Verification gate — NOT yet run.**  This host has no Rust
   toolchain, so `cargo build`/`cargo test` (below) could not be
   executed.  The changes are mechanical (git-tracked renames + a
@@ -225,12 +232,18 @@ Cannot be run on a host without a Rust toolchain; this plan is not
 
 ## Deliberately deferred (separate carves)
 
-- **Relocate `events`/`tripwire`/`wrapper` into a dedicated
-  `linux-babbleon` response crate.**  Not needed to unblock mobile —
-  mobile simply won't depend on the facade.  Hygiene, do it later.
+- ~~**Relocate `events`/`tripwire`/`wrapper` into a dedicated
+  response crate.**~~  **DONE** in `ebb843a` — landed as
+  `v2-babbleon-linux` (also took `activated_table_bridge`).  See the
+  Status block above.
 - **Rename `v2-babbleon-core`** to something that reflects it is now a
-  Linux facade, not "core."  Cosmetic; repoints ~10 import sites.  Do
-  it after the split lands green, if at all.
+  pure re-export facade, not "core."  Cosmetic; repoints ~10 import
+  sites.  Now that the crate has zero source modules of its own, this is
+  more clearly worth doing — but still gated on the build being green
+  first, and on the operator's call on the new name (candidate:
+  `v2-babbleon` already exists as the CLI, so `v2-babbleon-facade` or
+  folding the re-exports into consumers directly).  Do it after the
+  split lands green, if at all.
 - **Vault path abstraction** (`/etc/babbleon/vault.age`, XDG,
   `#[cfg(unix)]` perms behind a platform-path trait).  Independent; do
   it when a mobile vault backend actually needs it.
