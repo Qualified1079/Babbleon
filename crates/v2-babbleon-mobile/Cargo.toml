@@ -1,0 +1,33 @@
+[package]
+name = "v2-babbleon-mobile"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Babbleon v2 Android/mobile tier: reuses the OS-agnostic scramble engine and rebuilds enforcement for the Android app model (name-resolution tripwire, response policy, event vocabulary) with an opt-in JNI bridge.  Pure Rust by default (forbid(unsafe_code)); the android-jni feature adds the cdylib the app loads."
+publish = false
+
+[lib]
+name = "babbleon_mobile_v2"
+path = "src/lib.rs"
+# cdylib: the .so cargo-ndk lands in jniLibs for the app to load.
+# rlib:   keeps the crate host-testable and usable by future Rust code.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The OS-agnostic scramble engine — the whole point of the carve is that
+# the mobile tier consumes this directly and never the Linux facade.
+v2-babbleon-scramble = { path = "../v2-babbleon-scramble" }
+
+# JNI bridge — opt-in.  The default build is pure Rust with no Android
+# toolchain, so `cargo build/test --workspace` on a Linux CI host
+# exercises the entire decision core.  Android builds enable the feature
+# via `cargo ndk ... --features android-jni`.
+jni = { workspace = true, optional = true }
+# Wipe the transient device-secret copy that crosses the JNI boundary.
+zeroize = { workspace = true, optional = true }
+
+[features]
+# Compile the JNI entry points (src/jni_bridge.rs) and the cdylib symbols.
+android-jni = ["dep:jni", "dep:zeroize"]

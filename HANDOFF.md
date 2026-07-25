@@ -32,6 +32,88 @@ role-partitioning tool this session builds on.
 
 ---
 
+## 2026-07-24 — android tier started: v2-babbleon-mobile pure core (INCOMPLETE — finish this)
+
+Author: Claude Opus 4.8 (autonomous). Operator cut the session short
+("getting too long") and asked for a handoff. The android half of the
+carve is **partly built and NOT finished**. Pick it up here.
+
+### What IS done and committed
+
+- **`docs/v2/android-tier.md`** (`7a12cc5`) — full design: Linux→Android
+  concern mapping, three-layer architecture, the pure decision core vs.
+  the app/system-provided enforcement (SELinux/binder/seccomp/Keystore),
+  and the opt-in `android-jni` FFI seam. Read this first.
+- **`crates/v2-babbleon-mobile/` pure core** (this commit) — a complete,
+  self-contained, host-testable decision core depending only on
+  `v2-babbleon-scramble`:
+  - `Cargo.toml` — `[lib] crate-type = ["cdylib","rlib"]`, dep on
+    scramble, **optional** `jni` + `zeroize` behind an `android-jni`
+    feature. `forbid(unsafe_code)`.
+  - `src/lib.rs` — crate doc + module wiring + flat re-exports.
+  - `src/mapping_handle.rs` — `MobileMapping` (owns an `EpochMapping`
+    built from a 32-byte secret + `Wordlist::english_baseline()` + epoch;
+    `scramble`/`reveal`/`is_decoy`/`epoch`; redacted `Debug`).
+  - `src/response.rs` — `resolve_name` → `ResolutionDecision`
+    (`Resolved`/`CanonicalNameUsed`/`DecoyNameUsed`/`Unknown` ×
+    `Allow`/`Deny`/`Terminate` under `ResponsePolicy`).
+  - `src/event.rs` — `MobileEvent` + `Severity` + `EventSink`
+    (`NullSink`, `CallbackSink`).
+  - `src/enforcement.rs` — `ResolutionGuard` / `CallerTerminator` traits
+    + `enforce()` wiring a decision to sink+guard+terminator.
+  - Every module has `#[cfg(test)]` unit tests (baseline Rule 15). They
+    are UNRUN — no Rust toolchain on this host.
+
+### What is NOT done — the next instance's job, in order
+
+1. **Build-verify the pure core first.** On a Rust host:
+   `cargo test -p v2-babbleon-mobile` (crate is standalone, see #2).
+   Fix anything (most likely: a clippy::pedantic nit, or
+   `Wordlist::english_baseline()` being too small for 4 tools ×
+   `COMPOUND_N` + `HONEY_COUNT` — unlikely but check). Only after green:
+2. **Register in the workspace.** I deliberately did NOT add
+   `"crates/v2-babbleon-mobile"` to the root `Cargo.toml` `members` list,
+   because a compile error I can't catch here would break
+   `cargo build --workspace` for everyone. Add it once #1 is green.
+   (Until then the crate is invisible to the workspace build — verify it
+   with `-p` / a one-off `cargo test --manifest-path`.)
+3. **Write `src/jni_bridge.rs`** behind `#[cfg(feature = "android-jni")]`.
+   Cargo.toml already names this path. Use `jni` 0.21's **safe** string
+   API (verified against docs.rs): `JNIEnv::get_string(&mut self, &JString)
+   -> Result<JavaStr>` (`.into()` → `String`) and
+   `JNIEnv::new_string(&self, &str) -> Result<JString>` (`.into_raw()` →
+   `jstring`). Edition is 2021 so plain `#[no_mangle] pub extern "system"
+   fn Java_..._method(...)` (not `#[unsafe(no_mangle)]`). Handle idiom:
+   `Box::into_raw(Box::new(MobileMapping))` as a `jlong`; a
+   `nativeDestroy` that `Box::from_raw`s it (that one IS unsafe — if you
+   add it, the crate can't keep `forbid`; switch root to
+   `#![cfg_attr(feature="android-jni", deny(unsafe_code))]` +
+   `#[allow(unsafe_code)]` on the bridge module, and add a `SAFETY:`
+   comment per Rule 9). Add `jni = { version = "0.21", ... }` to the root
+   `[workspace.dependencies]` (it is NOT there yet).
+4. **`examples/BabbleonNative.kt`** — the Kotlin `external fun` glue +
+   `System.loadLibrary("babbleon_mobile_v2")` + the `cargo ndk` build
+   line (already in the design doc; mirror it).
+5. **Record the security-baseline certification** for both
+   `v2-babbleon-mobile` and — carried over from the carve — the two
+   carve crates `v2-babbleon-scramble` / `v2-babbleon-linux` against
+   `docs/v2/security-baseline.md` (CLAUDE.md §5 says every v2 crate must
+   be certified; three new crates are not yet recorded).
+
+### Also still pending from the carve (unchanged)
+
+The `cargo build --workspace` + `v1_compat` gate for the scramble/linux
+carve has still never run on a real toolchain — see the 2026-07-23 entry.
+Do it in the same verification pass as #1 above.
+
+### Push / token
+
+The operator supplied a GitHub PAT mid-session (used inline to push;
+they were told to rotate it). If pushing fails, commits still accumulate
+locally — see [[env-no-toolchain-blocked-push]] in memory.
+
+---
+
 ## 2026-07-23 — sleeping-operator: scramble-core carve executed (steps 1–4)
 
 Author: Claude Opus 4.8 (autonomous, operator asleep / away mode).
