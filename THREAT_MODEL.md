@@ -1,5 +1,13 @@
 # Babbleon Threat Model
 
+## Purpose of Babbleon
+
+Babbleon exists to **confuse and contain LLM worms**. Everything in this
+project — design decisions, tool scopes, content-handling rules — should
+be evaluated against that purpose. If a change does not either reduce the
+attack surface for self-propagating prompt injection or actively disrupt
+worm propagation, it is out of scope for Babbleon.
+
 ## Primary Threat: LLM Worms
 
 The main threat model for Babbleon is **LLM worms** — self-propagating
