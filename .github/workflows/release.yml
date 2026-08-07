@@ -79,7 +79,7 @@ jobs:
       # Keyless signing via Fulcio uses the workflow OIDC identity.
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: release-bundle
           path: dist/
@@ -128,12 +128,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: release-signed
           path: dist/
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           # The provenance generator emits a file named
           # `${{ needs.provenance.outputs.attestation-name }}` — copy
