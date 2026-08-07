@@ -25,7 +25,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: install libpam-dev
         run: sudo apt-get update && sudo apt-get install -y libpam0g-dev
       - uses: dtolnay/rust-toolchain@stable
@@ -47,7 +47,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - name: install cargo-audit
         run: cargo install --locked cargo-audit
@@ -60,7 +60,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
@@ -72,7 +72,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: install cargo-cyclonedx
@@ -93,7 +93,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: install libpam-dev
         run: sudo apt-get update && sudo apt-get install -y libpam0g-dev
       - uses: dtolnay/rust-toolchain@stable
@@ -129,7 +129,7 @@ jobs:
     # continue-on-error off.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: install cargo-vet
@@ -157,7 +157,7 @@ jobs:
     # docs (`docs/operator.md`) claim musl-static reproducibility;
     # this is the test that confirms the claim.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: install musl tooling
         run: sudo apt-get update && sudo apt-get install -y musl-tools libpam0g-dev
       - uses: dtolnay/rust-toolchain@stable
@@ -207,7 +207,7 @@ jobs:
     # namespaces, or call mkfifo for real — none of those are valid
     # under Miri.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: miri

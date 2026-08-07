@@ -26,7 +26,7 @@ jobs:
       artifact-name: ${{ steps.bundle.outputs.artifact-name }}
       artifact-digest: ${{ steps.bundle.outputs.artifact-digest }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-musl
