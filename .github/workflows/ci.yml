@@ -80,7 +80,7 @@ jobs:
       - name: generate SBOM
         run: cargo cyclonedx --format json --output-cdx --override-filename babbleon-sbom
       - name: upload SBOM
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: babbleon-sbom
           path: "**/babbleon-sbom*.cdx.json"
@@ -110,7 +110,7 @@ jobs:
         run: cargo llvm-cov --workspace --lcov --output-path lcov.info -- --skip mapping_properties
       - name: summarise
         run: cargo llvm-cov report --workspace -- --skip mapping_properties
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: lcov
           path: lcov.info
@@ -140,7 +140,7 @@ jobs:
         if: failure()
         run: cargo vet suggest > vet-suggest.txt || true
       - if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cargo-vet-report
           path: vet-suggest.txt
