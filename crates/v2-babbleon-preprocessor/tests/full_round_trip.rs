@@ -7,7 +7,7 @@
 //! (dynamic identifier scramble) + L3 (whitespace-as-words) compose
 //! without corrupting valid Python.
 
-use babbleon_core_v2::{
+use babbleon_scramble_v2::{
     per_host_secret::PerHostSecret, wordlist::Wordlist, MappingBuilder,
 };
 use babbleon_preprocessor_v2::{

@@ -20,7 +20,7 @@
 //! correctness check: the unscrambled source must run identically to
 //! the original.
 
-use babbleon_core_v2::{
+use babbleon_scramble_v2::{
     per_host_secret::PerHostSecret, wordlist::Wordlist, MappingBuilder,
 };
 use babbleon_preprocessor_v2::file_format::decode as decode_file;

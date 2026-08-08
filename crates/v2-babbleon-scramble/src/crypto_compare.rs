@@ -23,7 +23,7 @@
 //! introducing data-dependent branches before the response:
 //!
 //! ```
-//! # use babbleon_core_v2::crypto_compare::is_secret_byte_match;
+//! # use babbleon_scramble_v2::crypto_compare::is_secret_byte_match;
 //! # fn act_on_match() {}
 //! # fn act_on_mismatch() {}
 //! # let a = &[0u8; 4]; let b = &[0u8; 4];

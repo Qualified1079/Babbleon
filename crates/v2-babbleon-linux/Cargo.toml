@@ -29,3 +29,9 @@ hex = { workspace = true }
 zeroize = { workspace = true }
 # Logging.
 tracing = { workspace = true }
+
+[dev-dependencies]
+# The wrapper-emission and event-sink tests write into a scratch
+# directory rather than the real filesystem.  Test-only: the tier
+# itself never creates temporary files.
+tempfile = { workspace = true }

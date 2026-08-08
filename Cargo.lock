@@ -2151,6 +2151,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "tracing",
  "v2-babbleon-launch-artefacts",
  "v2-babbleon-scramble",

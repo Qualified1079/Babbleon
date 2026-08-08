@@ -99,7 +99,7 @@ struct Entry {
 /// # Example
 ///
 /// ```
-/// use babbleon_core_v2::{
+/// use babbleon_scramble_v2::{
 ///     MappingBuilder, PerHostSecret, PermutationCache, Wordlist,
 /// };
 ///

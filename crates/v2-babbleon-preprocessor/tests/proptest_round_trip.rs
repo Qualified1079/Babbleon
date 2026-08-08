@@ -30,8 +30,8 @@
 
 #![allow(clippy::doc_markdown, clippy::naive_bytecount)]
 
-use babbleon_core_v2::per_host_secret::PerHostSecret;
-use babbleon_core_v2::wordlist::Wordlist;
+use babbleon_scramble_v2::per_host_secret::PerHostSecret;
+use babbleon_scramble_v2::wordlist::Wordlist;
 use babbleon_preprocessor_v2::scrambler::scramble;
 use babbleon_preprocessor_v2::tokens::{Token, WhitespaceKind};
 use babbleon_preprocessor_v2::unscrambler::{

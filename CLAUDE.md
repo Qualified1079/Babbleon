@@ -72,8 +72,11 @@ Never push to a `claude/*` branch other than the one
 - Do not touch `crates/babbleon*` (v1).  Read-only.  Use it as
   reference only; never as a target.
 - Do not run `cargo test --workspace`.  It will compile v1 and
-  trip on drift.  Use `cargo test -p v2-babbleon-core` or
-  `cargo test -p v2-babbleon` only.
+  trip on drift.  Use `cargo test -p <v2-crate>` only.  Note that
+  `v2-babbleon-core` is a **re-export facade** since the carve and
+  has zero tests of its own — the engine's tests live in
+  `v2-babbleon-scramble`, the detection tier's in
+  `v2-babbleon-linux`.  Testing core proves nothing.
 - Do not create or push to branches other than
   `claude/magical-turing-mele8c`.
 - Do not write code based on this CLAUDE.md alone — it is a
@@ -169,7 +172,7 @@ invariant); K = `alias_count_for_epoch(format_version, epoch)` for
 guaranteed uniform (every token's aliases vec is the same width).
 
 L2 permutation cache:
-`crates/v2-babbleon-core/src/permutation_cache.rs` provides a small
+`crates/v2-babbleon-scramble/src/permutation_cache.rs` provides a small
 LRU keyed by `(epoch, purpose)`.  `MappingBuilder::with_cache`
 opts in; cache hits skip the ~35 ms Fisher-Yates pass per
 `Permutation`.  `DaemonState` owns one cache (default capacity 12
@@ -226,23 +229,36 @@ Read on demand (when the task pulls you in):
 - `docs/v2/dynamic-keywords.md`, `docs/v2/gui-design.md` —
   operator design items.
 - `docs/v2/phase0-research-notes.md` — 11 research threads.
-- `crates/v2-babbleon-core/src/lib.rs` — what's built so far.
+- `crates/v2-babbleon-scramble/src/lib.rs` — the OS-agnostic engine
+  (where the scramble math actually lives).
+- `crates/v2-babbleon-core/src/lib.rs` — the re-export facade; read
+  it to learn the carve boundaries, not the implementation.
 
 ## 6. Useful one-liners
 
 ```
-# what's the live crate's test count?
-cargo test -p v2-babbleon-core --quiet
+# what's the live engine's test count?  (core is a facade — 0 tests)
+cargo test -p v2-babbleon-scramble --quiet
+
+# the whole v2 surface, one crate at a time, never --workspace
+for p in v2-babbleon-scramble v2-babbleon-linux v2-babbleon-core \
+         v2-babbleon-preprocessor v2-babbleon-daemon \
+         v2-babbleon-daemon-protocol v2-babbleon-vault v2-babbleon \
+         v2-babbleon-launch-artefacts v2-babbleon-launch-untrusted \
+         v2-babbleon-login-shell v2-babbleon-python-shim \
+         v2-babbleon-pam v2-babbleon-resilience-bench; do
+    cargo test -p "$p" --quiet || echo "FAILED: $p"
+done
 
 # what does HEAD look like?
 git log --oneline -10
 
 # scan for security-baseline rule compliance on a v2 crate
 grep -nE 'forbid\(unsafe_code\)|Zeroizing<|What this defeats' \
-    crates/v2-babbleon-core/src/*.rs
+    crates/v2-babbleon-scramble/src/*.rs
 
 # clean rebuild without touching v1
-cargo build -p v2-babbleon-core -p v2-babbleon
+cargo build -p v2-babbleon-scramble -p v2-babbleon-core -p v2-babbleon
 ```
 
 ## 7. When in doubt
