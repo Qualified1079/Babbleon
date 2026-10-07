@@ -39,7 +39,8 @@ unrepeatable.
 No single command currently reports the truth about this tree.
 Until one does, every decision below is uncheckable.
 
-- [ ] **Migrate the wordlist out of v1, then delete v1.**  NOT a
+- [x] **Migrate the wordlist out of v1, then delete v1.**  DONE
+      `ae5c9bc` (2026-10-07).  NOT a
       delete — a migration.  `v2-babbleon-scramble/src/wordlist.rs:40`
       does `include_str!("../../babbleon/wordlist/words.txt")`: the
       pure, carved, OS-agnostic engine compiles its 3.7 MB /
@@ -55,11 +56,15 @@ Until one does, every decision below is uncheckable.
       Out-of-workspace casualties, both recoverable from history:
       `tools/rotation-benchmark` (2 v1 imports — port it, see F4)
       and three v1-only fuzz targets.
-- [ ] **Fix `v2-babbleon-mobile` and register it.**  Its manifest
+- [x] **Fix `v2-babbleon-mobile` and register it.**  DONE `ae5c9bc`.
+      It compiles for the first time since July; all 22 unit tests,
+      written blind on a toolchain-less host, pass unmodified.  Its manifest
       inherits `jni` from `[workspace.dependencies]`, where `jni`
       was never added, so the crate has never parsed, let alone
       compiled, since July.  One line, then add it to `members`.
-- [ ] **Re-enable `cargo test --workspace` as the single arbiter.**
+- [x] **Re-enable `cargo test --workspace` as the single arbiter.**
+      DONE `ae5c9bc`: **1017 tests, 0 failures**, mobile included.
+      `CLAUDE.md` §4/§6 updated in the same commit.
       Possible only once v1 is gone.  Then delete the "never run
       --workspace" rule from `CLAUDE.md` §4 and the hand-rolled
       per-crate loop from §6 — a loop a human has to remember is
