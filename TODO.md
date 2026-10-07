@@ -337,6 +337,97 @@ not doc text).
       sync without a second wire field.  See `HANDOFF.md`
       2026-06-27 block for the full design + stats.
 
+### Phase 4 — PRIORITY CORRECTION (2026-10-07)
+
+Filed after an operator correction.  Two mechanisms the operator
+considers **central to Babbleon's thesis** are designed but not
+built, and neither reads that way below — one appears as a
+wordlist chore, the other nowhere.  Promoted here with a
+built-vs-designed ledger so a future session does not mistake doc
+comments for implementation.
+
+**What IS built** (verified against the tree, 2026-10-07):
+
+- Multi-word compounds for every name — `COMPOUND_N`, 2-5 aliases
+  per token per epoch (`alias_count_for_epoch`).
+- Whitespace and indentation as words — L3.
+- Deterministic reordering — L4 + `__bbnpos<N>__` markers.
+- Padding with fakes — L5 decoys (~25% of depth-0 positions) plus
+  `HONEY_COUNT` honey names, with a test asserting the honey set
+  rotates per epoch so overlap does not leak rotation timing.
+- Device-personal keying — `PerHostSecret` + HKDF with the epoch in
+  the salt.  **This is the load-bearing property.**  It makes a
+  successful deobfuscation single-use and non-accumulating, which
+  is what defeats an adversary whose economics depend on a
+  reusable index.  No other part of the design requires the
+  attacker to be weak, slow or working from memory.
+
+**What is NOT built, contrary to how the docs read:**
+
+- [ ] **Sub-second mapping rotation.**  `DaemonState::rotate()` is
+      correct, but is only ever called from the admin request
+      handler (`crates/v2-babbleon-daemon/src/handlers.rs`).  There
+      is **no timer anywhere in the daemon**, and `last_rotation`
+      is second-granularity (`as_secs()`).  Design intent is
+      re-shuffling several times per second so an attacker's
+      reconnaissance goes stale mid-operation.  Note these are two
+      distinct defences: per-device keying stops a crack
+      travelling *between hosts*; fast rotation stops it
+      travelling *through time on one host*.  Only the first
+      exists.
+      The blocker is not the scheduler.  Rotation rematerialises
+      the tripwire wrapper scripts on disk, and permutation
+      construction is ~35 ms apiece (hence `PermutationCache`).
+      Sub-second rotation of an on-disk wrapper farm is a
+      different architecture, not a tuning change — see the
+      in-process resolution hook already built in
+      `crates/v2-babbleon-mobile` (`resolve_name`) for the shape
+      that does support it.
+      Groundwork that already exists: virtual epochs with
+      guaranteed overlap, and stale-epoch names resolving to `None`
+      in `reveal`.
+- [ ] **Multi-language wordlists.**  `wordlist.rs` has exactly one
+      constructor, `english_baseline()`.  The 61-language
+      HermitDave/FrequencyWords layer is a doc comment plus the
+      `from_static_entries` seam; no language data is vendored.
+      The goal is **not** aesthetic.  English compounds retain
+      English morphology, so a model's tokenizer segments them into
+      familiar subwords and the scramble leaks structure at the
+      *representation* layer even where it is opaque at the reading
+      layer.  Cross-language compounding attacks segmentation
+      consistency itself — which is what the SentencePiece work in
+      `tools/tokenizer-benchmark/` was probing.  The four open
+      items under "Phase 4 — multi-language wordlists" below are
+      the work; this is their rationale.
+
+**Consequence for the bench.**  Both items are dial settings, not
+design debates, and one harness answers both:
+
+- [ ] How fast must rotation be before an agent's reconnaissance
+      never converges into a usable model of the host?
+- [ ] Does cross-language compounding degrade recovery measurably
+      more than English-only compounding?
+
+That makes the resilience bench the **instrument for choosing the
+two central mechanisms' parameters** — not merely the commercial
+evidence item it is framed as in
+`docs/v2/commercialization-notes.md` §1.
+
+**Also recorded — behavioural fingerprinting is unaddressed.**  No
+layer now in the pipeline (L2-L12) prevents identifying an unnamed
+binary by what it *does* (speaks TLS on 443 → curl-equivalent)
+rather than what it is called.  The operator's answer is maximal
+semantic dishonesty: if decoys behave plausibly and banners lie,
+probing stops being a reliable oracle.  The open items already
+serving that agenda — rotating the banner-deception table with the
+mapping HKDF tree, flattening the honey-vs-real referential/usage
+graph, breaking the compound-name shape signature, randomising
+`HONEY_COUNT` per epoch — are currently filed under "v2 test-suite
+performance", which is the wrong home: they are core mechanism,
+not perf.  Caveat to carry forward: deception must be *consistent*
+or the inconsistency becomes the attacker's classifier.  Denial
+degrades gracefully; dishonesty fails sharply when imperfect.
+
 ### Phase 4 — additional obfuscation layers (post-research)
 
 Layers 6-12, filed from `docs/v2/obfuscation-landscape.md`.  Each

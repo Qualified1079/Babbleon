@@ -32,6 +32,89 @@ role-partitioning tool this session builds on.
 
 ---
 
+## 2026-10-07 — direction correction: the scramble is the product
+
+Author: Claude Opus 5.  Operator returned after ~2 months idle
+(branch head was `9331d3e`, 2026-08-08) asking where the project
+stood, then corrected two readings of the design.  No mechanism
+code changed this session; two documents did.
+
+### Verified state of the tree
+
+- All 14 registered v2 crates test green on a real toolchain
+  (per-crate loop from `CLAUDE.md` §6).  This is the first time the
+  July scramble/linux carve has been confirmed green here; the
+  2026-08-08 commits that repaired it were never re-run.
+- `v2-babbleon-mobile` is **still not in the workspace** and its
+  manifest **does not parse**: it inherits `jni` from
+  `[workspace.dependencies]`, where `jni` was never added.  Nothing
+  has ever compiled it.  One-line fix, still item 1 of the
+  2026-07-24 queue below.
+- 8 dependabot PRs open since 2026-08-07, untouched.  `rand`
+  0.8→0.9 and `rand_chacha` 0.3→0.9 are breaking majors that touch
+  the scramble PRNG — real work, not rubber stamps.
+
+### The correction (operator, not inferred)
+
+`docs/v2/commercialization-notes.md` §4 ("detection is the wedge")
+was being read as the product thesis.  It is not, and this session
+amended that file (`c545f6b`, new §0).
+
+**The product is semantic denial.**  The assumed adversary is a
+reasoning model driving a harness over a large, well-indexed
+malware corpus, selecting on observed need and adapting in place —
+expected to become arbitrarily good and fast.  The defence is to
+hand it no semantically legible surface at all.  The tripwire is a
+**derived second tier**: it exists because a scrambled host makes
+canonical-name use anomalous, and it carries a false-positive floor
+the scramble does not (unscrambled third-party software asking for
+a legitimate canonical path fires it).
+
+**Deployment model the operator stated**, which resolves that
+floor: clean device → load the full intended set → scramble
+everything within it → vet anything new at the boundary before
+admission.  Admission control is the boundary; scramble is the
+interior property.  Under full enclosure the tripwire's
+false-positive floor goes to zero, and the interop gap narrows
+because a sealed enclosure need not run a live package-registry
+proxy at all.  Consequence worth selling: a vetted-but-malicious
+dependency that hardcodes a canonical path **does not function**
+inside the enclosure — defence that survives the vetting being
+wrong.  Pairs directly with the SLSA/SBOM/cosign work in phase 6.
+Target shape is fixed-function high-value hosts (jump boxes, build
+servers, CI runners, OT/ICS, embedded, kiosks, appliances), not
+developer workstations, which are the opposite of this model.
+
+**Maximal semantic dishonesty is the goal**, not merely absence of
+information: denial produces a careful attacker, dishonesty
+produces a confident wrong one.  This is also the answer to the
+behavioural-fingerprinting hole — probing is only an oracle while
+behaviour is honest.
+
+### Where the open questions now live
+
+`TODO.md` §"Phase 4 — PRIORITY CORRECTION (2026-10-07)" carries the
+built-vs-designed ledger and promotes the two central unbuilt
+mechanisms (sub-second rotation, multi-language wordlists) out of
+the phase-4 miscellany, with the bench reframed as the instrument
+that sets their parameters.  Read that block before planning any
+further layer work.
+
+### Scope boundary now recorded in the memo
+
+Semantic denial covers an adversary that must reason about the
+system.  It does not cover paths needing no semantics: parser bugs,
+memory corruption, and interoperable-by-necessity network surfaces
+(a package proxy must speak real PyPI; an HDF5 loader must parse
+real HDF5).  The July 2026 Hugging Face intrusion ran through that
+layer — ~6,191 reconnaissance actions, then a zero-day in the
+package registry cache proxy.  Closing it belongs to the
+capability-restriction tier (namespaces / Landlock / seccomp), not
+to the scramble.  That tier is therefore **not** deprioritised on
+architecture grounds, only on first-sale grounds.
+
+---
+
 ## 2026-07-24 — android tier started: v2-babbleon-mobile pure core (INCOMPLETE — finish this)
 
 Author: Claude Opus 4.8 (autonomous). Operator cut the session short
