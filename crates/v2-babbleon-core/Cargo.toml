@@ -46,6 +46,4 @@ serde_json = { workspace = true }
 ed25519-dalek = { workspace = true }
 
 [dev-dependencies]
-# Differential test against v1.
-babbleon = { path = "../babbleon" }
 tempfile = { workspace = true }

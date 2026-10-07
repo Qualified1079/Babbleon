@@ -12,18 +12,22 @@ of truth; this file's only job is to route you.
 
 This repo is **Babbleon v2 — a per-host obfuscation system**.
 
-- **v2 source** lives in `crates/v2-*` (currently
-  `crates/v2-babbleon-core` + `crates/v2-babbleon`).  v2 is the
-  product.
-- **v1 source** lives in `crates/babbleon*` (no `v2-` prefix) and
-  in `tools/`.  v1 is **DEPRECATED** for public ship — see
-  `crates/DEPRECATED-V1.md`.  Read it, do not extend it, do not
-  back-port v2 fixes to it.
+- **v2 source** is the entire `crates/` tree (every crate is
+  `v2-*`).  v2 is the product.
+- **v1 was DELETED on 2026-10-07** (TODO.md §F0).  There is no
+  longer a v1 lineage in the tree.  `crates/DEPRECATED-V1.md` is
+  kept as the record of why; recover v1 source from git history
+  (last commit containing it: see `git log -- crates/babbleon`) if
+  you ever need it as reference.  Two out-of-workspace casualties
+  still import v1 and do not build: `tools/rotation-benchmark`
+  (port it — TODO.md §F4) and three v1-only `fuzz/` targets.
 - **Design docs** live in `docs/v2/`.  Read `HANDOFF.md` then
   `V2_PLAN.md` first.
 
-If your session's task is unclear, the answer is in `HANDOFF.md` +
-`TODO.md` (sections marked `v2`).  Do not invent work.
+If your session's task is unclear, read `TODO.md`
+§"v2 — FOUNDATIONAL ORDER" **first** — it orders the roadmap by
+dependency (F0-F8), which the phase sections do not.  Then
+`HANDOFF.md`.  Do not invent work.
 
 ## 2. Push target — load-bearing
 
@@ -69,14 +73,17 @@ Never push to a `claude/*` branch other than the one
 
 ## 4. What NOT to do
 
-- Do not touch `crates/babbleon*` (v1).  Read-only.  Use it as
-  reference only; never as a target.
-- Do not run `cargo test --workspace`.  It will compile v1 and
-  trip on drift.  Use `cargo test -p <v2-crate>` only.  Note that
-  `v2-babbleon-core` is a **re-export facade** since the carve and
-  has zero tests of its own — the engine's tests live in
+- **DO run `cargo test --workspace`.**  It is the arbiter again
+  as of 2026-10-07: v1 is gone, every crate is a member, and
+  nothing is verified by a loop a human has to remember.  The old
+  "never run --workspace" rule and the hand-rolled per-crate loop
+  are both retired.  Note `v2-babbleon-core` is a **re-export
+  facade** with zero tests of its own — the engine's tests live in
   `v2-babbleon-scramble`, the detection tier's in
-  `v2-babbleon-linux`.  Testing core proves nothing.
+  `v2-babbleon-linux` — so testing core alone proves nothing.
+- Do not add a crate outside `members`.  `v2-babbleon-mobile` sat
+  outside the workspace from July to October with a manifest that
+  never parsed, and nothing caught it.
 - Do not create or push to branches other than
   `claude/magical-turing-mele8c`.
 - Do not write code based on this CLAUDE.md alone — it is a
@@ -230,7 +237,11 @@ Read on demand (when the task pulls you in):
   operator design items.
 - `docs/v2/phase0-research-notes.md` — 11 research threads.
 - `crates/v2-babbleon-scramble/src/lib.rs` — the OS-agnostic engine
-  (where the scramble math actually lives).
+  (where the scramble math actually lives).  Its 369 652-word
+  corpus now lives beside it at
+  `crates/v2-babbleon-scramble/wordlist/words.txt`; before
+  2026-10-07 it was `include_str!`d out of the v1 crate directory,
+  which is why v1 could not simply be deleted.
 - `crates/v2-babbleon-core/src/lib.rs` — the re-export facade; read
   it to learn the carve boundaries, not the implementation.
 
@@ -240,15 +251,8 @@ Read on demand (when the task pulls you in):
 # what's the live engine's test count?  (core is a facade — 0 tests)
 cargo test -p v2-babbleon-scramble --quiet
 
-# the whole v2 surface, one crate at a time, never --workspace
-for p in v2-babbleon-scramble v2-babbleon-linux v2-babbleon-core \
-         v2-babbleon-preprocessor v2-babbleon-daemon \
-         v2-babbleon-daemon-protocol v2-babbleon-vault v2-babbleon \
-         v2-babbleon-launch-artefacts v2-babbleon-launch-untrusted \
-         v2-babbleon-login-shell v2-babbleon-python-shim \
-         v2-babbleon-pam v2-babbleon-resilience-bench; do
-    cargo test -p "$p" --quiet || echo "FAILED: $p"
-done
+# the whole surface — this is the gate, run it before every push
+cargo test --workspace
 
 # what does HEAD look like?
 git log --oneline -10
@@ -257,8 +261,8 @@ git log --oneline -10
 grep -nE 'forbid\(unsafe_code\)|Zeroizing<|What this defeats' \
     crates/v2-babbleon-scramble/src/*.rs
 
-# clean rebuild without touching v1
-cargo build -p v2-babbleon-scramble -p v2-babbleon-core -p v2-babbleon
+# clean rebuild
+cargo build --workspace
 ```
 
 ## 7. When in doubt

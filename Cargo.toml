@@ -1,14 +1,11 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/babbleon",
-    "crates/babbleon-cli",
-    "crates/babbleon-ns-helper",
-    "crates/babbleon-pam",
-    # v2 (in-progress; see V2_PLAN.md and docs/v2/).  Subtree-isolated
-    # from v1 per the phase-0 decisions; differential tests against v1
-    # live inside the v2 crates.
+    # v2 is the whole workspace since the v1 deletion (2026-10-07).
+    # See V2_PLAN.md and docs/v2/.  `cargo test --workspace` is the
+    # arbiter again; do not reintroduce out-of-workspace v2 crates.
     "crates/v2-babbleon-scramble",
+    "crates/v2-babbleon-mobile",
     "crates/v2-babbleon-linux",
     "crates/v2-babbleon-core",
     "crates/v2-babbleon",
@@ -48,6 +45,10 @@ rand_chacha = "0.3"
 hkdf = "0.12"
 subtle = { version = "2.6", default-features = false }
 zeroize = { version = "1.8", features = ["zeroize_derive"] }
+# Android JNI bridge — only ever enabled through
+# v2-babbleon-mobile's optional `android-jni` feature, so a default
+# host build never compiles it.
+jni = "0.21"
 ed25519-dalek = { version = "2", features = ["rand_core", "zeroize"] }
 # serialization
 serde = { version = "1", features = ["derive"] }

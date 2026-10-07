@@ -37,7 +37,7 @@ use once_cell::sync::Lazy;
 /// per the project tree:
 /// `dwyl/english-words` is public-domain via the Unlicense.
 const ENGLISH_BASELINE: &str =
-    include_str!("../../babbleon/wordlist/words.txt");
+    include_str!("../wordlist/words.txt");
 
 /// A loaded, validated wordlist.
 #[derive(Debug)]
