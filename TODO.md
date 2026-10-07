@@ -16,6 +16,252 @@ messages.
 
 ---
 
+## v2 — FOUNDATIONAL ORDER (2026-10-07) — read this first
+
+Filed by operator instruction after a direction-correction session.
+This is the **ordering document**: the detailed items live in the
+phase sections below, but phases describe *scope*, not dependency.
+What follows is strictly most-foundational first.  F0 gates
+everything; each later tier assumes the ones above it.
+
+A thing recorded because it caused the 2-month stall: the project
+had no current-state document and no CI arbiter, so each session
+re-derived state from an 8 000-line append-only log, and two
+commits landed in July from a host with no toolchain and needed an
+August repair pass.  The architecture survived that; the
+verification discipline did not.  F0 and F1 exist to make that
+unrepeatable.
+
+---
+
+### F0 — make the repo tell the truth (gates everything else)
+
+No single command currently reports the truth about this tree.
+Until one does, every decision below is uncheckable.
+
+- [ ] **Migrate the wordlist out of v1, then delete v1.**  NOT a
+      delete — a migration.  `v2-babbleon-scramble/src/wordlist.rs:40`
+      does `include_str!("../../babbleon/wordlist/words.txt")`: the
+      pure, carved, OS-agnostic engine compiles its 3.7 MB /
+      369 652-word corpus out of the v1 crate directory, so
+      removing v1 first breaks every v2 crate.  Order: `git mv` the
+      `wordlist/` dir into `v2-babbleon-scramble`, repoint the
+      `include_str!`, drop the four v1 members from the root
+      manifest plus the vestigial `babbleon` dev-dependency in
+      `v2-babbleon-core` (labelled "Differential test against v1",
+      but `crates/v2-babbleon-core/tests/` does not exist — the
+      carve deleted that test and left the dep), then remove the v1
+      crates.
+      Out-of-workspace casualties, both recoverable from history:
+      `tools/rotation-benchmark` (2 v1 imports — port it, see F4)
+      and three v1-only fuzz targets.
+- [ ] **Fix `v2-babbleon-mobile` and register it.**  Its manifest
+      inherits `jni` from `[workspace.dependencies]`, where `jni`
+      was never added, so the crate has never parsed, let alone
+      compiled, since July.  One line, then add it to `members`.
+- [ ] **Re-enable `cargo test --workspace` as the single arbiter.**
+      Possible only once v1 is gone.  Then delete the "never run
+      --workspace" rule from `CLAUDE.md` §4 and the hand-rolled
+      per-crate loop from §6 — a loop a human has to remember is
+      not a gate.
+- [ ] **Make the 15-rule security baseline machine-checked.**
+      Certification is currently a doc assertion, and three crates
+      (`scramble`, `linux`, `mobile`) are uncertified.  Rule 15
+      ("every module has tests") is a CI check, not a claim.  A
+      self-attested checklist is worth little in diligence; a
+      failing build is worth a lot.
+
+### F1 — one current-state document
+
+- [ ] **Stop appending to `HANDOFF.md`; it is 8 166 lines.**  That
+      is a geological record, not a handoff, and it is a direct
+      cause of lost context between sessions: nothing says what is
+      true *now*.  Three doc-vs-code drifts were found in one
+      session (the strategy memo read as the thesis, multi-language
+      documented as if present, rotation documented as if timed).
+      Split into a **replaced** current-state head section plus an
+      archived chronological log (`docs/v2/handoff-archive.md`, since
+      `CLAUDE.md` §4 restricts new root `.md` files).
+
+### F2 — model the enclosure boundary in code
+
+The deployment model now carries the security argument, and it does
+not exist as an artifact.
+
+- [ ] **Implement the enclosed set.**  Operator's model: clean
+      device → load the full intended set → scramble everything
+      within it → vet anything new at the boundary before
+      admission.  Admission control is the boundary; scramble is the
+      interior property.  There is no code concept of the enclosed
+      set: no admitted-artefact manifest, no admission step, no
+      provisioning-time scramble path.  The daemon scrambles at
+      *login* because that was the 2025 assumption; enclosure says
+      scramble at *provisioning*.
+- [ ] **Record what enclosure buys**, because it is the sellable
+      claim: under full enclosure the tripwire's false-positive
+      floor goes to zero (nothing legitimate inside uses canonical
+      names), and a vetted-but-malicious dependency that hardcodes a
+      canonical path **does not function** — defence that survives
+      the vetting being wrong.  Pairs directly with the SLSA/SBOM/
+      cosign work in phase 6.
+- [ ] **Scope the target deployment** explicitly: fixed-function
+      high-value hosts — CI runners and build servers, jump boxes,
+      OT/ICS, embedded, kiosks, appliances.  NOT developer
+      workstations, which are the structural opposite of enclosure.
+
+### F3 — rebuild the tokenizer (substrate of every layer)
+
+- [ ] **Replace the MVP tokenizer.**  Decidable without any
+      measurement: `python_tokenizer.rs` is whitespace-delimited and
+      does not split operators from adjacent text, so L9 cannot fold
+      `f(22)` (it reaches only integers with whitespace on both
+      sides — a minority of literals in real code), L2 treats
+      `foo.bar(baz)` as a single token so scramble granularity is
+      wrong exactly where real code is dense, and it is Python-only
+      despite L2 being documented as language-agnostic.  This is a
+      coverage defect at any layer weighting, not a tuning question.
+      See `docs/v2/real-parser-feasibility.md`.
+      The seven layers consume a token stream and survive the swap,
+      but all seven need revalidation against a richer stream.
+
+### F4 — the architecture that makes rotation possible
+
+Rotation rate is the operator's central mechanism and the current
+architecture cannot deliver it.  Measured numbers already exist in
+`tools/rotation-benchmark/RESULTS.md` (medians, warm path): N=10
+0.73 ms (1360 Hz); N=100 24.2 ms (41 Hz), wrapper regen 22.6 ms of
+it; N=1000 375 ms (2.7 Hz).
+
+- [ ] **Generalize the in-process resolution hook from
+      `v2-babbleon-mobile` to Linux.**  `resolve_name` →
+      `ResolutionDecision`, no daemon round-trip, no wrapper farm.
+      778 lines that can replace a large part of the ~14 k-line
+      enforcement tier, and the only shape that supports fast
+      rotation at all.  Built for Android by accident of the carve;
+      it is the reference architecture.
+- [ ] **Unified runtime-table wrapper** — one wrapper binary
+      consulting a runtime mapping table, so rotation is an atomic
+      table swap instead of N file writes.  Already filed below
+      under "v2 test-suite performance" (wrong home).  Required for
+      any rate above ~40 Hz.
+- [ ] **Background permutation pre-build** — the ~18 ms
+      Fisher-Yates over the 370 k-word vocabulary is the dominant
+      fixed cost on a cold epoch; pre-building the next epoch's
+      permutation cuts rotation-tick cost ~100x.  Also already
+      filed below.
+- [ ] **Put the mapping table on tmpfs/memfd, not disk.**  Capacity
+      was never the constraint (N wrappers at ~1.5 KB is
+      sub-megabyte).  **Write endurance** is: N=100 at 41 Hz is
+      ~6 MB/s of small-file writes forever, ~190 TB/year, which
+      kills a consumer SSD (150-600 TBW) inside a year.  The
+      unified table at 10 Hz is ~15 TB/year — survivable, not free.
+      On tmpfs it is zero.
+- [ ] **Epoch refcounting, which is the real ceiling.**  Every
+      in-flight process that resolved a name must keep working
+      across a rotation.  Naively, rotation rate R x max process
+      lifetime T = live epochs to retain: 10 Hz against a 10-minute
+      process is 6 000 live mappings, and `PermutationCache` is
+      sized 12.  Pin a handle to its epoch at exec and retire an
+      epoch when no process holds it — that caps live epochs at
+      process count rather than R x T, decoupling rotation rate
+      from memory.  Not considered in `RESULTS.md`.
+- [ ] **Port `tools/rotation-benchmark` to v2** (2 v1 imports:
+      `write_wrapper`, `Mapper`).  It is the only tool measuring
+      the mechanism the roadmap now turns on; do not lose it to the
+      v1 deletion.
+
+### F5 — pick the rotation rate (a design decision, not a perf one)
+
+- [ ] **Target 1-10 Hz.**  Rationale to keep: the thing being
+      defeated is an agent's observe→reason→act loop, bounded by
+      inference latency at seconds.  Rotating every 1-5 s already
+      guarantees its map is stale before it can act.  Millisecond
+      rotation buys nothing against a 1-10 s OODA loop and costs
+      overlap complexity in every component.  The honest target is
+      "faster than the adversary can think."
+- [ ] **Add the scheduler.**  `DaemonState::rotate()` is correct but
+      only the admin handler calls it; there is no timer anywhere in
+      the daemon and `last_rotation` is second-granularity.
+
+### F6 — build a measurement instrument (the old bench is scrapped)
+
+Operator scrapped `v2-babbleon-resilience-bench` (~6.4 k lines;
+corpus self-invalidated by its own `CORRECTIONS.md`).  Its
+replacement must be smaller and must answer live questions.
+
+- [ ] **Requirements, all necessary:** a corpus whose recovery
+      targets are not plain literals no layer scrambles; a
+      **non-Claude evaluator** (prior runs hit 100 % usage-policy
+      refusal, which contaminates the signal and is not a defensive
+      result); and **post-normalization** measurement (assume the
+      adversary runs NFKC + confusables first).
+- [ ] How fast must rotation be before an agent's reconnaissance
+      never converges into a usable model of the host?
+- [ ] Does cross-language compounding degrade recovery measurably
+      more than English-only compounding?
+- [ ] **Which of L2-L12 to delete.**  No layer has a known
+      contribution.  Some are probably decoration and nobody can
+      say which.  Undecidable without this instrument — which is
+      why no further layer work should start before it exists.
+
+### F7 — behavioural dishonesty (the unaddressed channel)
+
+No layer in the pipeline addresses identifying an unnamed binary by
+what it *does* (speaks TLS on 443 → curl-equivalent) rather than
+what it is called.  Operator's answer: maximal semantic dishonesty —
+denial produces a careful attacker, dishonesty produces a confident
+wrong one; probing is only an oracle while behaviour is honest.
+These four are filed under "v2 test-suite performance" below, which
+is the wrong home — they are core mechanism, not perf:
+
+- [ ] Rotate the banner-deception table with the mapping HKDF tree.
+- [ ] Flatten the honey-vs-real referential/usage graph.
+- [ ] Break the compound-name shape signature.
+- [ ] Randomize `HONEY_COUNT` per epoch.
+
+Caveat to carry: deception must be **consistent** or the
+inconsistency becomes the attacker's classifier.  Denial degrades
+gracefully; dishonesty fails sharply when imperfect.
+
+### F8 — structural debt, safe to do any time
+
+- [ ] **Delete the format-version back-compat.**  v0/v1/v2 gates,
+      `LEGACY_FORMAT_VERSION_WIRE`, `ALIAS_COUNT_VARIABLE_FROM_VERSION`,
+      44 version-conditional sites in `protocol.rs` alone — all of it
+      maintaining wire compatibility with formats that have **zero
+      users on zero hosts**.  Nothing has ever shipped.  It
+      complicates every layer's inverse.  Pin the format, delete the
+      gates.  Surgery, not a sweep.
+- [ ] **Organize by coverage, not by layer.**  L2-L12 with gaps
+      (L7/L8/L10 investigated and rejected) is an open-endedly
+      additive agenda with no closure criterion, which is how this
+      became 36 k lines with no measurement.  Define the
+      attack-surface taxonomy — names, structure, behaviour,
+      protocol, timing — and map layers onto it so coverage *and
+      saturation* are visible.
+- [ ] **8 dependabot PRs idle since 2026-08-07.**  `rand` 0.8→0.9
+      and `rand_chacha` 0.3→0.9 are breaking majors touching the
+      scramble PRNG — real work, not rubber stamps.  The other six
+      are routine.
+
+### Framing note — drop the "firewall" analogy
+
+A firewall is a boundary device that inspects flows and decides.
+Babbleon is not a boundary device; it is a property of the interior.
+The analogy invites "so what does it block?", whose honest answer
+("nothing, it makes things unreadable") sounds weak when it is not.
+
+The right precedent is **ASLR**.  Nobody asks what ASLR blocks; it
+is understood as making exploitation non-portable — the bug is still
+there, the exploit just does not travel.  It became universal
+without ever stopping an attack outright.  Babbleon has two things
+ASLR lacks: it randomizes *semantics* rather than addresses, and it
+rotates per-device continuously rather than per-boot.  "ASLR for
+meaning, rotating, keyed per device" is a pitch a skeptical security
+engineer finishes for you.
+
+---
+
 ## v2 — ground-up redesign
 
 The v1-is-not-the-public-product decision and the phase plan are
