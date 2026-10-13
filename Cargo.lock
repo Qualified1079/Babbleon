@@ -116,9 +116,9 @@ dependencies = [
 
 [[package]]
 name = "anyhow"
-version = "1.0.102"
+version = "1.0.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
+checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "arc-swap"
@@ -2075,6 +2075,8 @@ dependencies = [
  "thiserror",
  "tracing",
  "v2-babbleon-launch-artefacts",
+ "v2-babbleon-linux",
+ "v2-babbleon-scramble",
  "zeroize",
 ]
 
@@ -2140,6 +2142,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "v2-babbleon-linux"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "hex",
+ "rand 0.8.6",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tracing",
+ "v2-babbleon-launch-artefacts",
+ "v2-babbleon-scramble",
+ "zeroize",
+]
+
+[[package]]
 name = "v2-babbleon-login-shell"
 version = "0.1.0"
 dependencies = [
@@ -2164,7 +2182,7 @@ version = "0.1.0"
 dependencies = [
  "proptest",
  "thiserror",
- "v2-babbleon-core",
+ "v2-babbleon-scramble",
 ]
 
 [[package]]
@@ -2197,6 +2215,22 @@ dependencies = [
  "toml 0.8.23",
  "v2-babbleon-core",
  "v2-babbleon-preprocessor",
+]
+
+[[package]]
+name = "v2-babbleon-scramble"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "hkdf",
+ "once_cell",
+ "rand 0.8.6",
+ "rand_chacha 0.3.1",
+ "sha2",
+ "subtle",
+ "thiserror",
+ "tracing",
+ "zeroize",
 ]
 
 [[package]]
