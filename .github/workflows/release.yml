@@ -63,7 +63,7 @@ jobs:
           echo "artifact-name=${ARTIFACT}" >> "$GITHUB_OUTPUT"
           echo "artifact-digest=${DIGEST}" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-bundle
           path: dist/
@@ -100,7 +100,7 @@ jobs:
             cosign sign-blob --yes --bundle "${SBOM}.cosign.bundle" "${SBOM}"
           fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-signed
           path: dist/
