@@ -257,19 +257,54 @@ per-host mapping to data in flight, which covers every tool
 uniformly including ones never seen.  Rationale and limits:
 `docs/v2/binary-self-identification.md` §"The fix".
 
-- [ ] **Rewrite canonical→compound in the untrusted tier's output
-      stream.**  `v2-babbleon-launch-untrusted` already builds the
-      child's environment; give it pipes and relay through a
-      streaming matcher with a carry buffer across write
-      boundaries.  Covers `--version`, `--help`, banners and
-      hardcoded stderr prefixes with no per-tool knowledge, and
-      fixes the `curl` hardcoded-name case directly.  Viable
-      because the tools are not adversarial emitters — the usual
-      objection to output filtering does not apply here.
-- [ ] **Filter the binary's own bytes on read** (FUSE or an
-      overlay in the existing mount-NS tier) so `strings` and the
-      dynamic symbol table yield compounds, not `curl_*`.  This is
-      the static channel and the one stripping cannot close.
+**Both branches were prototyped and measured 2026-10-14; they
+converge.**  Name rewriting in the output stream closes the name
+channel completely (0/6 self-identify, including the `curl`
+hardcoded-stderr case, with no per-tool knowledge).  But it leaves
+two channels open, and the loader forecloses byte-rewriting on the
+read side — see the two items below, then
+`docs/v2/binary-self-identification.md` for the measurements.
+
+- [ ] **Mediate exec, do not just rename.**  The untrusted tier
+      must get **neither read nor exec** on the real binary; a
+      trusted-tier helper execs it and relays I/O.  Forced by a
+      constraint not previously stated anywhere: the tier cannot be
+      allowed to execute a binary while being denied the ability to
+      read its symbol names, because execution requires a loader in
+      that tier's context to read `.dynstr` (measured: 60 unique
+      imported `curl_*` names at offset 5165+, length-sensitive and
+      required to match libcurl's exports).  Filtered bytes → will
+      not load; real bytes → `strings` works.  No single-file view
+      satisfies both.  This subsumes both the "encapsulate" and
+      "go lower" branches into one architecture.
+- [ ] **Synthesize uniform output; do not rewrite names inside
+      each tool's native format.**  Name-only rewriting leaves the
+      *shape* intact, and shape is a classifier: `prog (PACKAGE)
+      ver` with package==program identifies the sed/tar/gawk
+      family, package≠program identifies coreutils, bare `name ver`
+      identifies gzip, `name ver (triple) libname/ver TLS/ver`
+      identifies curl.  Measured: handed only the name-filtered
+      output, an evaluator recovered 4/6 tools at **high**
+      confidence and a 5th at medium, from version numbers and
+      format alone.  This is `V2_PLAN.md`'s own v1 critique —
+      lexical scramble does not defeat structural recognition —
+      recurring on the output surface.  The relay must emit an
+      identical shape and field set for every tool with per-epoch
+      values, which denies versions and shape together.  Same
+      relationship to the name filter that L3/L4 have to L2.
+- [ ] **Add "host distro identity" to the asset model.**  Not in
+      `threat-model.md` §2 today.  The version *set* (sed 4.9 +
+      tar 1.35 + coreutils 9.4 + curl 8.5.0 + gzip 1.12) pins the
+      host to Ubuntu 24.04 / Debian-13 era, which hands over the
+      whole expected inventory and its CVE surface — plausibly
+      worth more than identifying any single binary.
+- [ ] **Triage the inventory by output verbosity.**  Filter
+      effectiveness is inversely proportional to how much a tool
+      says about itself: the two coreutils binaries came out
+      genuinely protected (no per-program information in their
+      `--version`), while `curl` leaks on every channel.  Rank
+      real tools by self-disclosure instead of treating them
+      uniformly.
 - [ ] **Enumerate which tools in a real inventory self-identify.**
       Six tools on one distro is not a population estimate.  Sweep
       `ssh`, `aws`, `gh`, `python3`, `git`, `nc`, `tar`, `dig`, ...

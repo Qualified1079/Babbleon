@@ -186,6 +186,107 @@ usual objection to output filtering does not apply.
   both options.  Everything here only closes the cheap channel;
   it buys the right to start worrying about the expensive one.
 
+## Option B measured — the name channel closes, two others open
+
+Prototype: `streamfilter.py` in the pilot scratch dir — a streaming
+canonical→compound rewriter with a carry buffer across write
+boundaries, wrapping the child's stdout+stderr.
+
+**Result 1 — the name channel closes completely.**  0/6 tools
+self-identify by name through the filter.  The `curl`
+hardcoded-stderr case (`curl: option --zzz is unknown`, which
+ignores `argv[0]` and which Option A would have to special-case)
+is fixed with **no per-tool knowledge**:
+
+```
+resack_unluck: option --zzz-not-a-flag: is unknown
+resack_unluck: try 'resack_unluck --help' or ... for more information
+```
+
+That is the predicted benefit, and it holds.
+
+**Result 2 — a version-number channel opens.**  The filtered
+output still carries `4.9`, `1.12`, `1.35`, `9.4`, `9.4`,
+`8.5.0 ... /3.0.1`.  Handed *only* that filtered text and asked to
+identify the tools, an evaluator recovered **4 of 6 at high
+confidence** and a 5th (gzip) at medium:
+
+| Filtered row | Recovered | Confidence | On what |
+|---|---|---|---|
+| `(ORGNAME <self>) 4.9` | sed | high | shape = package==program; 4.9 fits sed, not grep/gawk |
+| `(ORGNAME <self>) 1.35` | tar | high | same shape; 1.35 is a tar release |
+| `8.5.0 (x86_64-pc-linux-gnu) libX/8.5.0 tlsprovider/3.0.1` | curl | high | `lib<name>/<same ver>` self-pairing + TLS field is curl's alone |
+| `<name> 1.12` | gzip | medium | bare `name ver` form, no parenthetical |
+| `(tritonware) 9.4` ×2 | coreutils | high (package) / **low (which binary)** | package≠program is the coreutils signature |
+
+**Result 3 — output shape is a classifier, independent of names.**
+This is the load-bearing finding.  `prog (PACKAGE) ver` with
+package == program identifies the sed/tar/gawk family;
+package ≠ program identifies coreutils; bare `name version`
+identifies gzip; `name ver (triple) libname/ver TLS/ver`
+identifies curl.  Every name was replaced and the *format* still
+discriminated.
+
+This is `V2_PLAN.md`'s opening critique of v1 — "the scramble
+defeats *lexical* recognition; it does not defeat *structural*
+recognition" — recurring on a new surface.  v1 lost to shape in
+source; a name-only output filter loses to shape in output.  The
+fix is the same in kind as L3/L4 were for source: the relay must
+**synthesize uniform output** for every tool — identical shape,
+identical field set, per-epoch values — rather than rewriting
+names inside each tool's native format.  That denies the version
+values and the shape together.
+
+**Result 4 — filter effectiveness is inversely proportional to
+output verbosity.**  The two coreutils binaries came out genuinely
+protected: their `--version` carries no per-program information, so
+scrambling the package name sufficed.  `curl` is the worst case
+because it volunteers the most.  Practical consequence: triage a
+real inventory by how much each tool says about itself, rather
+than treating all tools alike.
+
+**Result 5 — the version *set* leaks the host.**  sed 4.9 + tar
+1.35 + coreutils 9.4 + curl 8.5.0 + gzip 1.12 pins the host to the
+Ubuntu 24.04 LTS / Debian-13 era.  That identifies the whole
+expected tool inventory and its CVE surface — plausibly worth more
+than identifying any single binary — and **it is not in the asset
+model** (`threat-model.md` §2).  Filed as an asset gap.
+
+## Read channel — a constraint that forecloses byte rewriting
+
+Measured on the same binary: 60 unique `curl_*` names, 89
+occurrences, first at byte offset 5165 — i.e. `.dynstr`, the
+dynamic string table.  These are **imported** symbols: the loader
+resolves them against `libcurl.so` by name at load time, and
+`.dynsym` references them by offset into `.dynstr`.
+
+So they are length-sensitive twice over.  Rewriting one shifts
+every later offset, and the rewritten name must still match
+libcurl's exported name.  Length-preserving substitution is
+possible in principle — the wordlist carries 7 186 exact-4 words,
+45 872 exact-10, 14 149 exact-14, thinning to 1 471 at 18 and 74
+at 22, and the `curl_*` symbols span 8-24 chars so compounds
+rather than single words would be required — but it cannot satisfy
+the second condition without also rewriting libcurl's exports,
+which every other consumer shares.
+
+**The constraint that follows, which was not previously stated
+anywhere:**
+
+> The untrusted tier cannot be allowed to *execute* a binary while
+> being denied the ability to *read* that binary's symbol names.
+> Execution requires a loader running in that tier's context to
+> read `.dynstr`.  Filtered bytes mean the binary will not load;
+> real bytes mean `strings` works.  No single-file view satisfies
+> both.
+
+Therefore the untrusted tier must get **neither read nor exec** on
+the real binary: a trusted-tier helper execs it and relays I/O.
+Option A's "encapsulate" and Option B's "go lower" converge on
+the same architecture once the loader is followed through —
+encapsulation at the *process* boundary, interposition on the
+stream.  That is the design, and it subsumes both branches above.
+
 ## Limitations
 
 1. **N is small.**  Six tools, one host, one distro.  The
