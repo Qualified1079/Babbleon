@@ -84,6 +84,24 @@ pub struct LayerConfig {
     /// defeat naïve tokenizer-based extraction.
     #[serde(default)]
     pub layer12_noise: bool,
+    /// Apply layer-9 (constant unfolding).  Every eligible bare
+    /// decimal-integer `Word` token is replaced with a
+    /// self-describing arithmetic marker (`__bbnfolda7x15__` = `7+15`)
+    /// before L4 sees the stream, so integer literals no longer
+    /// survive the scramble as recoverable digits.
+    ///
+    /// Runs FIRST in production (`tokenize → L9 → L4 → L5 → L2 → L3
+    /// → L6 → L12`, see `CLAUDE.md` §4.5), which is why it is applied
+    /// ahead of `layer4_chunk_reorder` in
+    /// `scramble_pipeline::apply_layers` despite being numbered
+    /// above it.
+    ///
+    /// Defaults to `false` so bench JSON/TOML written before this
+    /// field existed keeps deserializing.  Note that those older
+    /// records therefore label as `full-stack-no-l9`, not
+    /// `full-stack` — see [`Self::label`].
+    #[serde(default)]
+    pub layer9_constant_unfolding: bool,
     /// Apply experimental layer-7 secret-literal substitution
     /// (bench-only prototype; see
     /// `crates/v2-babbleon-resilience-bench/src/secret_literal_layer.rs`).
@@ -134,10 +152,24 @@ impl LayerConfig {
             layer5_decoy_injection: false,
             layer6_direction_reversal: false,
             layer12_noise: false,
+            layer9_constant_unfolding: false,
             layer7_secret_literal: false,
             variable_alias_count: false,
             seed_byte,
             epoch,
+        }
+    }
+
+    /// L9 only: constant unfolding with every other layer off.
+    /// Diagnostic config that isolates how much of a literal-recovery
+    /// failure is attributable to L9 rather than to L2's compound
+    /// substitution.  Pairs with [`Self::l2_only`] on the
+    /// `recover-integer-constant` challenge.
+    #[must_use]
+    pub fn l9_only() -> Self {
+        Self {
+            layer9_constant_unfolding: true,
+            ..Self::new(false, false, 0xAB, 0)
         }
     }
 
@@ -171,6 +203,7 @@ impl LayerConfig {
             layer5_decoy_injection: false,
             layer6_direction_reversal: false,
             layer12_noise: false,
+            layer9_constant_unfolding: false,
             layer7_secret_literal: false,
             variable_alias_count: false,
             seed_byte: 0xAB,
@@ -209,6 +242,7 @@ impl LayerConfig {
             layer5_decoy_injection: true,
             layer6_direction_reversal: false,
             layer12_noise: false,
+            layer9_constant_unfolding: false,
             layer7_secret_literal: false,
             variable_alias_count: false,
             seed_byte: 0xAB,
@@ -216,9 +250,23 @@ impl LayerConfig {
         }
     }
 
-    /// Full stack: L2 + L3 + L4 + L5 + L6 + L12.  All shipped
-    /// production layers active.  The bench cell that most closely
-    /// matches what a real host serves.
+    /// Full stack: L9 + L4 + L5 + L2 + L3 + L6 + L12 — all seven
+    /// shipped production layers, in production order.  The bench
+    /// cell that most closely matches what a real host serves.
+    ///
+    /// L9 was added to this preset on 2026-10-14.  Before that the
+    /// preset claimed to be the production stack while omitting a
+    /// shipped layer, so its bytes diverged from what a real host
+    /// serves — which understates production token density and left
+    /// L9's own contribution unmeasurable.  It did NOT mean integer
+    /// literals leaked: L2 alone already substitutes a compound for a
+    /// bare integer (measured 2026-10-14; see the note on
+    /// `scramble_pipeline::tests::full_stack_removes_the_integer_literal`).
+    ///
+    /// Records written under the old preset deserialize with
+    /// `layer9_constant_unfolding: false` and therefore label as
+    /// `full-stack-no-l9`; they are NOT byte-comparable to new
+    /// `full-stack` cells.
     #[must_use]
     pub fn full_stack() -> Self {
         Self {
@@ -229,6 +277,7 @@ impl LayerConfig {
             layer5_decoy_injection: true,
             layer6_direction_reversal: true,
             layer12_noise: true,
+            layer9_constant_unfolding: true,
             layer7_secret_literal: false,
             variable_alias_count: false,
             seed_byte: 0xAB,
@@ -276,6 +325,7 @@ impl LayerConfig {
             layer5_decoy_injection: false,
             layer6_direction_reversal: false,
             layer12_noise: false,
+            layer9_constant_unfolding: false,
             layer7_secret_literal: true,
             variable_alias_count: false,
             seed_byte: 0xAB,
@@ -296,6 +346,7 @@ impl LayerConfig {
             layer5_decoy_injection: false,
             layer6_direction_reversal: false,
             layer12_noise: false,
+            layer9_constant_unfolding: false,
             layer7_secret_literal: true,
             variable_alias_count: false,
             seed_byte: 0xAB,
@@ -307,7 +358,10 @@ impl LayerConfig {
     /// summary table.
     #[must_use]
     pub fn label(&self) -> String {
+        // L9 leads the tuple because it leads the production order
+        // (`tokenize → L9 → L4 → L5 → L2 → L3 → L6 → L12`).
         let base = match (
+            self.layer9_constant_unfolding,
             self.layer2_keyword_scramble,
             self.layer2b_operator_scramble,
             self.layer3_whitespace_as_words,
@@ -316,29 +370,39 @@ impl LayerConfig {
             self.layer6_direction_reversal,
             self.layer12_noise,
         ) {
-            (false, false, false, false, false, false, false) => {
+            (false, false, false, false, false, false, false, false) => {
                 "baseline".to_string()
             }
-            (true, false, false, false, false, false, false) => {
+            (true, false, false, false, false, false, false, false) => {
+                "l9-only".to_string()
+            }
+            (false, true, false, false, false, false, false, false) => {
                 "l2-only".to_string()
             }
-            (false, false, true, false, false, false, false) => {
+            (false, false, false, true, false, false, false, false) => {
                 "l3-only".to_string()
             }
-            (true, false, true, false, false, false, false) => {
+            (false, true, false, true, false, false, false, false) => {
                 "l2-plus-l3".to_string()
             }
-            (true, true, true, false, false, false, false) => {
+            (false, true, true, true, false, false, false, false) => {
                 "l2-plus-l2b-plus-l3".to_string()
             }
-            (true, false, true, true, true, false, false) => {
+            (false, true, false, true, true, true, false, false) => {
                 "l2-plus-l3-plus-l4-plus-l5".to_string()
             }
-            (true, false, true, true, true, true, true) => {
+            (true, true, false, true, true, true, true, true) => {
                 "full-stack".to_string()
             }
-            (l2, l2b, l3, l4, l5, l6, l12) => format!(
-                "custom-l2={l2}-l2b={l2b}-l3={l3}-l4={l4}-l5={l5}-l6={l6}-l12={l12}"
+            // The pre-2026-10-14 `full_stack()` preset, which omitted
+            // L9 while claiming to be the production stack.  Labelled
+            // distinctly so old run records cannot be read as
+            // comparable to true `full-stack` cells.
+            (false, true, false, true, true, true, true, true) => {
+                "full-stack-no-l9".to_string()
+            }
+            (l9, l2, l2b, l3, l4, l5, l6, l12) => format!(
+                "custom-l9={l9}-l2={l2}-l2b={l2b}-l3={l3}-l4={l4}-l5={l5}-l6={l6}-l12={l12}"
             ),
         };
         let with_l7 = if self.layer7_secret_literal {
@@ -446,6 +510,70 @@ mod tests {
         let j = serde_json::to_string(&c).unwrap();
         let back: LayerConfig = serde_json::from_str(&j).unwrap();
         assert_eq!(c, back);
+    }
+
+    // ----- layer9_constant_unfolding -----
+
+    #[test]
+    fn full_stack_enables_layer9() {
+        // `full_stack()` documents itself as the production stack;
+        // production runs L9 first, so the flag must be on.
+        assert!(LayerConfig::full_stack().layer9_constant_unfolding);
+        assert_eq!(LayerConfig::full_stack().label(), "full-stack");
+    }
+
+    #[test]
+    fn legacy_full_stack_without_l9_labels_distinctly() {
+        // Old run records deserialize with the flag off.  They must
+        // NOT read as `full-stack`, or a reader would compare them to
+        // new cells that differ by a whole layer.
+        let legacy = LayerConfig {
+            layer9_constant_unfolding: false,
+            ..LayerConfig::full_stack()
+        };
+        assert_eq!(legacy.label(), "full-stack-no-l9");
+        assert_ne!(legacy.label(), LayerConfig::full_stack().label());
+    }
+
+    #[test]
+    fn l9_only_preset_isolates_the_layer() {
+        let c = LayerConfig::l9_only();
+        assert!(c.layer9_constant_unfolding);
+        assert!(!c.layer2_keyword_scramble);
+        assert!(!c.layer3_whitespace_as_words);
+        assert_eq!(c.label(), "l9-only");
+    }
+
+    #[test]
+    fn new_and_other_presets_leave_layer9_off() {
+        assert!(!LayerConfig::new(true, true, 0xAB, 0).layer9_constant_unfolding);
+        assert!(!LayerConfig::default().layer9_constant_unfolding);
+        assert!(!LayerConfig::l2_plus_l3().layer9_constant_unfolding);
+        assert!(
+            !LayerConfig::l2_plus_l3_plus_l4_plus_l5()
+                .layer9_constant_unfolding
+        );
+    }
+
+    #[test]
+    fn legacy_serde_without_layer9_defaults_off() {
+        let legacy_json = r#"{
+            "layer2_keyword_scramble": true,
+            "layer3_whitespace_as_words": true,
+            "seed_byte": 171,
+            "epoch": 0
+        }"#;
+        let c: LayerConfig = serde_json::from_str(legacy_json).unwrap();
+        assert!(!c.layer9_constant_unfolding);
+    }
+
+    #[test]
+    fn layer9_serde_round_trips() {
+        let c = LayerConfig::full_stack();
+        let j = serde_json::to_string(&c).unwrap();
+        let back: LayerConfig = serde_json::from_str(&j).unwrap();
+        assert_eq!(c, back);
+        assert!(back.layer9_constant_unfolding);
     }
 
     // ----- variable_alias_count -----

@@ -262,6 +262,14 @@ enum LayerConfigPreset {
     L2Only,
     /// Layer 3 only (whitespace-as-words).
     L3Only,
+    /// Layer 9 only (constant unfolding; diagnostic — isolates how
+    /// much of an integer-literal recovery failure is L9's rather
+    /// than L2's).
+    L9Only,
+    /// L2 + L3 + L4 + L5 + L6 + L12 WITHOUT L9 — the pre-2026-10-14
+    /// `full-stack` preset, kept so old run records remain
+    /// reproducible.  Not the production stack; use `full-stack`.
+    FullStackNoL9,
     /// Layer 2 + Layer 3 (the HANDOFF-recommended floor; pre-2026-06-22).
     L2PlusL3,
     /// Layer 2 + Layer 2b + Layer 3 (the corrected post-2026-06-22 floor:
@@ -275,7 +283,8 @@ enum LayerConfigPreset {
     L2PlusL2bPlusL3PlusL7,
     /// L2 + L3 + L4 + L5 without L6/L12 (API-safe: no Cyrillic-homoglyph noise).
     L2PlusL3PlusL4PlusL5,
-    /// Full production stack: L2 + L3 + L4 + L5 + L6 + L12.
+    /// Full production stack, in production order:
+    /// L9 + L4 + L5 + L2 + L3 + L6 + L12.
     FullStack,
     /// L2 + L3 with the per-epoch variable alias count (diagnostic;
     /// isolates the alias-count effect against `L2PlusL3`'s legacy
@@ -292,6 +301,11 @@ impl LayerConfigPreset {
             LayerConfigPreset::Baseline => LayerConfig::baseline_no_scramble(),
             LayerConfigPreset::L2Only => LayerConfig::l2_only(),
             LayerConfigPreset::L3Only => LayerConfig::l3_only(),
+            LayerConfigPreset::L9Only => LayerConfig::l9_only(),
+            LayerConfigPreset::FullStackNoL9 => LayerConfig {
+                layer9_constant_unfolding: false,
+                ..LayerConfig::full_stack()
+            },
             LayerConfigPreset::L2PlusL3 => LayerConfig::l2_plus_l3(),
             LayerConfigPreset::L2PlusL2bPlusL3 => {
                 LayerConfig::l2_plus_l2b_plus_l3()

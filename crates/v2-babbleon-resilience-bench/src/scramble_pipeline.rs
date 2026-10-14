@@ -20,6 +20,10 @@
 //!
 //! # Mechanism
 //!
+//! 0. If `config.layer9_constant_unfolding`, fold every eligible bare
+//!    decimal-integer token into a self-describing arithmetic marker
+//!    via `constant_unfolding::fold_constants` — first, before L4, as
+//!    production does.
 //! 1. Build `PerHostSecret::from_bytes(&[config.seed_byte; 32])`.
 //! 2. If `config.layer3_whitespace_as_words`, derive a
 //!    `WhitespaceWordlist` at `config.epoch` from the synthetic
@@ -46,6 +50,7 @@
 
 use babbleon_core_v2::{per_host_secret::PerHostSecret, wordlist::Wordlist, MappingBuilder};
 use babbleon_preprocessor_v2::chunk_reorder::scramble_chunks;
+use babbleon_preprocessor_v2::constant_unfolding::fold_constants;
 use babbleon_preprocessor_v2::decoy_injection::inject_decoys;
 use babbleon_preprocessor_v2::direction_reversal::reverse_chunks;
 use babbleon_preprocessor_v2::identifier_scrambler::{
@@ -92,6 +97,18 @@ pub fn apply_layers(source: &str, config: LayerConfig) -> Result<String> {
     };
 
     let mut tokens: Vec<Token> = tokenize(&source_after_l7);
+
+    // L9: bare-integer-literal folding into self-describing
+    // arithmetic markers.  Runs FIRST, immediately after tokenize and
+    // before L4, mirroring the production order in
+    // `babbleon_preprocessor_v2::pipeline::scramble_pipeline`
+    // (`tokenize → L9 → L4 → L5 → L2 → L3 → L6 → L12`).  Ordering is
+    // load-bearing, not cosmetic: folding after L2 would hand L2 raw
+    // digits and then scramble the marker bodies instead, which is a
+    // different transform from the one production ships.
+    if config.layer9_constant_unfolding {
+        tokens = fold_constants(tokens, config.epoch);
+    }
 
     // L4: chunk reorder + position markers.  Runs before L5 so decoys
     // land into the already-shuffled stream.
@@ -373,6 +390,106 @@ mod tests {
             apply_layers(s, LayerConfig::baseline_no_scramble()).unwrap();
         assert!(out.contains("hello"));
         assert!(out.contains("world"));
+    }
+
+    // ----- L9 constant unfolding -----
+
+    /// `return 4729` is the body of the `recover-integer-constant`
+    /// challenge: a bare decimal with whitespace on both sides, which
+    /// is exactly what L9 is specified to fold.
+    const INT_SAMPLE: &str = "def secret_value():\n    return 4729\n";
+
+    #[test]
+    fn baseline_leaves_the_integer_literal_recoverable() {
+        // The control for the two tests below: with every layer off,
+        // the digits are right there.  A challenge whose answer is
+        // visible here is only measuring the scramble if some layer
+        // removes it.
+        let out =
+            apply_layers(INT_SAMPLE, LayerConfig::baseline_no_scramble())
+                .unwrap();
+        assert!(out.contains("4729"));
+    }
+
+    #[test]
+    fn l9_only_replaces_the_integer_with_a_fold_marker() {
+        let out = apply_layers(INT_SAMPLE, LayerConfig::l9_only()).unwrap();
+        assert!(
+            !out.contains("4729"),
+            "L9 must remove the bare integer literal: {out}",
+        );
+        assert!(
+            out.contains("__bbnfold"),
+            "L9 must leave a self-describing fold marker: {out}",
+        );
+    }
+
+    #[test]
+    fn full_stack_removes_the_integer_literal() {
+        // NOTE on what this does and does NOT show.  L2 alone already
+        // removes `4729`, because the MVP tokenizer treats a bare
+        // integer as its own whitespace-delimited word and L2
+        // substitutes a compound for it.  Measured 2026-10-14 on
+        // `recover-integer-constant`: the literal survives under
+        // `baseline` and `l3-only` and is gone under `l2-only`,
+        // `l9-only`, `l2-plus-l3`, `full-stack-no-l9`, and
+        // `full-stack`.
+        //
+        // So this assertion is a floor, not evidence that L9 is what
+        // removes the digits.  The reason L9 belongs in `full_stack()`
+        // is bench FIDELITY: the preset documents itself as what a
+        // real host serves, and production runs L9 first.  Omitting it
+        // made the preset's bytes diverge from production's, which
+        // understates production token density and leaves L9's own
+        // contribution unmeasurable.  `l9_only_replaces_the_integer_
+        // with_a_fold_marker` is the test that isolates L9's effect.
+        let out =
+            apply_layers(INT_SAMPLE, LayerConfig::full_stack()).unwrap();
+        assert!(
+            !out.contains("4729"),
+            "full-stack must not emit the integer literal: {out}",
+        );
+    }
+
+    #[test]
+    fn l9_changes_full_stack_output() {
+        // Guards against the flag being accepted but dropped on the
+        // floor: toggling L9 under an otherwise identical config must
+        // change the bytes.
+        let with_l9 = apply_layers(
+            INT_SAMPLE,
+            LayerConfig::full_stack(),
+        )
+        .unwrap();
+        let without_l9 = apply_layers(
+            INT_SAMPLE,
+            LayerConfig {
+                layer9_constant_unfolding: false,
+                ..LayerConfig::full_stack()
+            },
+        )
+        .unwrap();
+        assert_ne!(with_l9, without_l9);
+    }
+
+    #[test]
+    fn l9_is_deterministic_under_fixed_seed_and_epoch() {
+        let a = apply_layers(INT_SAMPLE, LayerConfig::l9_only()).unwrap();
+        let b = apply_layers(INT_SAMPLE, LayerConfig::l9_only()).unwrap();
+        assert_eq!(a, b, "same epoch must fold to identical markers");
+    }
+
+    #[test]
+    fn l9_skips_zero_and_one() {
+        // Documented carve-out in `CLAUDE.md` §4.5: values 0 and 1
+        // are skipped as noise, so a challenge whose answer is 0 or 1
+        // gains nothing from L9 and must not be filed as an L9 cell.
+        let src = "def f():\n    return 1\n";
+        let out = apply_layers(src, LayerConfig::l9_only()).unwrap();
+        assert!(
+            out.contains('1'),
+            "L9 must leave the literal 1 alone: {out}",
+        );
     }
 
     // ----- variable_alias_count -----
