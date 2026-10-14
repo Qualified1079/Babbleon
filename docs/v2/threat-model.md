@@ -83,9 +83,23 @@ What v2 defends, ordered by attacker payoff:
 2. **Tracked-tool inventory** — the set of canonical tools the
    host uses (`curl`, `ssh`, `aws`, `gh`, ...).  Knowing the
    inventory tells an attacker what credentials and service
-   integrations to look for.  v2 hides the inventory via the
-   mount-NS tier boundary; the untrusted tier sees only
-   scrambled compounds.
+   integrations to look for.
+   **v2 does NOT currently hide this for compiled binaries.**
+   Corrected 2026-10-14; this entry previously claimed "v2 hides
+   the inventory via the mount-NS tier boundary; the untrusted
+   tier sees only scrambled compounds."  The second clause is
+   true and the conclusion does not follow: the compounds are
+   scrambled, but the binaries announce themselves.  Measured —
+   five of six renamed tools identify themselves in one
+   `--version` sweep, and `curl` additionally hardcodes its name
+   in stderr and exposes 103 `curl_*` dynamic symbols.  See
+   `docs/v2/binary-self-identification.md` for the measurement and
+   the mediating-wrapper fix; row I9 below carries the channel.
+   Mount-NS hides the canonical *path* (row I1, which stands) and
+   that remains true — it is a different channel.
+   Scope: this concerns third-party compiled binaries only.
+   Whether L2-L12 deny recovery from *preprocessed source* is
+   unmeasured and is the open F6 question.
 3. **Credentials** — `~/.aws`, `~/.ssh`, `~/.gnupg`, browser
    cookies, IPC sockets (`SSH_AUTH_SOCK`, `gpg-agent`).  v2's
    credential-gate (carried from v1; re-implemented under v2
@@ -174,6 +188,7 @@ did not have (preprocessor, mapping-worker).  Status legend:
 | I6 | **Information Disclosure** | `/proc/self/maps` discloses `libc.so.6` canonical path | Library identity | Documented limitation (L3) | §"Known limitations" below |
 | I7 | **Information Disclosure** | Frontier model defeats identifier-only scramble by structural shape | Tracked-tool inventory (via shape) | New in v2 phase 3 — addressed by structural scrambling | `docs/v2/structure-scrambling.md` |
 | I8 | **Information Disclosure** | Mapping-worker memory read recovers next epoch's permutation pre-build | Future mapping | New in v2 phase 3 | Mapping worker runs in separate UID, no shared address space; one-shot pipe transfers activated table at rotation tick |
+| I9 | **Information Disclosure** | Renamed binary identifies itself via `--version`, hardcoded stderr prefix, or dynamic symbols | Tracked-tool inventory | **OPEN — measured unmitigated 2026-10-14.**  5/6 tools identified in one `--version` sweep; `curl` leaks on all three channels | Needs the mediating wrapper + untrusted-tier read-denial on the real binary: `docs/v2/binary-self-identification.md`; roadmap F7 |
 | D1 | **Denial of Service** | Brute-force vault unlock burns CPU on Argon2id | Vault availability | Shipped 2026-07-03 (ported from v1; closed `docs/v2/owasp-top10-audit.md` A07) | `crates/v2-babbleon-vault/src/attempts.rs::AttemptTracker` — 3 free → exp backoff → lockout at 10; wired into `crates/v2-babbleon/src/vault_lifecycle.rs::run_unlock` before the Argon2id KDF runs |
 | D2 | **Denial of Service** | Rapid rotation cadence overwhelms wrapper generation | Daemon CPU | Carry-from-v1, port owed phase 2 | Unified runtime-table wrapper + background perm pre-build (v1 mapping-worker design) |
 | D3 | **Denial of Service** | FPE permutation cache grows unbounded across rotations | Daemon RAM | Carry-from-v1, port owed phase 2 | v1 `mapping/fpe.rs::Cache` FIFO bound at 32 entries (CWE-770) |

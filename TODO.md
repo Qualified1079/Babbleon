@@ -195,11 +195,22 @@ corpus self-invalidated by its own `CORRECTIONS.md`).  Its
 replacement must be smaller and must answer live questions.
 
 - [ ] **Requirements, all necessary:** a corpus whose recovery
-      targets are not plain literals no layer scrambles; a
-      **non-Claude evaluator** (prior runs hit 100 % usage-policy
-      refusal, which contaminates the signal and is not a defensive
-      result); and **post-normalization** measurement (assume the
-      adversary runs NFKC + confusables first).
+      targets are not plain literals no layer scrambles;
+      **non-red-team framing** (corrected 2026-10-14 — this item
+      previously said "non-Claude evaluator".  The prior runs' 100 %
+      usage-policy refusal was a *framing* artifact, not a vendor
+      one; neutral-capability framing works fine against Opus
+      instances, and the stale wording cost a later session a
+      wrong turn); and **post-normalization** measurement (assume
+      the adversary runs NFKC + confusables first).
+- [ ] **The instrument must not contain the answer.**  Learned the
+      hard way 2026-10-14: a probe rig that wrapped each tool in a
+      shim embedding `/usr/bin/<tool>` as a plaintext string had
+      every trial read the answer out of the harness.  Same failure
+      class as `CORRECTIONS.md`.  An agent trial that succeeds
+      suspiciously fast is evidence about the rig before it is
+      evidence about the defence.  See
+      `docs/v2/binary-self-identification.md` §Provenance.
 - [ ] How fast must rotation be before an agent's reconnaissance
       never converges into a usable model of the host?
 - [ ] Does cross-language compounding degrade recovery measurably
@@ -216,7 +227,64 @@ what it *does* (speaks TLS on 443 → curl-equivalent) rather than
 what it is called.  Operator's answer: maximal semantic dishonesty —
 denial produces a careful attacker, dishonesty produces a confident
 wrong one; probing is only an oracle while behaviour is honest.
-These four are filed under "v2 test-suite performance" below, which
+
+**Measured 2026-10-14 and it is worse than this item assumed.**
+Nothing has to be *inferred*: the tools volunteer.  Five of six
+renamed binaries identify themselves in a single `--version` sweep
+(six commands, no reasoning step), and `curl` additionally
+hardcodes its own name in stderr regardless of `argv[0]` and
+exposes 103 `curl_*` dynamic symbols that stripping cannot remove.
+`gzip` is the sole survivor, and only because it derives every
+message from `argv[0]` — so the property is per-tool and
+accidental, and no real inventory has been swept.  Full
+measurement and the mediating-wrapper fix:
+`docs/v2/binary-self-identification.md`.  This retired the
+tool-inventory claim in `docs/v2/threat-model.md` §2 asset 2 and
+added STRIDE row I9.
+
+Consequence for ordering: the binary tier needs the mediating
+wrapper before F2 (enclosure) or F4 (rotation architecture) are
+worth their cost, because both assume an untrusted tier that
+cannot enumerate the host's tools.
+
+Operator's design call on the fix (2026-10-14): *be lower than
+the announcement, or fully encapsulate it.*  Encapsulation (a
+per-tool wrapper owning each channel) is an enumeration problem
+whose coverage cannot be proven and which is **net negative when
+partial**.  Going lower is preferred: interpose on the I/O
+boundary every announcement must cross and apply the existing
+per-host mapping to data in flight, which covers every tool
+uniformly including ones never seen.  Rationale and limits:
+`docs/v2/binary-self-identification.md` §"The fix".
+
+- [ ] **Rewrite canonical→compound in the untrusted tier's output
+      stream.**  `v2-babbleon-launch-untrusted` already builds the
+      child's environment; give it pipes and relay through a
+      streaming matcher with a carry buffer across write
+      boundaries.  Covers `--version`, `--help`, banners and
+      hardcoded stderr prefixes with no per-tool knowledge, and
+      fixes the `curl` hardcoded-name case directly.  Viable
+      because the tools are not adversarial emitters — the usual
+      objection to output filtering does not apply here.
+- [ ] **Filter the binary's own bytes on read** (FUSE or an
+      overlay in the existing mount-NS tier) so `strings` and the
+      dynamic symbol table yield compounds, not `curl_*`.  This is
+      the static channel and the one stripping cannot close.
+- [ ] **Enumerate which tools in a real inventory self-identify.**
+      Six tools on one distro is not a population estimate.  Sweep
+      `ssh`, `aws`, `gh`, `python3`, `git`, `nc`, `tar`, `dig`, ...
+      and classify each by channel (hardcoded stderr / dynamic
+      symbols / `--version`).  Needed to size the problem and to
+      regression-test the filter — but note that Option B does
+      **not** depend on this list being complete, which is the
+      main reason to prefer it.
+- [ ] **Decide the canonical-name-consumer breakage.**  Output
+      rewriting breaks a build script that parses
+      `curl --version`.  Acceptable under full enclosure (F2) by
+      construction; this couples the fix to F2 rather than being
+      independent of it.  Operator decision owed.
+
+These four were filed under "v2 test-suite performance" below, which
 is the wrong home — they are core mechanism, not perf:
 
 - [ ] Rotate the banner-deception table with the mapping HKDF tree.
